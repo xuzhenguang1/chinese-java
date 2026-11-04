@@ -1,0 +1,15 @@
+# 构建与临时产物
+构建/
+输出/
+target/
+*.class
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 编辑器与系统文件
+.idea/
+*.iml
+Thumbs.db
+.DS_Store

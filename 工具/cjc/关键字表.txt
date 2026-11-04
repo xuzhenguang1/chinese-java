@@ -1,0 +1,110 @@
+# 中文 Java 关键字表 v1.4（51 个英文关键字 / 235 个中文词 / 31 个类型别名）
+#
+# 格式：
+#   英文=[中文组名，…]  中文组名取自 近义词典.txt，Cjc 自动展开为整组近义词
+#   中文=英文           单个别名（兼容旧表）
+# 说明：
+#   1. 列表第一项为反译规范名；近义词统一维护在 近义词典.txt；
+#   2. 词典可在不改本表的情况下随时增删近义词（重新运行 cjc 即生效）；
+#   3. 中文关键字不得重复，英文关键字可以对应多个中文同义词；
+#   4. 中文关键字之间允许前缀关系（如「假」与「假如」），翻译按整词匹配；
+#   5. 只追加、不替换英文关键字，中文源码与英文库可混编。
+# 示例：public=[公有]  →  实际生效 公有、公开、公共、公用
+# 修改流程见 语言规范.md 第 8 节；同步原生补丁与编辑器词表用 工具\cjc\同步词表.ps1。
+
+# 类型与声明
+class=[类]
+interface=[接口]
+enum=[枚举]
+package=[包]
+import=[导入]
+new=[新建]
+extends=[继承]
+implements=[实现]
+this=[这]
+super=[父]
+
+# 修饰符
+public=[公有]
+private=[私有]
+protected=[保护]
+static=[静态]
+final=[最终]
+abstract=[抽象]
+synchronized=[同步]
+native=[原生]
+volatile=[易失]
+transient=[瞬态]
+strictfp=[严格浮点]
+
+# 流程控制
+if=[若]
+else=[否则]
+for=[对于]
+while=[当]
+do=[做]
+switch=[切换]
+case=[情形]
+default=[默认]
+break=[跳出]
+continue=[继续]
+return=[返回]
+instanceof=[是]
+try=[尝试]
+catch=[捕获]
+throw=[抛出]
+throws=[声明抛出]
+finally=[兜底]
+assert=[断言]
+
+# 类型别名（java.lang 常用类型与基本类型的包装类，不是 Java 关键字）
+# 写法与关键字相同；转译时整词替换，如 映射<字符串, 整数包装> → 映射<String, Integer>。
+# 包装类统一用「X包装」命名，避开已被基本类型占用的「整型/字节型/浮点型/双浮点型」等近义词。
+# 原生补丁只接受 Java 关键字，同步词表.ps1 不会把这一节写入 Tokens.java。
+String=[字符串]
+Object=[对象]
+Integer=[整数包装]
+Long=[长整数包装]
+Short=[短整数包装]
+Byte=[字节包装]
+Float=[浮点包装]
+Double=[双浮点包装]
+Boolean=[布尔包装]
+Character=[字符包装]
+
+# 常用 Java 类与异常（按类型别名处理：整词替换，不能再用作变量名/方法名）
+List=[清单]
+ArrayList=[数组清单]
+Map=[键值表]
+LinkedHashMap=[链式键值表]
+StringBuilder=[文本构建器]
+Path=[文件路径]
+Scanner=[扫描器]
+Comparable=[可比较]
+Override=[覆写]
+ExecutorService=[线程池对象]
+Future=[异步结果]
+Logger=[日志记录器]
+IOException=[输入输出异常]
+InterruptedException=[中断异常]
+ExecutionException=[执行异常]
+IllegalArgumentException=[非法参数异常]
+NumberFormatException=[数字格式异常]
+NullPointerException=[空指针异常]
+ArrayIndexOutOfBoundsException=[数组越界异常]
+ArithmeticException=[算术异常]
+Optional=[可选值]
+
+# 类型与字面量
+int=[整数]
+long=[长整数]
+short=[短整数]
+byte=[字节]
+float=[浮点]
+double=[双浮点]
+char=[字符]
+boolean=[布尔]
+void=[无]
+null=[空]
+true=[真]
+false=[假]
