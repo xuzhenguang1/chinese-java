@@ -80,6 +80,57 @@ if ($译后 -match '数值\.转文本' -and $译后 -match '文本\.格式化') 
     Write-Host "标准库类名白名单：标准库类名后的中文方法被成员糖改写" -ForegroundColor Red
 }
 
+# 2.7) 简化糖：增强 for 省类型、集合工厂（清单.从/集.从/键值表.从）、Stream 成员糖与收集器
+$简化输出 = & "$root\工具\对话\运行.ps1" "$root\示例\集合与流.java" 2>&1 | Out-String
+if ($LASTEXITCODE -eq 0 -and $简化输出.Contains("张、李") -and $简化输出.Contains("转清单 2，转集 3")) {
+    Write-Host "简化糖（增强 for / 集合工厂 / Stream）：通过" -ForegroundColor Green
+} else {
+    $失败 += "简化糖"
+    Write-Host "简化糖：示例输出不符合预期" -ForegroundColor Red
+    Write-Host $简化输出
+}
+
+# 2.8) 计数循环糖：`重复 N 次 { … }` 与 `重复 N 次 (名) { … }`
+$重复输出 = & "$root\工具\对话\运行.ps1" "$root\示例\重复循环.java" 2>&1 | Out-String
+if ($LASTEXITCODE -eq 0 -and $重复输出.Contains("第 3 个：丙") -and $重复输出.Contains("合计 3")) {
+    Write-Host "计数循环（重复 N 次）：通过" -ForegroundColor Green
+} else {
+    $失败 += "计数循环"
+    Write-Host "计数循环：示例输出不符合预期" -ForegroundColor Red
+    Write-Host $重复输出
+}
+
+# 2.9) 新手易错提示：CJK101（字符串 ==）、CJK102（整理无参）、CJK103（读整数后读行）
+$提示目录 = Join-Path $root "构建\新手提示检查"
+if (Test-Path $提示目录) {
+    Remove-Item -Recurse -Force $提示目录
+}
+New-Item -ItemType Directory -Force $提示目录 | Out-Null
+@'
+字符串 甲 = "甲";
+字符串 乙 = "甲";
+若 (甲 == 乙) { 打印行("相等"); }
+清单<字符串> 名单 = 清单.从("甲");
+名单.整理();
+扫描器 输入 = 新建 扫描器(系统.标准输入);
+输入.读整数();
+字符串 行 = 输入.读行();
+'@ | Set-Content -Path (Join-Path $提示目录 "新手提示.java") -Encoding UTF8
+$偏好 = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    $提示输出 = (& "$root\cjc.ps1" 检查 $提示目录 2>&1 | Out-String)
+} finally {
+    $ErrorActionPreference = $偏好
+}
+if ($提示输出 -match 'CJK101' -and $提示输出 -match 'CJK102' -and $提示输出 -match 'CJK103') {
+    Write-Host "新手易错提示（CJK101/102/103）：通过" -ForegroundColor Green
+} else {
+    $失败 += "新手易错提示"
+    Write-Host "新手易错提示：缺少 CJK101/CJK102/CJK103 之一" -ForegroundColor Red
+    Write-Host $提示输出
+}
+
 # 3) 标准库单元测试（surefire 匹配 *测试.java）
 if (-not (Get-Command mvn -ErrorAction SilentlyContinue)) {
     Write-Error "找不到 mvn，无法运行标准库测试"

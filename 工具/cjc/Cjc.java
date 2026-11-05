@@ -64,7 +64,7 @@ public class Cjc {
     static final Set<String> JAVA_LANG_TYPES = Set.of(
             "String", "Object",
             "Integer", "Long", "Short", "Byte", "Float", "Double", "Boolean", "Character",
-            "List", "ArrayList", "Map", "LinkedHashMap", "StringBuilder", "Path", "Comparable",
+            "List", "ArrayList", "Map", "LinkedHashMap", "Set", "HashSet", "HashMap", "StringBuilder", "Path", "Comparable",
             "Optional", "Scanner",
             "Override", "ExecutorService", "Future", "Logger",
             "IOException", "InterruptedException", "ExecutionException",
@@ -141,6 +141,13 @@ public class Cjc {
         MEMBER_CALLS.put("转绝对路径", "toAbsolutePath");
         MEMBER_CALLS.put("取上级", "getParent");
         MEMBER_CALLS.put("流", "stream");
+        // Stream 中间/终端操作：与 `流` 配套，避免学到 Stream 又掉回英文。
+        // `变换` 而不是 `映射`：`映射` 已是标准库类名（Map 包装），不再借作方法名。
+        MEMBER_CALLS.put("过滤", "filter");
+        MEMBER_CALLS.put("变换", "map");
+        MEMBER_CALLS.put("遍历", "forEach");
+        MEMBER_CALLS.put("去重", "distinct");
+        MEMBER_CALLS.put("收集", "collect");
         MEMBER_CALLS.put("找首个", "findFirst");
         MEMBER_CALLS.put("存在时", "ifPresent");
         MEMBER_CALLS.put("或", "orElse");
@@ -210,6 +217,14 @@ public class Cjc {
         STATIC_CALLS.put("系统.当前毫秒", "System.currentTimeMillis");
         STATIC_CALLS.put("系统.纳秒", "System.nanoTime");
         STATIC_CALLS.put("系统.退出", "System.exit");
+        // 集合工厂：`清单.从("甲", "乙")` → `List.of(...)`（JDK 9+，不可变集合）。
+        STATIC_CALLS.put("清单.从", "List.of");
+        STATIC_CALLS.put("键值表.从", "Map.of");
+        STATIC_CALLS.put("集.从", "Set.of");
+        // Stream 收集器：需要 java.util.stream.*（自动导入已补）。
+        STATIC_CALLS.put("收集器.转清单", "Collectors.toList");
+        STATIC_CALLS.put("收集器.转集", "Collectors.toSet");
+        STATIC_CALLS.put("收集器.拼接", "Collectors.joining");
     }
 
     public static void main(String[] args) throws IOException {
@@ -308,6 +323,7 @@ public class Cjc {
 
         int stickyErrors = checkSticky(files, identifierNames);
         int punctuationErrors = checkPunctuation(files);
+        int trapWarnings = checkBeginnerTraps(files);
         int totalErrors = stickyErrors + punctuationErrors;
         if (totalErrors > 0) {
             System.out.println();
@@ -318,6 +334,9 @@ public class Cjc {
         if (command.equals("检查")) {
             System.out.println("检查通过：" + files.size() + " 个文件（关键字 " + wordCount(false)
                     + " 条 + 类型别名 " + wordCount(true) + " 条，词典 " + DICT_GROUPS.size() + " 组）。");
+            if (trapWarnings > 0) {
+                System.out.println("另有 " + trapWarnings + " 处新手易错提示（仅建议，不影响编译）。");
+            }
             return;
         }
         if (command.equals("运行")) {
@@ -769,11 +788,11 @@ public class Cjc {
         List<Token> tokens = scan(text, false);
         boolean script = looksLikeScript(text, tokens);
         int lineOffset = 0;
-        // A3：文件里没有 导入 / 包 时，自动补 java.util.*、java.nio.file.* 与 java.io.*。
+        // A3：文件里没有 导入 / 包 时，自动补 java.util.*、java.nio.file.*、java.io.* 与 java.util.stream.*。
         // 不自动补 中文.标准库.*：标准库类名（文本、列表、映射）容易与用户变量同名。
         if (!hasImportOrPackage(tokens)) {
-            text = "导入 java.util.*;\n导入 java.nio.file.*;\n导入 java.io.*;\n" + text;
-            lineOffset = 3;
+            text = "导入 java.util.*;\n导入 java.nio.file.*;\n导入 java.io.*;\n导入 java.util.stream.*;\n" + text;
+            lineOffset = 4;
             tokens = scan(text, false);
         }
         if (script) {
@@ -1388,6 +1407,163 @@ public class Cjc {
         }
     }
 
+    // ------------------------------------------------------------------ 新手易错提示（不阻断编译）
+
+    /** 扫描三类新手常见错误并给出可操作建议；只提示，不计入错误、不影响退出码。 */
+    static int checkBeginnerTraps(List<SourceFile> files) {
+        int count = 0;
+        for (SourceFile sf : files) {
+            Set<String> stringVars = stringVariables(sf);
+            count += checkStringEquality(sf, stringVars);
+            count += checkSortWithoutComparator(sf);
+            count += checkReaderNewline(sf);
+        }
+        if (count > 0) {
+            System.out.println();
+            System.out.println("提示：共 " + count + " 处新手易错（不影响编译，建议按上面的建议改写）。");
+        }
+        return count;
+    }
+
+    /** 声明为字符串的变量名（`字符串 文本` / `String 文本`，含数组与参数）。 */
+    static Set<String> stringVariables(SourceFile sf) {
+        Set<String> names = new HashSet<>();
+        List<Token> tokens = sf.tokens;
+        for (int i = 0; i + 1 < tokens.size(); i++) {
+            Token t = tokens.get(i);
+            String english = t.kind == KIND_KEYWORD ? KEYWORDS.get(t.text) : null;
+            boolean isString = (english != null && english.equals("String"))
+                    || (t.kind == KIND_IDENTIFIER && "String".equals(t.text));
+            if (!isString) {
+                continue;
+            }
+            int j = i + 1;
+            while (j + 1 < tokens.size() && prevText(sf.original, tokens, j).equals("[")
+                    && prevText(sf.original, tokens, j + 1).equals("]")) {
+                j += 2;
+            }
+            if (j < tokens.size() && tokens.get(j).kind == KIND_IDENTIFIER) {
+                names.add(tokens.get(j).text);
+            }
+        }
+        return names;
+    }
+
+    static boolean isStringOperand(SourceFile sf, Token t, Set<String> stringVars) {
+        if (t.kind == KIND_IDENTIFIER) {
+            return stringVars.contains(t.text);
+        }
+        return t.kind == KIND_OTHER && t.text == null && sf.original.charAt(t.start) == '"';
+    }
+
+    static boolean isNullOperand(SourceFile sf, Token t) {
+        if (t.kind == KIND_KEYWORD && "null".equals(KEYWORDS.get(t.text))) {
+            return true;
+        }
+        String text = t.text != null ? t.text : sf.original.substring(t.start, t.end);
+        return "null".equals(text);
+    }
+
+    /** CJK101：字符串用 `==` 比较。 */
+    static int checkStringEquality(SourceFile sf, Set<String> stringVars) {
+        int count = 0;
+        List<Token> tokens = sf.tokens;
+        for (int i = 1; i + 2 < tokens.size(); i++) {
+            Token t = tokens.get(i);
+            // `==` 由两个单字符 token 组成：i 指向第一个 `=`，右操作数在 i+2
+            if (t.kind != KIND_OTHER || t.text != null || !sf.original.startsWith("==", t.start)) {
+                continue;
+            }
+            Token left = tokens.get(i - 1);
+            Token right = tokens.get(i + 2);
+            // `== 空` 判空是正确写法，不提示
+            if (isNullOperand(sf, left) || isNullOperand(sf, right)) {
+                continue;
+            }
+            if (!isStringOperand(sf, left, stringVars) || !isStringOperand(sf, right, stringVars)) {
+                continue;
+            }
+            String leftText = left.text != null ? left.text : "字面量";
+            String rightText = right.text != null ? right.text : "字面量";
+            reportTrap(sf, t, "CJK101",
+                    "字符串用「==」比较只比较引用，内容相同也可能判为 false。",
+                    "改用「" + leftText + ".等于(" + rightText + ")」；只有判空才写「== 空」。");
+            count++;
+        }
+        return count;
+    }
+
+    /** CJK102：`名单.整理()` 无参数，List.sort 需要比较器。 */
+    static int checkSortWithoutComparator(SourceFile sf) {
+        int count = 0;
+        List<Token> tokens = sf.tokens;
+        for (int i = 1; i + 2 < tokens.size(); i++) {
+            Token t = tokens.get(i);
+            if (t.kind != KIND_IDENTIFIER || !"整理".equals(t.text)) {
+                continue;
+            }
+            if (!prevText(sf.original, tokens, i - 1).equals(".")
+                    || !prevText(sf.original, tokens, i + 1).equals("(")
+                    || !prevText(sf.original, tokens, i + 2).equals(")")) {
+                continue;
+            }
+            String receiver = i >= 2 ? prevText(sf.original, tokens, i - 2) : "名单";
+            reportTrap(sf, t, "CJK102",
+                    "「" + receiver + ".整理()」没有参数，List.sort 必须有比较器，这样写编译会失败。",
+                    "改写为「集合助手.排序(" + receiver + ")」（按自然顺序），或「" + receiver + ".整理(比较器)」。");
+            count++;
+        }
+        return count;
+    }
+
+    /** CJK103：`读整数()` 后紧跟 `读行()`，行尾换行会被当成空行读走。 */
+    static int checkReaderNewline(SourceFile sf) {
+        int count = 0;
+        List<Token> tokens = sf.tokens;
+        Set<String> intReaders = Set.of("读整数", "读长整数", "读双浮点");
+        Map<String, String> lastIntRead = new LinkedHashMap<>(); // 接收者 → 上一个读数值的方法名
+        for (int i = 1; i + 1 < tokens.size(); i++) {
+            Token t = tokens.get(i);
+            if (t.kind != KIND_IDENTIFIER || t.text == null
+                    || !prevText(sf.original, tokens, i + 1).equals("(")) {
+                continue;
+            }
+            boolean isInt = intReaders.contains(t.text);
+            boolean isLine = "读行".equals(t.text);
+            if (!isInt && !isLine) {
+                continue;
+            }
+            String receiver = prevText(sf.original, tokens, i - 1).equals(".") && i >= 2
+                    ? prevText(sf.original, tokens, i - 2) : "";
+            if (isInt) {
+                lastIntRead.put(receiver, t.text);
+                continue;
+            }
+            String previous = lastIntRead.remove(receiver);
+            if (previous != null) {
+                String owner = receiver.isEmpty() ? "输入" : receiver;
+                reportTrap(sf, t, "CJK103",
+                        "「" + previous + "()」不会消耗行尾换行，紧随的「读行()」会先读到空行，看起来像跳过了一行输入。",
+                        "在「" + previous + "()」之后补一句「" + owner + ".读行();」，或统一用「读行() + 整数包装.解析(...)」。");
+                count++;
+            }
+        }
+        return count;
+    }
+
+    static void reportTrap(SourceFile sf, Token token, String code, String problem, String suggestion) {
+        int lineIndex = lineOf(sf.origLineStarts, token.start);
+        int wrappedLine = lineIndex + 1;
+        int line = wrappedLine - sf.lineOffset;  // 脚本模式：换算回正文行号
+        int col = token.start - sf.origLineStarts[lineIndex];
+        System.out.println();
+        System.out.println("提示 " + code + "  第" + line + "行 第" + (col + 1) + "列");
+        System.out.println("  " + problem);
+        System.out.println("  建议：" + suggestion);
+        System.out.println("    " + String.format("%4d", line) + " | "
+                + lineText(sf.original, sf.origLineStarts, wrappedLine));
+    }
+
     // ------------------------------------------------------------------ 翻译
 
     static String translate(SourceFile sf) {
@@ -1597,6 +1773,88 @@ public class Cjc {
             }
         }
 
+        // 增强 for 省略类型：`对于 (名 : 名单)` → `for (var 名 : 名单)`。
+        // 只认 `for (` 之后是「单个标识符 + 冒号」的形式：带类型的写法首 token 是类型别名
+        // （按关键字处理），传统三段式 for 的标识符后是 `=`，都不会命中。
+        boolean[] insertForVar = new boolean[tokens.size()];
+        for (int idx = 0; idx + 3 < tokens.size(); idx++) {
+            Token f = tokens.get(idx);
+            if (f.kind != KIND_KEYWORD || !"for".equals(KEYWORDS.get(f.text))) {
+                continue;
+            }
+            if (!prevText(sf.original, tokens, idx + 1).equals("(")) {
+                continue;
+            }
+            if (tokens.get(idx + 2).kind != KIND_IDENTIFIER) {
+                continue;
+            }
+            if (prevText(sf.original, tokens, idx + 3).equals(":")) {
+                insertForVar[idx + 2] = true;
+            }
+        }
+
+        // 计数循环糖：`重复 3 次 { … }` → `for (int 序号 = 1; 序号 <= 3; 序号++) { … }`。
+        // 默认循环变量名 `序号`；写成 `重复 3 次 (名) {` 可自选变量名，避免与同名变量冲突。
+        // 只认语句开头的 `重复`，且「次数」后必须紧跟 `{`；次数表达式原样交给 translateFragment 转译。
+        boolean[] repeatStart = new boolean[tokens.size()];
+        int[] repeatEnd = new int[tokens.size()];
+        String[] repeatHeader = new String[tokens.size()];
+        for (int idx = 0; idx < tokens.size(); idx++) {
+            Token t = tokens.get(idx);
+            if (t.kind != KIND_IDENTIFIER || !"重复".equals(t.text)) {
+                continue;
+            }
+            if (idx > 0) {
+                String prev = prevText(sf.original, tokens, idx - 1);
+                if (!(prev.equals("{") || prev.equals("}") || prev.equals(";") || prev.equals(":"))) {
+                    continue;
+                }
+            }
+            // 找同层的 `次`：括号内的 `次` 不算（次数表达式里可能带括号）
+            int depth = 0;
+            int ci = -1;
+            for (int j = idx + 1; j < tokens.size(); j++) {
+                String s = prevText(sf.original, tokens, j);
+                if (s.equals("{")) {
+                    break;
+                }
+                if (s.equals("(") || s.equals("[")) {
+                    depth++;
+                } else if (s.equals(")") || s.equals("]")) {
+                    depth--;
+                    if (depth < 0) {
+                        break;
+                    }
+                } else if (depth == 0 && tokens.get(j).kind == KIND_IDENTIFIER && "次".equals(tokens.get(j).text)) {
+                    ci = j;
+                    break;
+                }
+            }
+            if (ci < 0 || ci == idx + 1) {
+                continue;
+            }
+            String expression = sf.original.substring(tokens.get(idx + 1).start, tokens.get(ci).start).trim();
+            if (expression.isEmpty()) {
+                continue;
+            }
+            String name = "序号";
+            int headerEnd = ci;
+            if (ci + 1 < tokens.size() && prevText(sf.original, tokens, ci + 1).equals("(")
+                    && ci + 3 < tokens.size() && tokens.get(ci + 2).kind == KIND_IDENTIFIER
+                    && prevText(sf.original, tokens, ci + 3).equals(")")) {
+                name = tokens.get(ci + 2).text;
+                headerEnd = ci + 3;
+            }
+            if (headerEnd + 1 >= tokens.size()
+                    || !prevText(sf.original, tokens, headerEnd + 1).equals("{")) {
+                continue;
+            }
+            repeatStart[idx] = true;
+            repeatEnd[idx] = headerEnd;
+            repeatHeader[idx] = "for (int " + name + " = 1; " + name + " <= "
+                    + translateFragment(expression, declared) + "; " + name + "++)";
+        }
+
         // 中文属性 `长度`：`数组.长度` → `数组.length`（方法调用 `字符串.长度()` 同样适用）。
         // 只认 `.` 之后的位置，名为 `长度` 的变量与字段声明不受影响。
         boolean[] renameLength = new boolean[tokens.size()];
@@ -1658,10 +1916,12 @@ public class Cjc {
         }
 
         // 中文成员方法：`名称.加入(…)` → `名称.add(…)`，只认 `.` 之后且后接 `(`。
+        // `.` 之后是成员名上下文，即使该词同时是关键字近义词（如 `遍历` 是 for 的近义词）
+        // 也按成员糖处理：Java 不允许用关键字作方法名，这样写唯一合理的解释就是成员糖。
         boolean[] callMember = new boolean[tokens.size()];
         for (int idx = 1; idx + 1 < tokens.size(); idx++) {
             Token t = tokens.get(idx);
-            if (t.kind != KIND_IDENTIFIER || !MEMBER_CALLS.containsKey(t.text)) {
+            if ((t.kind != KIND_IDENTIFIER && t.kind != KIND_KEYWORD) || !MEMBER_CALLS.containsKey(t.text)) {
                 continue;
             }
             if (!prevText(sf.original, tokens, idx - 1).equals(".")) {
@@ -1702,12 +1962,25 @@ public class Cjc {
         for (int idx = 0; idx < tokens.size(); idx++) {
             Token t = tokens.get(idx);
             if (skip[idx]) {
-                // 关键字已在前面的名称处输出，连同它与名称之间的空白一起跳过
-                cursor = t.end;
+                // 关键字已在前面的名称处输出，连同它与名称之间的空白一起跳过。
+                // 用 max 避免把 cursor 往回退（区域整体替换时 cursor 已越过后续 token）。
+                cursor = Math.max(cursor, t.end);
                 continue;
             }
             if (t.start > cursor) {
                 sb.append(sf.original, cursor, t.start);
+            }
+            if (repeatStart[idx]) {
+                // 计数循环：整段头部换成一个 for 语句，次数表达式已单独转译
+                int genStart = sb.length();
+                sb.append(repeatHeader[idx]);
+                pending.add(new int[]{t.start, tokens.get(repeatEnd[idx]).end - t.start,
+                        genStart, sb.length() - genStart});
+                cursor = tokens.get(repeatEnd[idx]).end;
+                for (int k = idx + 1; k <= repeatEnd[idx]; k++) {
+                    skip[k] = true;
+                }
+                continue;
             }
             if (staticCall[idx] != null) {
                 int genStart = sb.length();
@@ -1813,6 +2086,12 @@ public class Cjc {
                 int genStart = sb.length();
                 sb.append("void ");
                 pending.add(new int[]{t.start, 0, genStart, 5});
+            }
+            if (insertForVar[idx]) {
+                // 增强 for 省略了类型，补一个 `var `；原长度按 0 登记
+                int genStart = sb.length();
+                sb.append("var ");
+                pending.add(new int[]{t.start, 0, genStart, 4});
             }
             if (t.kind == KIND_KEYWORD) {
                 String english = KEYWORDS.get(t.text);
@@ -1980,7 +2259,7 @@ public class Cjc {
                 i = consumeTo;
                 continue;
             }
-            if (t.kind == KIND_IDENTIFIER && MEMBER_CALLS.containsKey(t.text)
+            if ((t.kind == KIND_IDENTIFIER || t.kind == KIND_KEYWORD) && MEMBER_CALLS.containsKey(t.text)
                     && i > 0 && prevText(expr, tokens, i - 1).equals(".")
                     && i + 1 < tokens.size() && prevText(expr, tokens, i + 1).equals("(")
                     && !isStdlibReceiver(tokens, expr, i - 2, declared)) {

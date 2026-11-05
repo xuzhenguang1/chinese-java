@@ -863,6 +863,18 @@
                   "LinkedHashMap",
                   "保持插入顺序的键值表（java.util.LinkedHashMap）"
               ],
+    "集":  [
+              "Set",
+              "去重集合接口（java.util.Set）"
+          ],
+    "散列集":  [
+                "HashSet",
+                "散列去重集合（java.util.HashSet）"
+            ],
+    "哈希表":  [
+                "HashMap",
+                "散列键值表（java.util.HashMap）"
+            ],
     "文本构建器":  [
                   "StringBuilder",
                   "可变文本构建器（java.lang.StringBuilder）"
