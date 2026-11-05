@@ -34,6 +34,11 @@ function 运行([string]$说明, [scriptblock]$动作) {
     }
 }
 
+# 0) 版本单一源：工具\版本.json 与各文件中的版本号必须一致
+运行 "版本一致性检查" {
+    & "$root\工具\发布\同步版本.ps1"
+}
+
 # 1) 词表单源同步校验（关键字表 + 近义词典 → 原生补丁 / VSCode 数据 / 高亮正则）
 运行 "词表同步检查" {
     & "$root\工具\cjc\同步词表.ps1" -检查
@@ -100,7 +105,7 @@ if ($LASTEXITCODE -eq 0 -and $重复输出.Contains("第 3 个：丙") -and $重
     Write-Host $重复输出
 }
 
-# 2.9) 新手易错提示：CJK101（字符串 ==）、CJK102（整理无参）、CJK103（读整数后读行）
+# 2.9) 新手易错提示：CJK101–CJK105
 $提示目录 = Join-Path $root "构建\新手提示检查"
 if (Test-Path $提示目录) {
     Remove-Item -Recurse -Force $提示目录
@@ -115,6 +120,8 @@ New-Item -ItemType Directory -Force $提示目录 | Out-Null
 扫描器 输入 = 新建 扫描器(系统.标准输入);
 输入.读整数();
 字符串 行 = 输入.读行();
+对于 (整数 序号 = 0; 序号 <= 名单.元素数(); 序号++) { 打印行(名单.取出(序号)); }
+整数 平均 = 5 / 2;
 '@ | Set-Content -Path (Join-Path $提示目录 "新手提示.java") -Encoding UTF8
 $偏好 = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
@@ -123,12 +130,37 @@ try {
 } finally {
     $ErrorActionPreference = $偏好
 }
-if ($提示输出 -match 'CJK101' -and $提示输出 -match 'CJK102' -and $提示输出 -match 'CJK103') {
-    Write-Host "新手易错提示（CJK101/102/103）：通过" -ForegroundColor Green
+if ($提示输出 -match 'CJK101' -and $提示输出 -match 'CJK102' -and $提示输出 -match 'CJK103' -and $提示输出 -match 'CJK104' -and $提示输出 -match 'CJK105') {
+    Write-Host "新手易错提示（CJK101–105）：通过" -ForegroundColor Green
 } else {
     $失败 += "新手易错提示"
-    Write-Host "新手易错提示：缺少 CJK101/CJK102/CJK103 之一" -ForegroundColor Red
+    Write-Host "新手易错提示：缺少 CJK101–CJK105 之一" -ForegroundColor Red
     Write-Host $提示输出
+}
+
+# 2.10) 语法糖 `否则若 (` → `else if (`
+$否则若目录 = Join-Path $root "构建\否则若检查"
+if (Test-Path $否则若目录) {
+    Remove-Item -Recurse -Force $否则若目录
+}
+New-Item -ItemType Directory -Force $否则若目录 | Out-Null
+@'
+整数 分数 = 75;
+若 (分数 >= 90) {
+    打印行("优秀");
+} 否则若 (分数 >= 60) {
+    打印行("中等");
+} 否则 {
+    打印行("待努力");
+}
+'@ | Set-Content -Path (Join-Path $否则若目录 "否则若检查.java") -Encoding UTF8
+$否则若输出 = & "$root\工具\对话\运行.ps1" (Join-Path $否则若目录 "否则若检查.java") 2>&1 | Out-String
+if ($LASTEXITCODE -eq 0 -and $否则若输出.Contains("中等")) {
+    Write-Host "语法糖（否则若）：通过" -ForegroundColor Green
+} else {
+    $失败 += "语法糖否则若"
+    Write-Host "语法糖否则若：运行失败或输出不符合预期" -ForegroundColor Red
+    Write-Host $否则若输出
 }
 
 # 3) 标准库单元测试（surefire 匹配 *测试.java）

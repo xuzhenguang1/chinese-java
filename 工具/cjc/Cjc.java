@@ -117,6 +117,10 @@ public class Cjc {
         MEMBER_CALLS.put("取子串", "substring");
         MEMBER_CALLS.put("拆分", "split");
         MEMBER_CALLS.put("复读", "repeat");
+        MEMBER_CALLS.put("取字符", "charAt");
+        MEMBER_CALLS.put("全空白", "isBlank");
+        MEMBER_CALLS.put("替换全部", "replaceAll");
+        MEMBER_CALLS.put("转字符数组", "toCharArray");
         MEMBER_CALLS.put("加入", "add");
         MEMBER_CALLS.put("取出", "get");
         MEMBER_CALLS.put("设定", "set");
@@ -1282,11 +1286,36 @@ public class Cjc {
 
     // ------------------------------------------------------------------ 空格硬约束检查
 
+    /** 语法糖 `否则若`：紧跟 `(`，且位于语句开头或 `}` / `;` / `{` 之后。 */
+    static boolean isElseIfSugar(SourceFile sf, int idx) {
+        List<Token> tokens = sf.tokens;
+        if (idx < 0 || idx >= tokens.size()) {
+            return false;
+        }
+        Token t = tokens.get(idx);
+        if (t.kind != KIND_IDENTIFIER || !"否则若".equals(t.text)) {
+            return false;
+        }
+        if (idx + 1 >= tokens.size() || !prevText(sf.original, tokens, idx + 1).equals("(")) {
+            return false;
+        }
+        if (idx == 0) {
+            return true;
+        }
+        String prev = prevText(sf.original, tokens, idx - 1);
+        return prev.equals("}") || prev.equals(";") || prev.equals("{");
+    }
+
     static int checkSticky(List<SourceFile> files, Set<String> identifierNames) {
         int count = 0;
         for (SourceFile sf : files) {
-            for (Token t : sf.tokens) {
+            for (int ti = 0; ti < sf.tokens.size(); ti++) {
+                Token t = sf.tokens.get(ti);
                 if (t.kind != KIND_IDENTIFIER) {
+                    continue;
+                }
+                // `否则若 (` 是合法语法糖，不算关键字粘连
+                if (isElseIfSugar(sf, ti)) {
                     continue;
                 }
                 String keyword = null;
@@ -1409,7 +1438,7 @@ public class Cjc {
 
     // ------------------------------------------------------------------ 新手易错提示（不阻断编译）
 
-    /** 扫描三类新手常见错误并给出可操作建议；只提示，不计入错误、不影响退出码。 */
+    /** 扫描五类新手常见错误并给出可操作建议；只提示，不计入错误、不影响退出码。 */
     static int checkBeginnerTraps(List<SourceFile> files) {
         int count = 0;
         for (SourceFile sf : files) {
@@ -1417,6 +1446,8 @@ public class Cjc {
             count += checkStringEquality(sf, stringVars);
             count += checkSortWithoutComparator(sf);
             count += checkReaderNewline(sf);
+            count += checkLoopBound(sf);
+            count += checkIntegerDivision(sf, intVariables(sf));
         }
         if (count > 0) {
             System.out.println();
@@ -1485,10 +1516,11 @@ public class Cjc {
             }
             String leftText = left.text != null ? left.text : "字面量";
             String rightText = right.text != null ? right.text : "字面量";
-            reportTrap(sf, t, "CJK101",
+            if (reportTrap(sf, t, "CJK101",
                     "字符串用「==」比较只比较引用，内容相同也可能判为 false。",
-                    "改用「" + leftText + ".等于(" + rightText + ")」；只有判空才写「== 空」。");
-            count++;
+                    "改用「" + leftText + ".等于(" + rightText + ")」；只有判空才写「== 空」。")) {
+                count++;
+            }
         }
         return count;
     }
@@ -1508,10 +1540,11 @@ public class Cjc {
                 continue;
             }
             String receiver = i >= 2 ? prevText(sf.original, tokens, i - 2) : "名单";
-            reportTrap(sf, t, "CJK102",
+            if (reportTrap(sf, t, "CJK102",
                     "「" + receiver + ".整理()」没有参数，List.sort 必须有比较器，这样写编译会失败。",
-                    "改写为「集合助手.排序(" + receiver + ")」（按自然顺序），或「" + receiver + ".整理(比较器)」。");
-            count++;
+                    "改写为「集合助手.排序(" + receiver + ")」（按自然顺序），或「" + receiver + ".整理(比较器)」。")) {
+                count++;
+            }
         }
         return count;
     }
@@ -1542,16 +1575,199 @@ public class Cjc {
             String previous = lastIntRead.remove(receiver);
             if (previous != null) {
                 String owner = receiver.isEmpty() ? "输入" : receiver;
-                reportTrap(sf, t, "CJK103",
+                if (reportTrap(sf, t, "CJK103",
                         "「" + previous + "()」不会消耗行尾换行，紧随的「读行()」会先读到空行，看起来像跳过了一行输入。",
-                        "在「" + previous + "()」之后补一句「" + owner + ".读行();」，或统一用「读行() + 整数包装.解析(...)」。");
+                        "在「" + previous + "()」之后补一句「" + owner + ".读行();」，或统一用「读行() + 整数包装.解析(...)」。")) {
+                    count++;
+                }
+            }
+        }
+        return count;
+    }
+
+    /** 行尾写了 `// 忽略提示`（可带代码）时，跳过该行提示。 */
+    static boolean trapSuppressed(SourceFile sf, Token token) {
+        int lineIndex = lineOf(sf.origLineStarts, token.start);
+        int wrappedLine = lineIndex + 1;
+        return lineText(sf.original, sf.origLineStarts, wrappedLine).contains("忽略提示");
+    }
+
+    /** CJK104：`for` / `当` 的条件里 `<= 集合.元素数()` / `<= 数组.长度` 会多走一轮。 */
+    static int checkLoopBound(SourceFile sf) {
+        int count = 0;
+        List<Token> tokens = sf.tokens;
+        for (int i = 0; i + 1 < tokens.size(); i++) {
+            Token t = tokens.get(i);
+            if (t.kind != KIND_KEYWORD) {
+                continue;
+            }
+            String english = KEYWORDS.get(t.text);
+            boolean isFor = "for".equals(english);
+            boolean isWhile = "while".equals(english);
+            if (!isFor && !isWhile) {
+                continue;
+            }
+            if (!prevText(sf.original, tokens, i + 1).equals("(")) {
+                continue;
+            }
+            List<Integer> semicolons = new ArrayList<>();
+            int depth = 1;
+            int close = -1;
+            for (int j = i + 2; j < tokens.size(); j++) {
+                String s = prevText(sf.original, tokens, j);
+                if (s.equals("(") || s.equals("[") || s.equals("{")) {
+                    depth++;
+                } else if (s.equals(")") || s.equals("]") || s.equals("}")) {
+                    depth--;
+                    if (depth == 0) {
+                        close = j;
+                        break;
+                    }
+                } else if (depth == 1 && s.equals(";") && isFor) {
+                    semicolons.add(j);
+                }
+            }
+            if (close < 0) {
+                continue;
+            }
+            int start = i + 2;
+            int end = close;
+            if (isFor) {
+                if (semicolons.size() < 2) {
+                    continue;
+                }
+                start = semicolons.get(0) + 1;
+                end = semicolons.get(1);
+            }
+            for (int j = start; j + 2 < end; j++) {
+                Token lt = tokens.get(j);
+                if (!prevText(sf.original, tokens, j).equals("<")
+                        || !sf.original.startsWith("<=", lt.start)) {
+                    continue;
+                }
+                String expr = sf.original.substring(tokens.get(j + 2).start,
+                        tokens.get(end - 1).end).trim();
+                if (!expr.matches("^\\S+(\\.长度|\\.元素数\\(\\))$")) {
+                    continue;
+                }
+                if (reportTrap(sf, lt, "CJK104",
+                        "循环条件「… <= " + expr + "」会多走一轮，取下标时最后一次越界。",
+                        "把「<=」改成「<」（0 起始取下标）；确实要包含末尾时写「<= " + expr + " - 1」。")) {
+                    count++;
+                }
+                break;
+            }
+        }
+        return count;
+    }
+
+    /** 声明为整数 / 长整数的变量名（跳过数组声明）。 */
+    static Set<String> intVariables(SourceFile sf) {
+        Set<String> names = new HashSet<>();
+        List<Token> tokens = sf.tokens;
+        for (int i = 0; i + 1 < tokens.size(); i++) {
+            Token t = tokens.get(i);
+            String english = t.kind == KIND_KEYWORD ? KEYWORDS.get(t.text) : null;
+            boolean isIntType = (english != null && (english.equals("int") || english.equals("long")))
+                    || (t.kind == KIND_IDENTIFIER && ("int".equals(t.text) || "long".equals(t.text)));
+            if (!isIntType) {
+                continue;
+            }
+            int j = i + 1;
+            if (prevText(sf.original, tokens, j).equals("[")) {
+                continue;
+            }
+            if (tokens.get(j).kind == KIND_IDENTIFIER) {
+                names.add(tokens.get(j).text);
+            }
+        }
+        return names;
+    }
+
+    /** CJK105：`/` 两侧都是整数（字面量或声明为整数 / 长整数的变量）。 */
+    static int checkIntegerDivision(SourceFile sf, Set<String> intVars) {
+        int count = 0;
+        List<Token> tokens = sf.tokens;
+        for (int i = 1; i + 1 < tokens.size(); i++) {
+            Token t = tokens.get(i);
+            if (t.kind != KIND_OTHER || t.text != null || sf.original.charAt(t.start) != '/') {
+                continue;
+            }
+            if (sf.original.startsWith("/=", t.start)) {
+                continue;
+            }
+            if (!isIntegerOperand(sf, tokens.get(i - 1), intVars)
+                    || !isIntegerOperand(sf, tokens.get(i + 1), intVars)) {
+                continue;
+            }
+            // `(双浮点) 甲 / 乙` 已被显式转成浮点，不会截断
+            if (isFloatCastBefore(sf, tokens, i - 1)) {
+                continue;
+            }
+            if (reportTrap(sf, t, "CJK105",
+                    "整数相除会丢弃小数部分：5 / 2 得 2，而不是 2.5。",
+                    "需要小数结果时把其中一个操作数写成小数（5.0 / 2），或先转成双浮点：(双浮点) 被除数 / 除数。")) {
                 count++;
             }
         }
         return count;
     }
 
-    static void reportTrap(SourceFile sf, Token token, String code, String problem, String suggestion) {
+    /** 操作数前紧跟 `(双浮点)` / `(float)` 之类的强制转换。 */
+    static boolean isFloatCastBefore(SourceFile sf, List<Token> tokens, int idx) {
+        if (idx < 2 || !prevText(sf.original, tokens, idx - 1).equals(")")) {
+            return false;
+        }
+        int depth = 1;
+        for (int j = idx - 2; j >= 0; j--) {
+            String s = prevText(sf.original, tokens, j);
+            if (s.equals(")")) {
+                depth++;
+            } else if (s.equals("(")) {
+                depth--;
+                if (depth == 0) {
+                    for (int k = j + 1; k <= idx - 2; k++) {
+                        String text = prevText(sf.original, tokens, k);
+                        String english = tokens.get(k).kind == KIND_KEYWORD ? KEYWORDS.get(text) : null;
+                        if ("双浮点".equals(text) || "浮点".equals(text)
+                                || "double".equals(english) || "float".equals(english)
+                                || "double".equals(text) || "float".equals(text)) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            } else if (s.equals(";") || s.equals("{") || s.equals("}")) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    static boolean isIntegerOperand(SourceFile sf, Token t, Set<String> intVars) {
+        if (t.kind == KIND_IDENTIFIER) {
+            return intVars.contains(t.text);
+        }
+        if (t.kind != KIND_OTHER || t.text != null) {
+            return false;
+        }
+        String raw = sf.original.substring(t.start, t.end);
+        if (raw.isEmpty() || !Character.isDigit(raw.charAt(0))) {
+            return false;
+        }
+        for (int i = 0; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            if (c == '.' || c == 'e' || c == 'E' || c == 'f' || c == 'F' || c == 'd' || c == 'D') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static boolean reportTrap(SourceFile sf, Token token, String code, String problem, String suggestion) {
+        if (trapSuppressed(sf, token)) {
+            return false;
+        }
         int lineIndex = lineOf(sf.origLineStarts, token.start);
         int wrappedLine = lineIndex + 1;
         int line = wrappedLine - sf.lineOffset;  // 脚本模式：换算回正文行号
@@ -1562,6 +1778,7 @@ public class Cjc {
         System.out.println("  建议：" + suggestion);
         System.out.println("    " + String.format("%4d", line) + " | "
                 + lineText(sf.original, sf.origLineStarts, wrappedLine));
+        return true;
     }
 
     // ------------------------------------------------------------------ 翻译
@@ -1870,6 +2087,14 @@ public class Cjc {
             }
         }
 
+        // 语法糖 `否则若 (`：`否则` + `若` 粘连成一个标识符，这里整体还原成 `else if`。
+        boolean[] renameElseIf = new boolean[tokens.size()];
+        for (int idx = 0; idx < tokens.size(); idx++) {
+            if (isElseIfSugar(sf, idx)) {
+                renameElseIf[idx] = true;
+            }
+        }
+
         // 中文类名 `系统`：`系统.数组复制(...)` → `System.arraycopy(...)`。
         // 只认后接 `.` 的位置，名为 `系统` 的变量不受影响。
         boolean[] renameSystem = new boolean[tokens.size()];
@@ -2057,6 +2282,14 @@ public class Cjc {
                 int genStart = sb.length();
                 sb.append("length");
                 pending.add(new int[]{t.start, t.text.length(), genStart, 6});
+                cursor = t.end;
+                continue;
+            }
+            if (renameElseIf[idx]) {
+                // 语法糖 `否则若` → `else if`
+                int genStart = sb.length();
+                sb.append("else if");
+                pending.add(new int[]{t.start, t.text.length(), genStart, 7});
                 cursor = t.end;
                 continue;
             }

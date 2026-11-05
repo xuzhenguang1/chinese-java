@@ -1,14 +1,14 @@
 ﻿# 发布打包：构建标准库与 Maven 插件，打原生补丁，生成可分发的 zip。
 #
 # 用法：
-#   .\工具\发布\发布.ps1                         # 完整构建并打包（默认版本 1.4.0）
+#   .\工具\发布\发布.ps1                         # 完整构建并打包（版本默认读 工具\版本.json 的「发布」）
 #   .\工具\发布\发布.ps1 -版本 1.0.0 -跳过测试     # 跳过 JUnit
 #   .\工具\发布\发布.ps1 -跳过构建                # 仅用现有产物重新打包
 #   .\工具\发布\发布.ps1 -跳过原生                # 不构建路线 B 补丁类
 #
 # 产物：发布\中文Java-<版本>.zip
 param(
-    [string]$版本 = "1.4.0",
+    [string]$版本 = "",
     [switch]$跳过构建,
     [switch]$跳过测试,
     [switch]$跳过原生,
@@ -20,6 +20,17 @@ chcp 65001 | Out-Null
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $root = (Resolve-Path "$PSScriptRoot\..\..").Path
+
+# 版本默认从单一源读取，避免发布包与代码版本漂移
+if ([string]::IsNullOrWhiteSpace($版本)) {
+    $版本文件 = Join-Path $root "工具\版本.json"
+    if (-not (Test-Path $版本文件)) {
+        Write-Error "找不到版本源：$版本文件"
+        exit 2
+    }
+    $版本 = (Get-Content -LiteralPath $版本文件 -Raw -Encoding UTF8 | ConvertFrom-Json).发布
+}
+
 $发布目录 = Join-Path $root "发布"
 $暂存 = Join-Path $发布目录 "中文Java-$版本"
 $压缩包 = Join-Path $发布目录 "中文Java-$版本.zip"
@@ -82,9 +93,9 @@ New-Item -ItemType Directory -Force $暂存 | Out-Null
 复制 (Join-Path $root "README.md") $暂存
 复制 (Join-Path $root "CHANGELOG.md") $暂存
 复制 (Join-Path $root "语言规范.md") $暂存
+复制 (Join-Path $root "速查表.md") $暂存
 复制 (Join-Path $root "AGENTS.md") $暂存
-复制 (Join-Path $root "Java中文编程改造方案.md") $暂存
-复制 (Join-Path $root "对话式中文Java简化方案.md") $暂存
+复制 (Join-Path $root "文档\历史") (Join-Path $暂存 "文档\历史")
 $发布说明 = Join-Path $root "发布说明-$版本.md"
 if (Test-Path $发布说明) {
     Copy-Item $发布说明 $暂存 -Force
@@ -99,6 +110,7 @@ New-Item -ItemType Directory -Force (Join-Path $暂存 "工具\cjc") | Out-Null
 Copy-Item "$root\工具\cjc\Cjc.java", "$root\工具\cjc\关键字表.txt", "$root\工具\cjc\近义词典.txt", "$root\工具\cjc\词林.txt", "$root\工具\cjc\词典源.json", "$root\工具\cjc\词典源.py", "$root\工具\cjc\同步词表.ps1", "$root\工具\cjc\词典更新.ps1", "$root\工具\cjc\提交前检查.ps1" `
     (Join-Path $暂存 "工具\cjc") -Force
 
+复制 (Join-Path $root "工具\版本.json") (Join-Path $暂存 "工具")
 复制 (Join-Path $root "工具\原生补丁") (Join-Path $暂存 "工具\原生补丁")
 复制 (Join-Path $root "工具\对话") (Join-Path $暂存 "工具")
 

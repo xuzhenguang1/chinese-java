@@ -48,6 +48,10 @@ public class TranslateMojo extends AbstractMojo {
     @Parameter(property = "cjc.table", defaultValue = "${project.basedir}/工具/cjc/关键字表.txt")
     private File table;
 
+    /** 启用 `--允许推断`：允许中文源码使用 `令` / `常量` */
+    @Parameter(property = "cjc.allowInference", defaultValue = "false")
+    private boolean allowInference;
+
     @Parameter(property = "cjc.skip", defaultValue = "false")
     private boolean skip;
 
@@ -91,6 +95,9 @@ public class TranslateMojo extends AbstractMojo {
         command.add(out.toString());
         command.add("--表");
         command.add(table.getAbsolutePath());
+        if (allowInference) {
+            command.add("--允许推断");
+        }
 
         getLog().info("转译中文源码：" + sourceDirectory + " → " + out);
         int exitCode;

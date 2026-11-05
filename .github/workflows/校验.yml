@@ -1,0 +1,27 @@
+# 全量校验：与本地 `.\工具\发布\校验.ps1` 相同（不含原生补丁路线 B）。
+# 原生补丁与 JDK 内部源码绑定，托管 runner 上没有对应的 src.zip，留在本地用 `-含原生` 回归。
+name: 校验
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: 校验
+    runs-on: windows-latest
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: 全量校验
+        shell: pwsh
+        run: .\工具\发布\校验.ps1

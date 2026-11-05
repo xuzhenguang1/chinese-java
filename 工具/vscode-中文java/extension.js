@@ -44,6 +44,36 @@ function activate(context) {
         }
     }));
 
+    // Quick Fix：CJK001 在粘连处补空格；CJK104 把「<=」改成「<」
+    context.subscriptions.push(vscode.languages.registerCodeActionsProvider({ language: 'java' }, {
+        provideCodeActions(document, range, context) {
+            const actions = [];
+            for (const diagnostic of context.diagnostics) {
+                if (diagnostic.source !== 'cjc') {
+                    continue;
+                }
+                if (diagnostic.code === 'CJK001') {
+                    const action = new vscode.CodeAction('在关键字后补空格', vscode.CodeActionKind.QuickFix);
+                    action.edit = new vscode.WorkspaceEdit();
+                    action.edit.insert(document.uri, diagnostic.range.start, ' ');
+                    action.diagnostics = [diagnostic];
+                    actions.push(action);
+                } else if (diagnostic.code === 'CJK104') {
+                    const start = diagnostic.range.start;
+                    const 行文本 = document.lineAt(start.line).text;
+                    if (行文本.substring(start.character, start.character + 2) === '<=') {
+                        const action = new vscode.CodeAction('把「<=」改成「<」', vscode.CodeActionKind.QuickFix);
+                        action.edit = new vscode.WorkspaceEdit();
+                        action.edit.replace(document.uri, new vscode.Range(start.line, start.character, start.line, start.character + 2), '<');
+                        action.diagnostics = [diagnostic];
+                        actions.push(action);
+                    }
+                }
+            }
+            return actions;
+        }
+    }, { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }));
+
     context.subscriptions.push(vscode.commands.registerCommand('cjc.runFile', async () => {
         const editor = vscode.window.activeTextEditor;
         if (!editor || !editor.document.fileName.endsWith('.java')) {
@@ -163,7 +193,8 @@ function parseDiagnostics(text, document) {
     const diagnostics = [];
 
     for (let i = 0; i < lines.length; i++) {
-        const match = /错误\s+(CJK\d{3})\s+第(\d+)行\s+第(\d+)列/.exec(lines[i]);
+        // `错误 CJK001/002` 是阻断编译的错误；`提示 CJK101–105` 只是新手建议，显示为警告
+        const match = /(错误|提示)\s+(CJK\d{3})\s+第(\d+)行\s+第(\d+)列/.exec(lines[i]);
         if (!match) {
             continue;
         }
@@ -185,16 +216,17 @@ function parseDiagnostics(text, document) {
             message = message ? message + ' ' + line : line;
         }
 
-        const lineNumber = Number(match[2]) - 1;
-        const column = Number(match[3]) - 1;
+        const lineNumber = Number(match[3]) - 1;
+        const column = Number(match[4]) - 1;
         const lineLength = lineNumber < document.lineCount ? document.lineAt(lineNumber).text.length : 0;
         const end = Math.min(lineLength, column + 1);
         const range = new vscode.Range(lineNumber, column, lineNumber, end);
 
-        const 描述 = message || match[1];
-        const diagnostic = new vscode.Diagnostic(range, suggestion ? `${描述}\n建议：${suggestion}` : 描述, vscode.DiagnosticSeverity.Error);
+        const 级别 = match[1] === '提示' ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error;
+        const 描述 = message || match[2];
+        const diagnostic = new vscode.Diagnostic(range, suggestion ? `${描述}\n建议：${suggestion}` : 描述, 级别);
         diagnostic.source = 'cjc';
-        diagnostic.code = match[1];
+        diagnostic.code = match[2];
         diagnostics.push(diagnostic);
     }
 

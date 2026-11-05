@@ -54,7 +54,7 @@
         "cjc.checkOnSave": {
           "type": "boolean",
           "default": true,
-          "description": "保存 .java 文件时运行 cjc 检查，显示 CJK001（空格粘连）与 CJK002（全角标点）诊断。"
+          "description": "保存 .java 文件时运行 cjc 检查：CJK001（空格粘连）与 CJK002（全角标点）显示为错误，CJK101–CJK103 新手提示显示为警告。"
         }
       }
     }
