@@ -1,3 +1,4 @@
+// JDK 快照，仅用于升级比对，不参与构建；生效文件是 工具\原生补丁\源码\com\sun\tools\javac\parser\Tokens.java
 /*
  * Copyright (c) 1999, 2025, Oracle and/or its affiliates. All rights reserved.
  * ORACLE PROPRIETARY/CONFIDENTIAL. Use is subject to license terms.

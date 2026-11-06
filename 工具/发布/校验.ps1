@@ -49,13 +49,138 @@ function 运行([string]$说明, [scriptblock]$动作) {
     & "$root\cjc.ps1" 检查 "$root\教程" "$root\示例" "$root\标准库\src" "--表" "$root\工具\cjc\关键字表.txt"
 }
 
-# 2.5) 关键字表表头版本必须与发布版本一致，避免文档与本表长期漂移
+# 2.5) 关键字表表头版本必须与 工具\版本.json 的「语言」一致，避免文档与本表长期漂移
 $tableHeader = (Get-Content "$root\工具\cjc\关键字表.txt" -TotalCount 1 -Encoding UTF8).Trim()
-if ($tableHeader -notmatch 'v1\.4') {
-    Write-Error "关键字表表头版本与发布不一致：$tableHeader（应为 v1.4）"
+$版本单一源 = Get-Content "$root\工具\版本.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+$语言版本 = [string]$版本单一源.语言
+if ($tableHeader -notmatch ("v" + [regex]::Escape($语言版本))) {
+    Write-Error "关键字表表头版本与发布不一致：$tableHeader（应为 v$语言版本）"
     exit 2
 }
 Write-Host "关键字表版本：$tableHeader"
+
+# 2.5.1) 词表计数必须与关键字表表头、README、AGENTS 一致，避免文档漂移
+$词表输出 = & "$root\cjc.ps1" 检查 "$root\示例" 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "词表计数检查无法运行 cjc：$词表输出"
+    exit 2
+}
+$计数匹配 = [regex]::Match($词表输出, '关键字 (\d+) 条 \+ 类型别名 (\d+) 条，词典 (\d+) 组')
+$表头匹配 = [regex]::Match($tableHeader, '(\d+) 个英文关键字 / (\d+) 个中文词 / (\d+) 个类型别名')
+if (-not $计数匹配.Success -or -not $表头匹配.Success) {
+    Write-Error "无法解析词表计数：表头=$tableHeader 输出=$词表输出"
+    exit 2
+}
+$中文词 = [int]$计数匹配.Groups[1].Value
+$类型别名 = [int]$计数匹配.Groups[2].Value
+$词典组 = [int]$计数匹配.Groups[3].Value
+$表头英文 = [int]$表头匹配.Groups[1].Value
+$表头中文 = [int]$表头匹配.Groups[2].Value
+$表头别名 = [int]$表头匹配.Groups[3].Value
+$表行 = Get-Content "$root\工具\cjc\关键字表.txt" -Encoding UTF8
+$别名起 = [array]::IndexOf($表行, '# 类型别名（java.lang 常用类型与基本类型的包装类，不是 Java 关键字）')
+$别名止 = [array]::IndexOf($表行, '# 类型与字面量')
+if ($别名起 -lt 0 -or $别名止 -lt 0) {
+    Write-Error "无法定位关键字表的类型别名区段"
+    exit 2
+}
+$英文集合 = New-Object 'System.Collections.Generic.HashSet[string]'
+for ($i = 0; $i -lt $表行.Length; $i++) {
+    if ($i -ge $别名起 -and $i -lt $别名止) { continue }
+    # 英文=[中文] 列表写法：英文在左
+    if ($表行[$i] -match '^([A-Za-z][A-Za-z0-9_-]*)\s*=\s*\[') { [void]$英文集合.Add($Matches[1]); continue }
+    # 中文=英文 单别名写法（record / sealed / permits / non-sealed / yield）：英文在右
+    if ($表行[$i] -match '^[^=]+\s*=\s*([A-Za-z][A-Za-z0-9_-]*)\s*$') { [void]$英文集合.Add($Matches[1]) }
+}
+$英文词 = $英文集合.Count
+$readme = Get-Content "$root\README.md" -Raw -Encoding UTF8
+$agents = Get-Content "$root\AGENTS.md" -Raw -Encoding UTF8
+if ($表头英文 -ne $英文词 -or $表头中文 -ne $中文词 -or $表头别名 -ne $类型别名) {
+    Write-Error "关键字表表头与实际不一致：表头 $表头英文/$表头中文/$表头别名，实际 $英文词/$中文词/$类型别名"
+    exit 2
+}
+if ($readme -notmatch "$英文词 个英文关键字" -or $readme -notmatch "$中文词 个中文词" -or $readme -notmatch "$类型别名 个类型别名") {
+    Write-Error "README 词表计数与关键字表不一致（应为 $英文词 / $中文词 / $类型别名）"
+    exit 2
+}
+if ($agents -notmatch "$中文词 个中文词" -or $agents -notmatch "$类型别名 个类型别名") {
+    Write-Error "AGENTS 词表计数与关键字表不一致（应为 $中文词 / $类型别名）"
+    exit 2
+}
+# 教程与语言规范：词数/组数同样只能来自词表，不能再手写一份
+$同步输出 = & "$root\工具\cjc\同步词表.ps1" -检查 2>&1 6>&1 | Out-String
+$同步匹配 = [regex]::Match($同步输出, '关键字 (\d+) 条 \+ 类型别名 (\d+) 条')
+if (-not $同步匹配.Success) {
+    Write-Error "无法解析同步词表计数：$同步输出"
+    exit 2
+}
+$词数 = [int]$同步匹配.Groups[1].Value
+$教程文档 = Get-Content "$root\教程\教程.md" -Raw -Encoding UTF8
+$规范文档 = Get-Content "$root\语言规范.md" -Raw -Encoding UTF8
+if ($教程文档 -notmatch "$词典组 组、$词数 词" -or $教程文档 -notmatch "$中文词 个中文词") {
+    Write-Error "教程词表计数与词表不一致（应为 $词典组 组、$词数 词 / $中文词 个中文词）"
+    exit 2
+}
+if ($规范文档 -notmatch "$词典组 组、$词数 词") {
+    Write-Error "语言规范词表计数与词表不一致（应为 $词典组 组、$词数 词）"
+    exit 2
+}
+Write-Host "词表计数：$英文词 个英文关键字 / $中文词 个中文词 / $类型别名 个类型别名 / 词典 $词典组 组 / $词数 词" -ForegroundColor Green
+
+# 2.5.2) 方法糖表单一源：Cjc 不再内置默认表，文件必须存在且四区非空，白名单恰为 11 个
+$糖表 = @{ 成员 = @(); 声明 = @(); 静态 = @(); 白名单 = @() }
+$糖分区 = $null
+$糖行号 = 0
+foreach ($糖行 in (Get-Content "$root\工具\cjc\方法糖.txt" -Encoding UTF8)) {
+    $糖行号++
+    $糖行修剪 = $糖行.Trim()
+    if ($糖行修剪 -eq '' -or $糖行修剪.StartsWith('#')) { continue }
+    if ($糖行修剪 -match '^\[(.+)\]$') {
+        $糖分区 = $Matches[1]
+        if (-not $糖表.ContainsKey($糖分区)) {
+            Write-Error "方法糖表第 $糖行号 行未知分区：[$糖分区]（只支持 [成员] / [声明] / [静态] / [白名单]）"
+            exit 2
+        }
+        continue
+    }
+    if ($null -eq $糖分区) {
+        Write-Error "方法糖表第 $糖行号 行不属于任何分区：$糖行修剪"
+        exit 2
+    }
+    $糖表[$糖分区] += $糖行修剪
+}
+foreach ($糖必需 in @('成员', '声明', '静态', '白名单')) {
+    if ($糖表[$糖必需].Count -eq 0) {
+        Write-Error "方法糖表分区 [$糖必需] 为空或缺失"
+        exit 2
+    }
+}
+$cjc源码 = Get-Content "$root\工具\cjc\Cjc.java" -Raw -Encoding UTF8
+foreach ($糖遗留 in @('MEMBER_CALLS.put(', 'MEMBER_DECLS.put(', 'STATIC_CALLS.put(')) {
+    if ($cjc源码.Contains($糖遗留)) {
+        Write-Error "Cjc.java 仍有内置方法糖初始化：$糖遗留（应全部改由 方法糖.txt 提供）"
+        exit 2
+    }
+}
+foreach ($糖条目 in ($糖表['成员'] + $糖表['声明'])) {
+    $糖英文 = ($糖条目 -split '=', 2)[1]
+    if ($糖英文 -notmatch '^[A-Za-z_$][A-Za-z0-9_$]*$') {
+        Write-Error "方法糖表英文不是合法标识符：$糖条目"
+        exit 2
+    }
+}
+foreach ($糖条目 in $糖表['静态']) {
+    $糖英文 = ($糖条目 -split '=', 2)[1]
+    if ($糖英文 -notmatch '^[A-Za-z_$][A-Za-z0-9_$]*(\.[A-Za-z_$][A-Za-z0-9_$]*)+$') {
+        Write-Error "方法糖表静态英文格式不正确：$糖条目"
+        exit 2
+    }
+}
+if ($糖表['白名单'].Count -ne 11) {
+    Write-Error "方法糖表白名单应为 11 个标准库类名，实际 $($糖表['白名单'].Count) 个"
+    exit 2
+}
+Write-Host "方法糖表：成员 $($糖表['成员'].Count) / 声明 $($糖表['声明'].Count) / 静态 $($糖表['静态'].Count) / 白名单 $($糖表['白名单'].Count)" -ForegroundColor Green
 
 # 2.6) 标准库类名白名单：`数值.转文本` / `文本.格式化` 不得被成员糖改写成英文方法名
 $白名单目录 = Join-Path $root "构建\白名单检查"
@@ -161,6 +286,268 @@ if ($LASTEXITCODE -eq 0 -and $否则若输出.Contains("中等")) {
     $失败 += "语法糖否则若"
     Write-Host "语法糖否则若：运行失败或输出不符合预期" -ForegroundColor Red
     Write-Host $否则若输出
+}
+
+# 2.11) 泛型实参自动包装：清单<整数> / 键值表<字符串, 双浮点> / 嵌套泛型
+$泛型输出 = & "$root\工具\对话\运行.ps1" "$root\示例\泛型基本类型.java" 2>&1 | Out-String
+if ($LASTEXITCODE -eq 0 -and $泛型输出.Contains("矩阵首行首列：1") -and $泛型输出.Contains("苹果单价：5.5")) {
+    Write-Host "泛型实参自动包装：通过" -ForegroundColor Green
+} else {
+    $失败 += "泛型实参自动包装"
+    Write-Host "泛型实参自动包装：运行失败或输出不符合预期" -ForegroundColor Red
+    Write-Host $泛型输出
+}
+
+# 2.12) `记录`（record）：自动 转文本 与访问器
+$记录输出 = & "$root\工具\对话\运行.ps1" "$root\教程\第33课记录.java" 2>&1 | Out-String
+if ($LASTEXITCODE -eq 0 -and $记录输出.Contains("学生[姓名=小明, 年龄=18]") -and $记录输出.Contains("小明，18 岁")) {
+    Write-Host "记录（record）：通过" -ForegroundColor Green
+} else {
+    $失败 += "记录 record"
+    Write-Host "记录（record）：运行失败或输出不符合预期" -ForegroundColor Red
+    Write-Host $记录输出
+}
+
+# 2.12b) `密封` / `许可` / `非密封` 与 `产出` / 切换表达式
+$密封输出 = & "$root\工具\对话\运行.ps1" "$root\教程\第34课密封类.java" 2>&1 | Out-String
+if ($LASTEXITCODE -eq 0 -and $密封输出.Contains("三角形面积：10.0")) {
+    Write-Host "密封类与许可：通过" -ForegroundColor Green
+} else {
+    $失败 += "密封类与许可"
+    Write-Host "密封类与许可：运行失败或输出不符合预期" -ForegroundColor Red
+    Write-Host $密封输出
+}
+$产出输出 = & "$root\工具\对话\运行.ps1" "$root\教程\第35课产出.java" 2>&1 | Out-String
+if ($LASTEXITCODE -eq 0 -and $产出输出.Contains("普通会员无折扣") -and $产出输出.Contains("金 会员折扣：0.8")) {
+    Write-Host "切换表达式与产出：通过" -ForegroundColor Green
+} else {
+    $失败 += "切换表达式与产出"
+    Write-Host "切换表达式与产出：运行失败或输出不符合预期" -ForegroundColor Red
+    Write-Host $产出输出
+}
+
+# 2.13) `检查 --含编译`：正例通过；反例（类型错误）必须退出码 1
+运行 "cjc 检查 --含编译（教程）" {
+    & "$root\cjc.ps1" 检查 --含编译 "$root\教程"
+}
+$编译反例目录 = Join-Path $root "构建\含编译反例"
+if (Test-Path $编译反例目录) {
+    Remove-Item -Recurse -Force $编译反例目录
+}
+New-Item -ItemType Directory -Force $编译反例目录 | Out-Null
+@'
+类 含编译反例 {
+    入口 {
+        整数 甲 = "文本";
+        打印行(甲);
+    }
+}
+'@ | Set-Content -Path (Join-Path $编译反例目录 "含编译反例.java") -Encoding UTF8
+$偏好 = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    $编译反例输出 = (& "$root\cjc.ps1" 检查 --含编译 $编译反例目录 2>&1 | Out-String)
+    $编译反例码 = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $偏好
+}
+if ($编译反例码 -eq 1 -and $编译反例输出 -match '类型不匹配' -and $编译反例输出 -match '第3行') {
+    Write-Host "检查 --含编译 反例：通过" -ForegroundColor Green
+} else {
+    $失败 += "检查 --含编译 反例"
+    Write-Host "检查 --含编译 反例：退出码或诊断不符合预期（期望 1 / 类型不匹配）" -ForegroundColor Red
+    Write-Host $编译反例输出
+}
+
+# 2.14) `数组清单.从(...)`：一行建可变清单
+$可变清单输出 = & "$root\工具\对话\运行.ps1" "$root\示例\可变清单工厂.java" 2>&1 | Out-String
+if ($LASTEXITCODE -eq 0 -and $可变清单输出.Contains("元素数 3：[甲, 乙, 丙]") -and $可变清单输出.Contains("嵌套 2 个：[甲, 戊]")) {
+    Write-Host "数组清单.从（可变清单）：通过" -ForegroundColor Green
+} else {
+    $失败 += "数组清单.从"
+    Write-Host "数组清单.从：运行失败或输出不符合预期" -ForegroundColor Red
+    Write-Host $可变清单输出
+}
+
+# 2.15) CJK106：`。` / `、` 自动纠正（退出码 0）；`--严格标点` 与弯引号仍按 CJK002 阻断
+$标点折叠输出 = & "$root\工具\对话\运行.ps1" "$root\示例\标点折叠.java" 2>&1 | Out-String
+if ($LASTEXITCODE -eq 0 -and $标点折叠输出.Contains("他说。好") -and $标点折叠输出.Contains("CJK106")) {
+    Write-Host "标点折叠（CJK106）：通过" -ForegroundColor Green
+} else {
+    $失败 += "标点折叠"
+    Write-Host "标点折叠：运行失败、输出缺失或未提示 CJK106" -ForegroundColor Red
+    Write-Host $标点折叠输出
+}
+$标点反例目录 = Join-Path $root "构建\标点折叠反例"
+if (Test-Path $标点反例目录) {
+    Remove-Item -Recurse -Force $标点反例目录
+}
+New-Item -ItemType Directory -Force $标点反例目录 | Out-Null
+@'
+打印行("你好")。
+'@ | Set-Content -Path (Join-Path $标点反例目录 "严格标点.java") -Encoding UTF8
+@'
+打印行(“引号”)。
+'@ | Set-Content -Path (Join-Path $标点反例目录 "弯引号.java") -Encoding UTF8
+$偏好 = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    $严格输出 = (& "$root\cjc.ps1" 检查 --严格标点 (Join-Path $标点反例目录 "严格标点.java") 2>&1 | Out-String)
+    $严格码 = $LASTEXITCODE
+    $引号输出 = (& "$root\cjc.ps1" 检查 (Join-Path $标点反例目录 "弯引号.java") 2>&1 | Out-String)
+    $引号码 = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $偏好
+}
+if ($严格码 -eq 1 -and $严格输出 -match 'CJK002') {
+    Write-Host "严格标点反例（CJK002）：通过" -ForegroundColor Green
+} else {
+    $失败 += "严格标点反例"
+    Write-Host "严格标点反例：退出码或诊断不符合预期（期望 1 / CJK002）" -ForegroundColor Red
+    Write-Host $严格输出
+}
+if ($引号码 -eq 1 -and $引号输出 -match 'CJK002') {
+    Write-Host "弯引号反例（CJK002）：通过" -ForegroundColor Green
+} else {
+    $失败 += "弯引号反例"
+    Write-Host "弯引号反例：退出码或诊断不符合预期（期望 1 / CJK002）" -ForegroundColor Red
+    Write-Host $引号输出
+}
+
+# 2.16) `打印行` / `打印` 多参数自动拼接
+$打印输出 = & "$root\工具\对话\运行.ps1" "$root\示例\打印多参数.java" 2>&1 | Out-String
+if ($LASTEXITCODE -eq 0 -and $打印输出.Contains("姓名：小明，年龄：18") -and $打印输出.Contains("7 -> 4") -and $打印输出.Contains("同一行拼接")) {
+    Write-Host "打印多参数：通过" -ForegroundColor Green
+} else {
+    $失败 += "打印多参数"
+    Write-Host "打印多参数：运行失败或输出不符合预期" -ForegroundColor Red
+    Write-Host $打印输出
+}
+
+# 2.13) 诊断中文化固定反例：12 条覆盖常见编译错误，逐条断言中文输出
+$诊断目录 = Join-Path $root "构建\诊断反例检查"
+if (Test-Path $诊断目录) {
+    Remove-Item -Recurse -Force $诊断目录
+}
+New-Item -ItemType Directory -Force $诊断目录 | Out-Null
+$诊断反例 = @(
+    @{ 名 = '01未定义变量'; 期望 = '找不到符号：变量'; 源码 = @'
+类 测试 {
+    入口 {
+        打印行(未定义的名字);
+    }
+}
+'@ },
+    @{ 名 = '02缺分号'; 期望 = '缺少「;」'; 源码 = @'
+类 测试 {
+    入口 {
+        整数 甲 = 1
+        打印行(甲);
+    }
+}
+'@ },
+    @{ 名 = '03缺返回'; 期望 = '方法缺少 return'; 源码 = @'
+类 取数器 {
+    公有 静态 整数 取() {
+        整数 乙 = 1;
+    }
+}
+'@ },
+    @{ 名 = '04泛型不匹配'; 期望 = '类型不匹配：「整数」不能赋给「字符串」'; 源码 = @'
+导入 中文.标准库.*;
+类 测试 {
+    入口 {
+        清单<字符串> 名单 = 新建 数组清单<>();
+        名单.加入(123);
+    }
+}
+'@ },
+    @{ 名 = '05访问私有'; 期望 = '「值」是私有的'; 源码 = @'
+类 甲 {
+    私有 整数 值 = 1;
+}
+类 测试 {
+    入口 {
+        甲 实例 = 新建 甲();
+        打印行(实例.值);
+    }
+}
+'@ },
+    @{ 名 = '06构造器参数'; 期望 = '构造器 人应用到给定类型'; 源码 = @'
+类 人 {
+    公有 人(整数 岁) { }
+}
+类 测试 {
+    入口 {
+        人 甲 = 新建 人(18, 20);
+    }
+}
+'@ },
+    @{ 名 = '07抽象未实现'; 期望 = '抽象方法叫'; 源码 = @'
+抽象 类 动物 {
+    公有 抽象 无 叫();
+}
+类 猫 继承 动物 {
+}
+'@ },
+    @{ 名 = '09非法字符'; 期望 = '出现了非法字符「#」'; 源码 = @'
+类 测试 {
+    入口 {
+        打印行(1); #
+    }
+}
+'@ },
+    @{ 名 = '10包不存在'; 期望 = '包「别处.不存在」不存在'; 源码 = @'
+导入 别处.不存在.*;
+类 测试 {
+    入口 {
+    }
+}
+'@ },
+    @{ 名 = '11不能解引用'; 期望 = '无法取消引用'; 源码 = @'
+类 测试 {
+    入口 {
+        整数 甲 = 1;
+        打印行(甲.字段);
+    }
+}
+'@ },
+    @{ 名 = '12断言'; 期望 = '检查通过'; 源码 = @'
+类 测试 {
+    入口 {
+        断言 (1 == 2);
+    }
+}
+'@ }
+)
+$诊断失败 = 0
+$诊断偏好 = $ErrorActionPreference
+# cjc 的诊断走 stderr，PowerShell 会包装成 NativeCommandError；这里临时放行，靠退出码与文本断言判断
+$ErrorActionPreference = 'Continue'
+foreach ($例 in $诊断反例) {
+    $路径 = Join-Path $诊断目录 ($例.名 + '.java')
+    Set-Content -Path $路径 -Value $例.源码 -Encoding UTF8
+    $输出 = & "$root\cjc.ps1" 检查 --含编译 $路径 2>&1 | Out-String
+    if (-not $输出.Contains($例.期望)) {
+        Write-Host "诊断反例未命中：$($例.名)（期望包含「$($例.期望)」）" -ForegroundColor Red
+        $诊断失败++
+    }
+}
+# 08 重复类：同一目录两个同名类
+$重复目录 = Join-Path $诊断目录 '08重复类'
+New-Item -ItemType Directory -Force $重复目录 | Out-Null
+Set-Content -Path (Join-Path $重复目录 '甲.java') -Value "类 甲 {`n}" -Encoding UTF8
+Set-Content -Path (Join-Path $重复目录 '乙.java') -Value "类 甲 {`n}" -Encoding UTF8
+$重复输出 = & "$root\cjc.ps1" 检查 --含编译 $重复目录 2>&1 | Out-String
+if (-not $重复输出.Contains('类重复')) {
+    Write-Host "诊断反例未命中：08重复类（期望包含「类重复」）" -ForegroundColor Red
+    $诊断失败++
+}
+$ErrorActionPreference = $诊断偏好
+if ($诊断失败 -gt 0) {
+    $失败 += "诊断中文化反例（$诊断失败 条未命中）"
+} else {
+    Write-Host "诊断反例：12 条全部命中中文输出" -ForegroundColor Green
 }
 
 # 3) 标准库单元测试（surefire 匹配 *测试.java）

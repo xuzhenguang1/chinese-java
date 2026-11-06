@@ -24,117 +24,38 @@ $tokensPath = Join-Path $root '工具\原生补丁\源码\com\sun\tools\javac\pa
 $dataPath = Join-Path $root '工具\vscode-中文java\关键字数据.json'
 $tmPath = Join-Path $root '工具\vscode-中文java\syntaxes\中文java.tmLanguage.json'
 
-function Read-Utf8([string]$Path) {
-    return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
-}
-
-function Write-Utf8([string]$Path, [string]$Text) {
-    [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
-}
-
-function Split-List([string]$Text) {
-    return @($Text -split '[，,]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-}
+Import-Module (Join-Path $PSScriptRoot '词表.psm1') -Force
 
 # ---- 1. 读近义词典：组名 → 近义词 ----
-if (-not (Test-Path $dictPath)) {
-    Write-Error "找不到近义词典：$dictPath"
+try {
+    $词典 = 读取近义词典 $dictPath
+} catch {
+    Write-Error $_.Exception.Message
     exit 2
 }
-$groups = @{}
-$lineNo = 0
-foreach ($raw in (Read-Utf8 $dictPath) -split "`r?`n") {
-    $lineNo++
-    $line = $raw.Trim()
-    if ($lineNo -eq 1 -and $line.Length -gt 0 -and [int]$line[0] -eq 0xFEFF) {
-        $line = $line.Substring(1).Trim()
-    }
-    if ($line -eq '' -or $line.StartsWith('#')) {
-        continue
-    }
-    if ($line -notmatch '^(.+?)=\[(.*)\]$') {
-        Write-Error "近义词典第${lineNo}行格式错误：$line"
-        exit 2
-    }
-    $name = $Matches[1].Trim()
-    $words = Split-List $Matches[2]
-    if ($words.Count -eq 0) {
-        Write-Error "近义词典第${lineNo}行近义词列表为空：$line"
-        exit 2
-    }
-    if ($groups.ContainsKey($name)) {
-        Write-Error "近义词典第${lineNo}行组名重复：$name"
-        exit 2
-    }
-    $groups[$name] = $words
-}
+$groups = $词典.Groups
 
 # ---- 2. 读关键字表：组名展开为「规范名 + 近义词」 ----
-$wordEn = @{}
-$pairs = @()
-$canonicalByEn = @{}
-$lineNo = 0
-foreach ($raw in (Read-Utf8 $tablePath) -split "`r?`n") {
-    $lineNo++
-    $line = $raw.Trim()
-    if ($lineNo -eq 1 -and $line.Length -gt 0 -and [int]$line[0] -eq 0xFEFF) {
-        $line = $line.Substring(1).Trim()
-    }
-    if ($line -eq '' -or $line.StartsWith('#')) {
-        continue
-    }
-    if ($line -notmatch '^([A-Za-z][A-Za-z0-9_]*)=\[(.*)\]$') {
-        if ($line -match '^(.+?)=(.+)$') {
-            $name = $Matches[1].Trim()
-            $english = $Matches[2].Trim()
-            if (-not $canonicalByEn.ContainsKey($english)) {
-                $canonicalByEn[$english] = $name
-            }
-            $words = @($name)
-            if ($groups.ContainsKey($name)) {
-                $words += $groups[$name]
-            }
-            foreach ($word in $words) {
-                if (-not $wordEn.ContainsKey($word)) {
-                    $wordEn[$word] = $english
-                    $pairs += [pscustomobject]@{ Word = $word; English = $english; Canonical = $canonicalByEn[$english] }
-                }
-            }
-            continue
-        }
-        Write-Error "关键字表第${lineNo}行无法解析：$line"
-        exit 2
-    }
-    $english = $Matches[1]
-    if (-not $canonicalByEn.ContainsKey($english)) {
-        $canonicalByEn[$english] = $null
-    }
-    foreach ($part in (Split-List $Matches[2])) {
-        if ($null -eq $canonicalByEn[$english]) {
-            $canonicalByEn[$english] = $part
-        }
-        $words = @($part)
-        if ($groups.ContainsKey($part)) {
-            $words += $groups[$part]
-        }
-        foreach ($word in $words) {
-            if (-not $wordEn.ContainsKey($word)) {
-                $wordEn[$word] = $english
-                $pairs += [pscustomobject]@{ Word = $word; English = $english; Canonical = $canonicalByEn[$english] }
-            }
-        }
-    }
-}
-if ($pairs.Count -eq 0) {
-    Write-Error '关键字表与词典展开后为空'
+try {
+    $表 = 读取关键字表 $tablePath $groups
+} catch {
+    Write-Error $_.Exception.Message
     exit 2
 }
+$wordEn = $表.WordEn
+$pairs = $表.Pairs
+$canonicalByEn = $表.CanonicalByEn
 
 # ---- 2.5 说明文案与类型别名 ----
 # 原生补丁只接受 Java 关键字，因此 $descByEn 的键同时充当「可写入补丁」的英文白名单；
 # 类型别名（String/Object 等，见 关键字表.txt 的「类型别名」一节）只进 VSCode 数据与高亮。
 $descByEn = @{
     'class' = '声明类'; 'interface' = '声明接口'; 'enum' = '声明枚举'; 'package' = '声明包'
+    'record' = '声明记录（不可变数据类，JDK 16+）'
+    'sealed' = '密封类或密封接口（JDK 17+），只允许许可的子类型'
+    'permits' = '列出密封类型的许可子类型（JDK 17+）'
+    'non-sealed' = '解除密封，允许任意子类继承（JDK 17+）'
+    'yield' = 'switch 表达式的分支返回值（JDK 14+）'
     'import' = '导入类型或包'; 'new' = '创建对象或数组'; 'extends' = '继承父类'; 'implements' = '实现接口'
     'this' = '当前对象引用'; 'super' = '父类引用'; 'public' = '公开访问'; 'private' = '私有访问'
     'protected' = '受保护访问'; 'static' = '静态成员'; 'final' = '不可变、不可继承或不可重写'
@@ -187,8 +108,11 @@ $typeAliasDesc = @{
 }
 
 $aliasEnglish = @($typeAliasDesc.Keys)
+# record / sealed / permits / non-sealed / yield 是 Java 上下文关键字（javac 的 TokenKind 里没有），
+# 只进编辑器词表，不写入原生补丁。
+$contextualEnglish = @('record', 'sealed', 'permits', 'non-sealed', 'yield')
 # PowerShell 的 @{} 查询键时忽略大小写，故用 -ccontains 区分 'Long' 与 'long'
-$keywordPairs = @($pairs | Where-Object { $descByEn.ContainsKey($_.English) -and -not ($aliasEnglish -ccontains $_.English) })
+$keywordPairs = @($pairs | Where-Object { $descByEn.ContainsKey($_.English) -and -not ($aliasEnglish -ccontains $_.English) -and -not ($contextualEnglish -ccontains $_.English) })
 $aliasPairs = @($pairs | Where-Object { $aliasEnglish -ccontains $_.English })
 $keywordEnglishCount = @($keywordPairs | ForEach-Object { $_.English } | Sort-Object -Unique).Count
 

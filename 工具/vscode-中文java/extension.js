@@ -2,10 +2,14 @@ const vscode = require('vscode');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
 let collection;
 let running = null;
 let runTerminal = null;
+
+// 输入防抖：每个文档一个定时器，500ms 内的连续输入只触发一次检查
+const pendingChecks = new Map();
 
 // 中文关键字数据：中文 → [英文关键字, 用途]。由 工具\cjc\同步词表.ps1 从
 // 关键字表.txt + 近义词典.txt 生成到 关键字数据.json，勿手改本块。
@@ -44,7 +48,7 @@ function activate(context) {
         }
     }));
 
-    // Quick Fix：CJK001 在粘连处补空格；CJK104 把「<=」改成「<」
+    // Quick Fix：CJK001 补空格；CJK002/106 换标点；CJK101 改「等于(...)」；CJK103 补「读行();」；CJK104 改「<」
     context.subscriptions.push(vscode.languages.registerCodeActionsProvider({ language: 'java' }, {
         provideCodeActions(document, range, context) {
             const actions = [];
@@ -65,6 +69,47 @@ function activate(context) {
                         const action = new vscode.CodeAction('把「<=」改成「<」', vscode.CodeActionKind.QuickFix);
                         action.edit = new vscode.WorkspaceEdit();
                         action.edit.replace(document.uri, new vscode.Range(start.line, start.character, start.line, start.character + 2), '<');
+                        action.diagnostics = [diagnostic];
+                        actions.push(action);
+                    }
+                } else if (diagnostic.code === 'CJK002' || diagnostic.code === 'CJK106') {
+                    const start = diagnostic.range.start;
+                    const 行文本 = document.lineAt(start.line).text;
+                    const 原文 = 行文本.charAt(start.character);
+                    const 替换 = 标点替换(原文, 行文本);
+                    if (替换) {
+                        const action = new vscode.CodeAction(`把「${原文}」换成「${替换}」`, vscode.CodeActionKind.QuickFix);
+                        action.edit = new vscode.WorkspaceEdit();
+                        action.edit.replace(document.uri,
+                            new vscode.Range(start.line, start.character, start.line, start.character + 1), 替换);
+                        action.diagnostics = [diagnostic];
+                        actions.push(action);
+                    }
+                } else if (diagnostic.code === 'CJK103') {
+                    const start = diagnostic.range.start;
+                    const 行文本 = document.lineAt(start.line).text;
+                    const 匹配 = /([A-Za-z0-9_\u4e00-\u9fa5]+)\s*\.\s*读整数\s*\(/.exec(行文本);
+                    if (匹配) {
+                        const action = new vscode.CodeAction(`补一句「${匹配[1]}.读行();」`, vscode.CodeActionKind.QuickFix);
+                        action.edit = new vscode.WorkspaceEdit();
+                        const 缩进 = (行文本.match(/^\s*/) || [''])[0];
+                        action.edit.insert(document.uri, new vscode.Position(start.line, 行文本.length),
+                            `\n${缩进}${匹配[1]}.读行();`);
+                        action.diagnostics = [diagnostic];
+                        actions.push(action);
+                    }
+                } else if (diagnostic.code === 'CJK101') {
+                    const start = diagnostic.range.start;
+                    const 行文本 = document.lineAt(start.line).text;
+                    const 比较 = /([A-Za-z0-9_\u4e00-\u9fa5.]+?)\s*==\s*([A-Za-z0-9_\u4e00-\u9fa5.]+)/.exec(行文本);
+                    if (比较 && (行文本.match(/==/g) || []).length === 1) {
+                        const action = new vscode.CodeAction('改用「等于(...)」比较内容', vscode.CodeActionKind.QuickFix);
+                        action.edit = new vscode.WorkspaceEdit();
+                        const 新行 = 行文本.slice(0, 比较.index)
+                            + `${比较[1]}.等于(${比较[2]})`
+                            + 行文本.slice(比较.index + 比较[0].length);
+                        action.edit.replace(document.uri,
+                            new vscode.Range(start.line, 0, start.line, 行文本.length), 新行);
                         action.diagnostics = [diagnostic];
                         actions.push(action);
                     }
@@ -117,10 +162,23 @@ function activate(context) {
         if (!vscode.workspace.getConfiguration('cjc').get('checkOnSave', true)) {
             return;
         }
+        cancelPending(document);
         runCheck(document);
     }));
 
+    // 4.9 输入时检查：500ms 防抖；检查的是内存中的内容（临时文件），无需先保存
+    context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(event => {
+        if (!event.document.fileName.endsWith('.java')) {
+            return;
+        }
+        if (!vscode.workspace.getConfiguration('cjc').get('checkOnType', true)) {
+            return;
+        }
+        scheduleCheck(event.document);
+    }));
+
     context.subscriptions.push(vscode.workspace.onDidCloseTextDocument(document => {
+        cancelPending(document);
         collection.delete(document.uri);
     }));
 }
@@ -140,7 +198,33 @@ function javaExecutable() {
     return 'java';
 }
 
-function runCheck(document) {
+function cancelPending(document) {
+    const key = document.uri.toString();
+    const timer = pendingChecks.get(key);
+    if (timer) {
+        clearTimeout(timer);
+        pendingChecks.delete(key);
+    }
+}
+
+function scheduleCheck(document) {
+    const key = document.uri.toString();
+    const previous = pendingChecks.get(key);
+    if (previous) {
+        clearTimeout(previous);
+    }
+    const timer = setTimeout(() => {
+        pendingChecks.delete(key);
+        if (document.isClosed) {
+            return;
+        }
+        runCheck(document, document.getText());
+    }, 500);
+    pendingChecks.set(key, timer);
+}
+
+// content 为 undefined 时检查磁盘文件（保存场景）；否则写临时文件检查未保存内容
+function runCheck(document, content) {
     const root = workspaceRoot();
     if (!root) {
         return;
@@ -156,7 +240,32 @@ function runCheck(document) {
         } catch (ignored) {
             // 上一个检查进程已退出
         }
+        running = null;
     }
+
+    let target = document.fileName;
+    let tempFile = null;
+    if (content !== undefined) {
+        // 每次检查用独立临时文件，避免上一次进程还没释放文件时覆盖失败
+        const base = 'cjc-vscode-' + document.uri.toString().replace(/[^a-zA-Z0-9]/g, '_');
+        tempFile = path.join(os.tmpdir(), base + '-' + Date.now() + '.java');
+        try {
+            fs.writeFileSync(tempFile, content, 'utf8');
+        } catch (ignored) {
+            return;
+        }
+        target = tempFile;
+    }
+
+    const cleanup = () => {
+        if (tempFile) {
+            try {
+                fs.unlinkSync(tempFile);
+            } catch (ignored) {
+                // 临时文件可能已被清理
+            }
+        }
+    };
 
     const child = spawn(javaExecutable(), [
         '-Dstdout.encoding=UTF-8',
@@ -164,7 +273,7 @@ function runCheck(document) {
         '-Dcjc.home=' + root,
         cjcPath,
         '检查',
-        document.fileName
+        target
     ], { cwd: root, windowsHide: true });
 
     let output = '';
@@ -174,10 +283,18 @@ function runCheck(document) {
     child.stderr.on('data', chunk => { output += chunk; });
 
     child.on('error', () => {
-        running = null;
+        cleanup();
+        if (running === child) {
+            running = null;
+        }
     });
 
     child.on('close', code => {
+        cleanup();
+        // 已经被更新的一次检查替代：不覆盖最新结果
+        if (running !== child) {
+            return;
+        }
         running = null;
         collection.delete(document.uri);
         if (code === 0 || code === 1) {
@@ -234,6 +351,10 @@ function parseDiagnostics(text, document) {
 }
 
 function deactivate() {
+    for (const timer of pendingChecks.values()) {
+        clearTimeout(timer);
+    }
+    pendingChecks.clear();
     if (running) {
         try {
             running.kill();
@@ -242,6 +363,19 @@ function deactivate() {
         }
         running = null;
     }
+}
+
+// 全角标点 → 半角替代字符。`。` 要看位置：行末改 `;`，句中改 `.`。
+function 标点替换(字符, 行文本) {
+    if (字符 === '。') {
+        return 行文本.trimEnd().endsWith('。') ? ';' : '.';
+    }
+    const 映射 = {
+        '、': ',', '“': '"', '”': '"', '‘': "'", '’': "'",
+        '《': '"', '》': '"', '「': '"', '」': '"', '『': '"', '』': '"',
+        '…': '...', '—': '-', '－': '-', '　': ' '
+    };
+    return 映射[字符] || null;
 }
 
 module.exports = { activate, deactivate };

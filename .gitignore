@@ -13,3 +13,6 @@ __pycache__/
 *.iml
 Thumbs.db
 .DS_Store
+
+# VSCode 扩展安装包（发布产物，不入库）
+*.vsix

@@ -25,12 +25,14 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -54,9 +56,10 @@ public class Cjc {
             "class", "const", "continue", "default", "do", "double", "else", "enum",
             "extends", "final", "finally", "float", "for", "goto", "if", "implements",
             "import", "instanceof", "int", "interface", "long", "native", "new",
-            "package", "private", "protected", "public", "return", "short", "static",
+            "package", "private", "protected", "public", "record", "return", "short", "static",
             "strictfp", "super", "switch", "synchronized", "this", "throw", "throws",
-            "transient", "try", "void", "volatile", "while", "true", "false", "null");
+            "transient", "try", "void", "volatile", "while", "true", "false", "null",
+            "sealed", "permits", "non-sealed", "yield");
 
     // 类型别名：java.lang 常用类型的中文写法。它们不是 Java 关键字，但同样按整词替换，
     // 因此与关键字共用 关键字表.txt，转译与反译都生效。
@@ -75,12 +78,25 @@ public class Cjc {
     static final Set<String> PRIMITIVE_TYPES = Set.of(
             "int", "long", "short", "byte", "float", "double", "char", "boolean", "void");
 
+    // 泛型实参不能是基本类型：`清单<整数>` 自动转成 `List<Integer>`。
+    // 只在 `<` / `,` 之后、`>` / `,` 之前生效；其余位置仍按基本类型转译。
+    static final LinkedHashMap<String, String> PRIMITIVE_WRAPPERS = new LinkedHashMap<>();
+    static {
+        PRIMITIVE_WRAPPERS.put("int", "Integer");
+        PRIMITIVE_WRAPPERS.put("long", "Long");
+        PRIMITIVE_WRAPPERS.put("short", "Short");
+        PRIMITIVE_WRAPPERS.put("byte", "Byte");
+        PRIMITIVE_WRAPPERS.put("float", "Float");
+        PRIMITIVE_WRAPPERS.put("double", "Double");
+        PRIMITIVE_WRAPPERS.put("boolean", "Boolean");
+        PRIMITIVE_WRAPPERS.put("char", "Character");
+    }
+
     // 中文标准库（包 中文.标准库）的类名：这些接收者上的成员调用保持原样，不走成员糖。
     // 标准库类自己就提供中文方法（`文本.格式化`、`并发.关闭`、`集合工具.排序` 等），
     // 若也按方法名全局改写，会变成这些类上不存在的方法名。
-    static final Set<String> STDLIB_CLASSES = Set.of(
-            "输出", "列表", "映射", "文本", "数学", "数值", "时间",
-            "文件", "集合工具", "并发", "网络", "日志", "数据");
+    // 白名单内容全部来自 工具\cjc\方法糖.txt 的 [白名单] 分区，这里只声明空集。
+    static final Set<String> STDLIB_CLASSES = new LinkedHashSet<>();
 
     // 全角标点：U+FF01..U+FF5E 统一平移 0xFEE0 得到半角；U+3000 全角空格转半角空格。
     // javac 不接受全角空格与全角标点，必须在这里规范化。
@@ -99,137 +115,27 @@ public class Cjc {
     // `常量 名称 = …` → `final var 名称 = …`；关闭时按普通标识符处理（javac 会报错）。
     static boolean allowInference = false;
 
+    // `--严格标点` 开关：默认把 `。` / `、` 自动纠正为半角 `;` / `.` / `,`（只提示 CJK106）；
+    // 开启后恢复旧行为，仍按 CJK002 阻断。
+    static boolean strictPunctuation = false;
+
     // 反译用：英文 → 中文 的反向表，以及英文关键字集合（由关键字表加载时构建）
     static final LinkedHashMap<String, String> CHINESE_BY_ENGLISH = new LinkedHashMap<>();
     static final Set<String> ENGLISH_KEYWORDS = new HashSet<>();
 
-    // 中文成员方法 → Java 方法：只在 `.` 之后、后接 `(` 时识别，例如 `名称.加入(…)` → `名称.add(…)`。
+    // 方法糖唯一数据源：与关键字表同目录的 方法糖.txt，启动时必须存在；
+    // 这里只声明空表，由 loadMethodSugar 按文件顺序填充（声明顺序即匹配优先级）。
     // 命名刻意避开 中文.标准库 已有方法（加、取、放、排序、去空白…），避免把标准库调用改坏。
     static final LinkedHashMap<String, String> MEMBER_CALLS = new LinkedHashMap<>();
-    static {
-        MEMBER_CALLS.put("修剪", "trim");
-        MEMBER_CALLS.put("转大写", "toUpperCase");
-        MEMBER_CALLS.put("转小写", "toLowerCase");
-        MEMBER_CALLS.put("含有", "contains");
-        MEMBER_CALLS.put("以开头", "startsWith");
-        MEMBER_CALLS.put("以结尾", "endsWith");
-        MEMBER_CALLS.put("替换", "replace");
-        MEMBER_CALLS.put("取子串", "substring");
-        MEMBER_CALLS.put("拆分", "split");
-        MEMBER_CALLS.put("复读", "repeat");
-        MEMBER_CALLS.put("取字符", "charAt");
-        MEMBER_CALLS.put("全空白", "isBlank");
-        MEMBER_CALLS.put("替换全部", "replaceAll");
-        MEMBER_CALLS.put("转字符数组", "toCharArray");
-        MEMBER_CALLS.put("加入", "add");
-        MEMBER_CALLS.put("取出", "get");
-        MEMBER_CALLS.put("设定", "set");
-        MEMBER_CALLS.put("移除", "remove");
-        MEMBER_CALLS.put("元素数", "size");
-        MEMBER_CALLS.put("是空", "isEmpty");
-        MEMBER_CALLS.put("整理", "sort");
-        MEMBER_CALLS.put("清空", "clear");
-        MEMBER_CALLS.put("放入", "put");
-        MEMBER_CALLS.put("取出或", "getOrDefault");
-        MEMBER_CALLS.put("值集合", "values");
-        MEMBER_CALLS.put("键集合", "keySet");
-        MEMBER_CALLS.put("含键", "containsKey");
-        MEMBER_CALLS.put("追加", "append");
-        MEMBER_CALLS.put("转文本", "toString");
-        MEMBER_CALLS.put("比较", "compareTo");
-        MEMBER_CALLS.put("等于", "equals");
-        MEMBER_CALLS.put("哈希码", "hashCode");
-        MEMBER_CALLS.put("值", "valueOf");
-        MEMBER_CALLS.put("反序", "reversed");
-        MEMBER_CALLS.put("取消息", "getMessage");
-        MEMBER_CALLS.put("转绝对路径", "toAbsolutePath");
-        MEMBER_CALLS.put("取上级", "getParent");
-        MEMBER_CALLS.put("流", "stream");
-        // Stream 中间/终端操作：与 `流` 配套，避免学到 Stream 又掉回英文。
-        // `变换` 而不是 `映射`：`映射` 已是标准库类名（Map 包装），不再借作方法名。
-        MEMBER_CALLS.put("过滤", "filter");
-        MEMBER_CALLS.put("变换", "map");
-        MEMBER_CALLS.put("遍历", "forEach");
-        MEMBER_CALLS.put("去重", "distinct");
-        MEMBER_CALLS.put("收集", "collect");
-        MEMBER_CALLS.put("找首个", "findFirst");
-        MEMBER_CALLS.put("存在时", "ifPresent");
-        MEMBER_CALLS.put("或", "orElse");
-        // 输入：`扫描器.读行()` → `Scanner.nextLine()`；控制台交互不必再写英文方法名。
-        MEMBER_CALLS.put("读行", "nextLine");
-        MEMBER_CALLS.put("读整数", "nextInt");
-        MEMBER_CALLS.put("读长整数", "nextLong");
-        MEMBER_CALLS.put("读双浮点", "nextDouble");
-        MEMBER_CALLS.put("有下一行", "hasNextLine");
-        MEMBER_CALLS.put("有下一个", "hasNext");
-        // 集合补充：按下标查找、映射按值判断。
-        MEMBER_CALLS.put("取下标", "indexOf");
-        MEMBER_CALLS.put("含值", "containsValue");
-    }
 
     // 中文重写方法声明 → Java 同名方法：不带 `.` 前缀、后接 `(` 时识别，
     // 例如 `公有 字符串 转文本()` → `public String toString()`。
-    // 这三个方法由 Object 定义，Java 不允许改名，只能在声明处还原。
+    // 这三个方法由 Object 定义，Java 不允许改名，只能在声明处还原；内容同样来自 方法糖.txt。
     static final LinkedHashMap<String, String> MEMBER_DECLS = new LinkedHashMap<>();
-    static {
-        MEMBER_DECLS.put("转文本", "toString");
-        MEMBER_DECLS.put("等于", "equals");
-        MEMBER_DECLS.put("哈希码", "hashCode");
-    }
 
-    // 中文类名 + 方法 → Java 静态调用，例如 `算术.平方根(…)` → `Math.sqrt(…)`。
+    // 中文类名 + 方法 → Java 静态调用，例如 `算术.平方根(…)` → `Math.sqrt(…)`；
+    // 内容全部来自 方法糖.txt，这里只声明空表。
     static final LinkedHashMap<String, String> STATIC_CALLS = new LinkedHashMap<>();
-    static {
-        STATIC_CALLS.put("算术.绝对值", "Math.abs");
-        STATIC_CALLS.put("算术.最大", "Math.max");
-        STATIC_CALLS.put("算术.最小", "Math.min");
-        STATIC_CALLS.put("算术.平方根", "Math.sqrt");
-        STATIC_CALLS.put("算术.幂", "Math.pow");
-        STATIC_CALLS.put("算术.圆周率", "Math.PI");
-        STATIC_CALLS.put("算术.随机", "Math.random");
-        STATIC_CALLS.put("集合助手.排序", "Collections.sort");
-        STATIC_CALLS.put("比较器.按整数", "Comparator.comparingInt");
-        STATIC_CALLS.put("字符串.拼接", "String.join");
-        STATIC_CALLS.put("整数包装.解析", "Integer.parseInt");
-        STATIC_CALLS.put("文件路径.取", "Path.of");
-        STATIC_CALLS.put("文件助手.建目录", "Files.createDirectories");
-        STATIC_CALLS.put("文件助手.写文本", "Files.writeString");
-        STATIC_CALLS.put("文件助手.读文本", "Files.readString");
-        STATIC_CALLS.put("文件助手.读所有行", "Files.readAllLines");
-        STATIC_CALLS.put("文件助手.存在", "Files.exists");
-        STATIC_CALLS.put("可选值.空", "Optional.empty");
-        STATIC_CALLS.put("可选值.装入", "Optional.of");
-        STATIC_CALLS.put("可选值.可空", "Optional.ofNullable");
-        STATIC_CALLS.put("数组助手.排序", "Arrays.sort");
-        STATIC_CALLS.put("数组助手.转文本", "Arrays.toString");
-        STATIC_CALLS.put("数组助手.填充", "Arrays.fill");
-        STATIC_CALLS.put("数组助手.复制", "Arrays.copyOf");
-        STATIC_CALLS.put("数组助手.转清单", "Arrays.asList");
-        STATIC_CALLS.put("集合助手.反转", "Collections.reverse");
-        STATIC_CALLS.put("集合助手.打乱", "Collections.shuffle");
-        STATIC_CALLS.put("集合助手.最大", "Collections.max");
-        STATIC_CALLS.put("集合助手.最小", "Collections.min");
-        STATIC_CALLS.put("字符串.格式化", "String.format");
-        STATIC_CALLS.put("算术.向下取整", "Math.floor");
-        STATIC_CALLS.put("算术.向上取整", "Math.ceil");
-        STATIC_CALLS.put("算术.四舍五入", "Math.round");
-        STATIC_CALLS.put("双浮点包装.解析", "Double.parseDouble");
-        STATIC_CALLS.put("长整数包装.解析", "Long.parseLong");
-        STATIC_CALLS.put("布尔包装.解析", "Boolean.parseBoolean");
-        STATIC_CALLS.put("系统.标准输入", "System.in");
-        STATIC_CALLS.put("系统.标准错误", "System.err");
-        STATIC_CALLS.put("系统.当前毫秒", "System.currentTimeMillis");
-        STATIC_CALLS.put("系统.纳秒", "System.nanoTime");
-        STATIC_CALLS.put("系统.退出", "System.exit");
-        // 集合工厂：`清单.从("甲", "乙")` → `List.of(...)`（JDK 9+，不可变集合）。
-        STATIC_CALLS.put("清单.从", "List.of");
-        STATIC_CALLS.put("键值表.从", "Map.of");
-        STATIC_CALLS.put("集.从", "Set.of");
-        // Stream 收集器：需要 java.util.stream.*（自动导入已补）。
-        STATIC_CALLS.put("收集器.转清单", "Collectors.toList");
-        STATIC_CALLS.put("收集器.转集", "Collectors.toSet");
-        STATIC_CALLS.put("收集器.拼接", "Collectors.joining");
-    }
 
     public static void main(String[] args) throws IOException {
         if (args.length == 0) {
@@ -243,6 +149,7 @@ public class Cjc {
         String mainClass = null;
         String tableArg = null;
         String classpath = null;
+        boolean includeCompile = false;
         for (int i = 1; i < args.length; i++) {
             if (args[i].equals("-d")) {
                 if (i + 1 >= args.length) {
@@ -276,6 +183,10 @@ public class Cjc {
                 classpath = args[++i];
             } else if (args[i].equals("--允许推断")) {
                 allowInference = true;
+            } else if (args[i].equals("--含编译")) {
+                includeCompile = true;
+            } else if (args[i].equals("--严格标点")) {
+                strictPunctuation = true;
             } else {
                 inputs.add(args[i]);
             }
@@ -301,7 +212,10 @@ public class Cjc {
             return;
         }
 
-        loadKeywords(resolveTable(tableArg));
+        Path tablePath = resolveTable(tableArg);
+        loadKeywords(tablePath);
+        loadMethodSugar(tablePath);
+        loadDiagnostics(tablePath);
 
         if (command.equals("反译")) {
             if (outDir == null) {
@@ -328,6 +242,7 @@ public class Cjc {
         int stickyErrors = checkSticky(files, identifierNames);
         int punctuationErrors = checkPunctuation(files);
         int trapWarnings = checkBeginnerTraps(files);
+        int foldWarnings = checkFoldedPunctuation(files);
         int totalErrors = stickyErrors + punctuationErrors;
         if (totalErrors > 0) {
             System.out.println();
@@ -336,8 +251,29 @@ public class Cjc {
             System.exit(1);
         }
         if (command.equals("检查")) {
-            System.out.println("检查通过：" + files.size() + " 个文件（关键字 " + wordCount(false)
-                    + " 条 + 类型别名 " + wordCount(true) + " 条，词典 " + DICT_GROUPS.size() + " 组）。");
+            if (includeCompile) {
+                String cp = classpath != null ? classpath : defaultStdlibClasspath(tablePath);
+                Path tempOut = Files.createTempDirectory("cjc-check-");
+                int compileErrors;
+                try {
+                    compileErrors = compile(files, tempOut, cp);
+                } finally {
+                    deleteRecursively(tempOut);
+                }
+                if (compileErrors > 0) {
+                    System.out.println();
+                    System.out.println("检查未通过：" + compileErrors + " 处编译错误。");
+                    System.exit(1);
+                }
+                System.out.println("检查通过（含编译）：" + files.size() + " 个文件（关键字 " + wordCount(false)
+                        + " 条 + 类型别名 " + wordCount(true) + " 条，词典 " + DICT_GROUPS.size() + " 组）。");
+            } else {
+                System.out.println("检查通过：" + files.size() + " 个文件（关键字 " + wordCount(false)
+                        + " 条 + 类型别名 " + wordCount(true) + " 条，词典 " + DICT_GROUPS.size() + " 组）。");
+            }
+            if (foldWarnings > 0) {
+                System.out.println("另有 " + foldWarnings + " 处标点已自动纠正（CJK106，仅提示，不影响编译）。");
+            }
             if (trapWarnings > 0) {
                 System.out.println("另有 " + trapWarnings + " 处新手易错提示（仅建议，不影响编译）。");
             }
@@ -467,15 +403,18 @@ public class Cjc {
     static void usage() {
         System.out.println("Cjc —— 中文 Java 源码检查、转译与编译工具（M2）");
         System.out.println("用法：");
-        System.out.println("  java 工具\\cjc\\Cjc.java 检查 <文件或目录...> [--表 <关键字表>]");
+        System.out.println("  java 工具\\cjc\\Cjc.java 检查 <文件或目录...> [--含编译] [--表 <关键字表>]");
         System.out.println("  java 工具\\cjc\\Cjc.java 运行 <文件> [-cp <类路径>] [-主类 <全限定类名>]");
         System.out.println("  java 工具\\cjc\\Cjc.java 编译 <文件或目录...> -d <输出目录> [-cp <类路径>] [-jar <jar路径> -主类 <全限定类名>]");
         System.out.println("  java 工具\\cjc\\Cjc.java 转译 <文件或目录...> -d <输出目录>");
         System.out.println("  java 工具\\cjc\\Cjc.java 反译 <文件或目录...> -d <输出目录>");
         System.out.println("  java 工具\\cjc\\Cjc.java 新建 项目 <项目名>");
         System.out.println("选项：--允许推断 启用「令」/「常量」类型推断糖（默认关闭）。");
+        System.out.println("      --含编译   检查通过后再跑一遍 javac，暴露类型错误（默认关闭）。");
+        System.out.println("      --严格标点 句号「。」、顿号「、」不再自动纠正，按 CJK002 阻断。");
         System.out.println("规则：中文关键字后必须跟空格或标点，否则会与后面的名称粘连成一个标识符。");
-        System.out.println("      全角标点会自动规范化为半角；顿号、句号、弯引号等无法映射，报 CJK002。");
+        System.out.println("      全角标点会自动规范化为半角；句号「。」、顿号「、」自动纠正并提示 CJK106；");
+        System.out.println("      弯引号、书名号等无法映射的标点仍报 CJK002。");
     }
 
     // ------------------------------------------------------------------ 关键字表
@@ -499,6 +438,43 @@ public class Cjc {
         }
         System.err.println("错误：找不到关键字表，请用 --表 <路径> 指定，或在工程根目录运行 cjc.ps1。");
         System.exit(2);
+        return null;
+    }
+
+    /**
+     * `检查 --含编译` 的默认类路径：优先用户 -cp，其次仓库 标准库\target 下最新的
+     * cjc-stdlib-*.jar，保证教程/示例里 `导入 中文.标准库.*;` 能编译通过。
+     */
+    static String defaultStdlibClasspath(Path tablePath) {
+        List<Path> roots = new ArrayList<>();
+        String home = System.getProperty("cjc.home");
+        if (home != null && !home.isBlank()) {
+            roots.add(Paths.get(home));
+        }
+        Path table = tablePath.toAbsolutePath().normalize();
+        if (table.getParent() != null && table.getParent().getParent() != null) {
+            roots.add(table.getParent().getParent().getParent());
+        }
+        for (Path root : roots) {
+            Path target = root.resolve("标准库").resolve("target");
+            if (!Files.isDirectory(target)) {
+                continue;
+            }
+            try (Stream<Path> stream = Files.list(target)) {
+                Path jar = stream
+                        .filter(p -> {
+                            String name = p.getFileName().toString();
+                            return name.startsWith("cjc-stdlib-") && name.endsWith(".jar");
+                        })
+                        .max(Comparator.comparingLong(p -> p.toFile().lastModified()))
+                        .orElse(null);
+                if (jar != null) {
+                    return jar.toAbsolutePath().normalize().toString();
+                }
+            } catch (IOException ignored) {
+                // target 目录不可读时按无类路径处理
+            }
+        }
         return null;
     }
 
@@ -728,6 +704,138 @@ public class Cjc {
         ENGLISH_KEYWORDS.addAll(CHINESE_BY_ENGLISH.keySet());
     }
 
+    /**
+     * 加载方法糖表：与关键字表同目录的 方法糖.txt，分区 [成员] / [声明] / [静态] / [白名单]。
+     * 文件是唯一数据源：缺失或格式错误都报中文错误并退出码 2。
+     * 表的声明顺序即匹配优先级，加载时按文件顺序重建。
+     */
+    static void loadMethodSugar(Path tablePath) throws IOException {
+        Path sugarPath = tablePath.resolveSibling("方法糖.txt");
+        if (!Files.exists(sugarPath)) {
+            System.err.println("方法糖表缺失：" + sugarPath + "（与关键字表必须放在同一目录）");
+            System.exit(2);
+        }
+        LinkedHashMap<String, String> members = new LinkedHashMap<>();
+        LinkedHashMap<String, String> decls = new LinkedHashMap<>();
+        LinkedHashMap<String, String> statics = new LinkedHashMap<>();
+        Set<String> whitelist = new LinkedHashSet<>();
+        boolean[] seen = new boolean[4];
+        List<String> problems = new ArrayList<>();
+        String section = null;
+        int lineNo = 0;
+        for (String raw : Files.readAllLines(sugarPath, StandardCharsets.UTF_8)) {
+            lineNo++;
+            String line = raw.strip();
+            if (lineNo == 1 && line.startsWith("\uFEFF")) {
+                line = line.substring(1).strip();
+            }
+            if (line.isEmpty() || line.startsWith("#")) {
+                continue;
+            }
+            if (line.startsWith("[") && line.endsWith("]")) {
+                section = line.substring(1, line.length() - 1).strip();
+                int index = methodSugarSectionIndex(section);
+                if (index < 0) {
+                    problems.add("第" + lineNo + "行未知分区：[" + section + "]（只支持 [成员] / [声明] / [静态] / [白名单]）");
+                    section = null;
+                } else {
+                    seen[index] = true;
+                }
+                continue;
+            }
+            if (section == null) {
+                problems.add("第" + lineNo + "行不属于任何分区：" + line);
+                continue;
+            }
+            if (section.equals("白名单")) {
+                for (String part : line.split("/")) {
+                    String name = part.strip();
+                    if (!name.isEmpty()) {
+                        whitelist.add(name);
+                    }
+                }
+                continue;
+            }
+            int eq = line.indexOf('=');
+            if (eq <= 0 || eq == line.length() - 1) {
+                problems.add("第" + lineNo + "行格式错误，应为「中文=英文」：" + line);
+                continue;
+            }
+            String chinese = line.substring(0, eq).strip();
+            String english = line.substring(eq + 1).strip();
+            LinkedHashMap<String, String> target;
+            if (section.equals("成员")) {
+                target = members;
+            } else if (section.equals("声明")) {
+                target = decls;
+            } else {
+                target = statics;
+            }
+            if (target.containsKey(chinese)) {
+                problems.add("第" + lineNo + "行中文重复：" + chinese);
+                continue;
+            }
+            if (!isMethodSugarEnglish(english, section.equals("静态"))) {
+                problems.add("第" + lineNo + "行英文格式不正确：" + english);
+                continue;
+            }
+            target.put(chinese, english);
+        }
+        for (int i = 0; i < 4; i++) {
+            if (!seen[i]) {
+                problems.add("缺少分区 [" + methodSugarSectionName(i) + "]");
+            }
+        }
+        if (members.isEmpty() || decls.isEmpty() || statics.isEmpty() || whitelist.isEmpty()) {
+            problems.add("方法糖表存在空分区");
+        }
+        if (!problems.isEmpty()) {
+            for (String problem : problems) {
+                System.err.println("方法糖表错误：" + problem);
+            }
+            System.err.println("方法糖表校验未通过：" + problems.size() + " 处问题，文件 " + sugarPath);
+            System.exit(2);
+        }
+        MEMBER_CALLS.clear();
+        MEMBER_CALLS.putAll(members);
+        MEMBER_DECLS.clear();
+        MEMBER_DECLS.putAll(decls);
+        STATIC_CALLS.clear();
+        STATIC_CALLS.putAll(statics);
+        STDLIB_CLASSES.clear();
+        STDLIB_CLASSES.addAll(whitelist);
+    }
+
+    static int methodSugarSectionIndex(String section) {
+        switch (section) {
+            case "成员": return 0;
+            case "声明": return 1;
+            case "静态": return 2;
+            case "白名单": return 3;
+            default: return -1;
+        }
+    }
+
+    static String methodSugarSectionName(int index) {
+        switch (index) {
+            case 0: return "成员";
+            case 1: return "声明";
+            case 2: return "静态";
+            default: return "白名单";
+        }
+    }
+
+    /** 成员/声明值必须是合法 Java 标识符；静态值允许 `Math.abs` 这类点分形式。 */
+    static boolean isMethodSugarEnglish(String name, boolean dotted) {
+        if (name.isEmpty()) {
+            return false;
+        }
+        if (dotted) {
+            return name.matches("[A-Za-z_$][A-Za-z0-9_$]*(\\.[A-Za-z_$][A-Za-z0-9_$]*)+");
+        }
+        return name.matches("[A-Za-z_$][A-Za-z0-9_$]*");
+    }
+
 
     // ------------------------------------------------------------------ 文件收集
 
@@ -792,11 +900,12 @@ public class Cjc {
         List<Token> tokens = scan(text, false);
         boolean script = looksLikeScript(text, tokens);
         int lineOffset = 0;
-        // A3：文件里没有 导入 / 包 时，自动补 java.util.*、java.nio.file.*、java.io.* 与 java.util.stream.*。
-        // 不自动补 中文.标准库.*：标准库类名（文本、列表、映射）容易与用户变量同名。
-        if (!hasImportOrPackage(tokens)) {
-            text = "导入 java.util.*;\n导入 java.nio.file.*;\n导入 java.io.*;\n导入 java.util.stream.*;\n" + text;
-            lineOffset = 4;
+        // A3：文件里没有 导入 / 包，或只导入了 中文.标准库.* 时，自动补 6 个 JDK 包。
+        // 不自动补 中文.标准库.*：标准库类名（文本、数学、文件）容易与用户变量同名。
+        if (!hasImportOrPackage(tokens) || hasOnlyStdlibImports(text, tokens)) {
+            text = "导入 java.util.*;\n导入 java.nio.file.*;\n导入 java.io.*;\n导入 java.util.stream.*;\n"
+                    + "导入 java.util.concurrent.*;\n导入 java.util.logging.*;\n" + text;
+            lineOffset = 6;
             tokens = scan(text, false);
         }
         if (script) {
@@ -823,7 +932,7 @@ public class Cjc {
 
     /**
      * 脚本模式判定：顶层（花括号深度 0）没有 类 / 接口 / 枚举 / 包 时，
-     * 整份文件按「语句」处理（开头的 导入 允许保留）。注意名称前置声明（计数器 类 {）也能被识别。
+     * 整份文件按「语句」处理（开头的 导入 允许保留）。
      */
     static boolean looksLikeScript(String source, List<Token> tokens) {
         int depth = 0;
@@ -843,7 +952,7 @@ public class Cjc {
                     continue;
                 }
                 if (english.equals("class") || english.equals("interface") || english.equals("enum")
-                        || english.equals("package")) {
+                        || english.equals("record") || english.equals("package")) {
                     return false;
                 }
             }
@@ -863,6 +972,41 @@ public class Cjc {
             }
         }
         return false;
+    }
+
+    /** 是否只导入了 中文.标准库.* / 中文.标准库.Xxx；有 包 声明或其他导入时返回 false。 */
+    static boolean hasOnlyStdlibImports(String source, List<Token> tokens) {
+        boolean sawImport = false;
+        for (int i = 0; i < tokens.size(); i++) {
+            Token t = tokens.get(i);
+            if (t.kind != KIND_KEYWORD) {
+                continue;
+            }
+            String english = KEYWORDS.get(t.text);
+            if (english == null) {
+                continue;
+            }
+            if (english.equals("package")) {
+                return false;
+            }
+            if (!english.equals("import")) {
+                continue;
+            }
+            sawImport = true;
+            StringBuilder name = new StringBuilder();
+            for (int j = i + 1; j < tokens.size(); j++) {
+                Token next = tokens.get(j);
+                String text = next.text != null ? next.text : source.substring(next.start, next.end);
+                if (text.equals(";") || text.equals("{")) {
+                    break;
+                }
+                name.append(text);
+            }
+            if (!name.toString().startsWith("中文.标准库")) {
+                return false;
+            }
+        }
+        return sawImport;
     }
 
     /** 返回脚本开头所有 `导入 …;` 的结束位置（不含其后的换行）；没有导入时返回 0。 */
@@ -1272,6 +1416,35 @@ public class Cjc {
                 i++;
                 continue;
             }
+            // 句号「。」与顿号「、」：默认自动纠正（只提示 CJK106），`--严格标点` 时仍报 CJK002。
+            // 句号在行末 / `}` 前按语句结束处理成 `;`，其余位置按成员访问处理成 `.`。
+            if (cp == 0x3001 || cp == 0x3002) {
+                if (strictPunctuation) {
+                    tokens.add(new Token(KIND_BAD_PUNCT, i, i + width, new String(Character.toChars(cp))));
+                } else {
+                    String folded;
+                    if (cp == 0x3001) {
+                        folded = ",";
+                    } else {
+                        int k = i + 1;
+                        while (k < n) {
+                            char ch = source.charAt(k);
+                            if (ch == ' ' || ch == '\t' || ch == 0x3000) {
+                                k++;
+                                continue;
+                            }
+                            break;
+                        }
+                        boolean lineEnd = k >= n || source.charAt(k) == '\n' || source.charAt(k) == '\r'
+                                || source.charAt(k) == '}'
+                                || (source.charAt(k) == '/' && k + 1 < n && source.charAt(k + 1) == '/');
+                        folded = lineEnd ? ";" : ".";
+                    }
+                    tokens.add(new Token(KIND_PUNCT, i, i + width, folded));
+                }
+                i += width;
+                continue;
+            }
             // 无法映射到半角的 CJK 标点：保留原文，报 CJK002
             if (CJK_PUNCTUATION.contains(cp)) {
                 tokens.add(new Token(KIND_BAD_PUNCT, i, i + width, new String(Character.toChars(cp))));
@@ -1385,6 +1558,33 @@ public class Cjc {
                 System.err.println("  建议：" + suggestionFor(t.text));
                 System.err.println("    " + String.format("%4d", line) + " | " + lineText);
                 System.err.println("         | " + spaces(col) + "^");
+            }
+        }
+        return count;
+    }
+
+    /** CJK106：句号「。」/ 顿号「、」已自动纠正为半角标点，只提示、不阻断。 */
+    static int checkFoldedPunctuation(List<SourceFile> files) {
+        int count = 0;
+        for (SourceFile sf : files) {
+            for (Token t : sf.tokens) {
+                if (t.kind != KIND_PUNCT || t.text == null) {
+                    continue;
+                }
+                char ch = sf.original.charAt(t.start);
+                if (ch != 0x3001 && ch != 0x3002) {
+                    continue;
+                }
+                count++;
+                int lineIndex = lineOf(sf.origLineStarts, t.start);
+                int wrappedLine = lineIndex + 1;
+                int line = wrappedLine - sf.lineOffset;
+                int col = t.start - sf.origLineStarts[lineIndex];
+                String original = ch == 0x3001 ? "、" : "。";
+                System.out.println();
+                System.out.println("提示 CJK106  第" + line + "行 第" + (col + 1) + "列");
+                System.out.println("  全角标点「" + original + "」已自动纠正为「" + t.text + "」。"
+                        + "如需保留旧行为（按 CJK002 阻断），加 --严格标点。");
             }
         }
         return count;
@@ -1783,46 +1983,57 @@ public class Cjc {
 
     // ------------------------------------------------------------------ 翻译
 
-    static String translate(SourceFile sf) {
-        List<Token> tokens = sf.tokens;
-        Set<String> declared = declaredNames(tokens, sf.original);
-        // 名称前置声明：`计数器 类 {` / `计数器 接口 {` / `计数器 枚举 {`
-        // 是「类名在前、关键字在后」的写法，翻译时还原成标准的「关键字 类名」。
-        // 仅当关键字前是标识符、后接 `{` 或 `继承`/`实现` 时才判定，避免误伤普通标识符。
-        Token[] swap = new Token[tokens.size()];
-        boolean[] skip = new boolean[tokens.size()];
-        for (int i = 1; i + 1 < tokens.size(); i++) {
-            Token k = tokens.get(i);
-            if (k.kind != KIND_KEYWORD) {
-                continue;
-            }
-            String english = KEYWORDS.get(k.text);
-            if (english == null || !(english.equals("class") || english.equals("interface") || english.equals("enum"))) {
-                continue;
-            }
-            Token prev = tokens.get(i - 1);
-            if (prev.kind != KIND_IDENTIFIER) {
-                continue;
-            }
-            // 名称与关键字必须写在同一行，否则吞掉换行会破坏诊断行号映射
-            String gap = sf.original.substring(prev.end, k.start);
-            if (gap.indexOf('\n') >= 0 || gap.indexOf('\r') >= 0) {
-                continue;
-            }
-            Token next = tokens.get(i + 1);
-            String nextText = next.text != null ? next.text : sf.original.substring(next.start, next.end);
-            boolean declaration = nextText.equals("{");
-            if (!declaration && next.kind == KIND_KEYWORD) {
-                String nextEnglish = KEYWORDS.get(next.text);
-                declaration = nextEnglish != null && (nextEnglish.equals("extends") || nextEnglish.equals("implements"));
-            }
-            if (!declaration) {
-                continue;
-            }
-            swap[i - 1] = k;
-            skip[i] = true;
-        }
+    private static final class TranslatePlan {
+        List<Token> tokens;
+        Set<String> declared;
+        boolean[] skip;
+        String[] typeAt;
+        String[] kindAt;
+        boolean[] inTypeBody;
+        boolean[] insertVoid;
+        boolean[] insertOut;
+        boolean[] insertPrint;
+        boolean[] inferVar;
+        boolean[] inferConst;
+        boolean[] insertForVar;
+        boolean[] repeatStart;
+        int[] repeatEnd;
+        String[] repeatHeader;
+        boolean[] renameLength;
+        boolean[] renameElseIf;
+        boolean[] renameSystem;
+        boolean[] renameArraycopy;
+        String[] staticCall;
+        boolean[] callMember;
+        boolean[] declMember;
+        boolean[] wrapGeneric;
+        int[] arrayListFromEnd;
+        boolean[] arrayListClose;
+        boolean[] printComma;
+        boolean[] printParenOpen;
+        boolean[] printParenClose;
+    }
 
+    static String translate(SourceFile sf) {
+        TranslatePlan plan = new TranslatePlan();
+        plan.tokens = sf.tokens;
+        plan.declared = declaredNames(sf.tokens, sf.original);
+        planSkip(sf, plan);
+        planVoidAndPrint(sf, plan);
+        planSugar(sf, plan);
+        planCalls(sf, plan);
+        planGenerics(sf, plan);
+        planPrintArgs(sf, plan);
+        return renderTranslated(sf, plan);
+    }
+
+    private static void planSkip(SourceFile sf, TranslatePlan plan) {
+        // skip 标记：语法糖插入/替换时用来跳过已被消费的 token。
+        plan.skip = new boolean[plan.tokens.size()];
+    }
+
+    private static void planVoidAndPrint(SourceFile sf, TranslatePlan plan) {
+        List<Token> tokens = plan.tokens;
         // 省略返回类型：`公有 加一() {` 等价于 `公有 无 加一() {`，翻译时补上 `void`。
         // 只在修饰符之后、名称后紧跟 `(`、且名称不等于所在类型名（构造器）时补，
         // 避免误伤方法调用、字段声明与构造器。
@@ -1841,11 +2052,7 @@ public class Cjc {
         for (int idx = 0; idx < tokens.size(); idx++) {
             Token t = tokens.get(idx);
             String text = t.text != null ? t.text : sf.original.substring(t.start, t.end);
-            if (swap[idx] != null) {
-                // 名称前置声明：这个标识符就是类型名
-                pendingType = t.text;
-                pendingKind = KEYWORDS.get(swap[idx].text);
-            } else if (t.kind == KIND_KEYWORD) {
+            if (t.kind == KIND_KEYWORD) {
                 String english = KEYWORDS.get(t.text);
                 if (english != null && (english.equals("class") || english.equals("interface") || english.equals("enum"))) {
                     pendingKind = english;
@@ -1951,6 +2158,17 @@ public class Cjc {
             }
         }
 
+        plan.typeAt = typeAt;
+        plan.kindAt = kindAt;
+        plan.inTypeBody = inTypeBody;
+        plan.insertVoid = insertVoid;
+        plan.insertOut = insertOut;
+        plan.insertPrint = insertPrint;
+    }
+
+    private static void planSugar(SourceFile sf, TranslatePlan plan) {
+        List<Token> tokens = plan.tokens;
+        Set<String> declared = plan.declared;
         // A5：类型推断 `令 名称 = …` → `var 名称 = …`、`常量 名称 = …` → `final var 名称 = …`。
         // 仅在语句开头、后接「名称 =」时识别；开关关闭时完全不动，`令` / `常量` 按普通标识符处理。
         boolean[] inferVar = new boolean[tokens.size()];
@@ -2125,6 +2343,22 @@ public class Cjc {
             }
         }
 
+        plan.inferVar = inferVar;
+        plan.inferConst = inferConst;
+        plan.insertForVar = insertForVar;
+        plan.repeatStart = repeatStart;
+        plan.repeatEnd = repeatEnd;
+        plan.repeatHeader = repeatHeader;
+        plan.renameLength = renameLength;
+        plan.renameElseIf = renameElseIf;
+        plan.renameSystem = renameSystem;
+        plan.renameArraycopy = renameArraycopy;
+    }
+
+    private static void planCalls(SourceFile sf, TranslatePlan plan) {
+        List<Token> tokens = plan.tokens;
+        boolean[] skip = plan.skip;
+        Set<String> declared = plan.declared;
         // 中文静态调用：`算术.平方根(…)` → `Math.sqrt(…)`；类名与方法名一起登记，跳过 `.` 与方法名。
         String[] staticCall = new String[tokens.size()];
         for (int idx = 0; idx + 2 < tokens.size(); idx++) {
@@ -2181,11 +2415,179 @@ public class Cjc {
             declMember[idx] = true;
         }
 
+        plan.staticCall = staticCall;
+        plan.callMember = callMember;
+        plan.declMember = declMember;
+    }
+
+    private static void planGenerics(SourceFile sf, TranslatePlan plan) {
+        List<Token> tokens = plan.tokens;
+        // 泛型实参中的基本类型别名：`清单<整数>` → `List<Integer>`。
+        // 基本类型是保留词，只可能出现在类型位置，所以「前 `<`/`,` 且后 `>`/`,`」足够安全；
+        // 其他位置（如 `整数 甲 = 1;`、`新建 整数[5]`）行为不变。
+        boolean[] wrapGeneric = new boolean[tokens.size()];
+        for (int idx = 0; idx < tokens.size(); idx++) {
+            Token t = tokens.get(idx);
+            if (t.kind != KIND_KEYWORD) {
+                continue;
+            }
+            String english = KEYWORDS.get(t.text);
+            if (english == null || !PRIMITIVE_WRAPPERS.containsKey(english)) {
+                continue;
+            }
+            String prev = idx > 0 ? prevText(sf.original, tokens, idx - 1) : "";
+            String next = idx + 1 < tokens.size() ? prevText(sf.original, tokens, idx + 1) : "";
+            if ((prev.equals("<") || prev.equals(",")) && (next.equals(">") || next.equals(","))) {
+                wrapGeneric[idx] = true;
+            }
+        }
+
+        // 4.5 `数组清单.从(...)` → `new ArrayList<>(List.of(...))`：
+        // 记下配对的右括号，输出时在右括号后再补一个 `)`，可变清单也就能一行建成。
+        int[] arrayListFromEnd = new int[tokens.size()];
+        for (int i = 0; i < arrayListFromEnd.length; i++) {
+            arrayListFromEnd[i] = -1;
+        }
+        boolean[] arrayListClose = new boolean[tokens.size()];
+        for (int idx = 0; idx + 3 < tokens.size(); idx++) {
+            Token t = tokens.get(idx);
+            if (!"数组清单".equals(t.text)) {
+                continue;
+            }
+            if (!prevText(sf.original, tokens, idx + 1).equals(".")
+                    || !prevText(sf.original, tokens, idx + 2).equals("从")
+                    || !prevText(sf.original, tokens, idx + 3).equals("(")) {
+                continue;
+            }
+            int depth = 0;
+            int close = -1;
+            for (int j = idx + 3; j < tokens.size(); j++) {
+                String txt = prevText(sf.original, tokens, j);
+                if (txt.equals("(")) {
+                    depth++;
+                } else if (txt.equals(")")) {
+                    depth--;
+                    if (depth == 0) {
+                        close = j;
+                        break;
+                    }
+                }
+            }
+            if (close < 0) {
+                continue;
+            }
+            arrayListFromEnd[idx] = close;
+            arrayListClose[close] = true;
+        }
+
+        plan.wrapGeneric = wrapGeneric;
+        plan.arrayListFromEnd = arrayListFromEnd;
+        plan.arrayListClose = arrayListClose;
+    }
+
+    private static void planPrintArgs(SourceFile sf, TranslatePlan plan) {
+        List<Token> tokens = plan.tokens;
+        boolean[] insertOut = plan.insertOut;
+        boolean[] insertPrint = plan.insertPrint;
+        // 4.8 `打印行("姓名：", 名字)` 多实参：顶层逗号换成 `+`，多 token 实参加括号。
+        // 只在语句开头、已判定要补 `System.out.` 的调用上处理；嵌套调用里的逗号不算顶层。
+        boolean[] printComma = new boolean[tokens.size()];
+        boolean[] printParenOpen = new boolean[tokens.size()];
+        boolean[] printParenClose = new boolean[tokens.size()];
+        for (int idx = 0; idx + 1 < tokens.size(); idx++) {
+            if (!insertOut[idx] && !insertPrint[idx]) {
+                continue;
+            }
+            if (!prevText(sf.original, tokens, idx + 1).equals("(")) {
+                continue;
+            }
+            int depth = 0;
+            int close = -1;
+            List<Integer> commas = new ArrayList<>();
+            for (int j = idx + 1; j < tokens.size(); j++) {
+                String txt = prevText(sf.original, tokens, j);
+                if (txt.equals("(")) {
+                    depth++;
+                } else if (txt.equals(")")) {
+                    depth--;
+                    if (depth == 0) {
+                        close = j;
+                        break;
+                    }
+                } else if (txt.equals(",") && depth == 1) {
+                    commas.add(j);
+                }
+            }
+            if (close < 0 || commas.isEmpty()) {
+                continue;
+            }
+            // 按顶层逗号切分实参；下标区间 [first, last]
+            List<int[]> args = new ArrayList<>();
+            int start = idx + 2;
+            for (int c : commas) {
+                args.add(new int[]{start, c - 1});
+                start = c + 1;
+            }
+            args.add(new int[]{start, close - 1});
+            for (int[] a : args) {
+                if (a[0] > a[1]) {
+                    continue;
+                }
+                if (a[1] > a[0]) {
+                    printParenOpen[a[0]] = true;
+                    printParenClose[a[1]] = true;
+                }
+            }
+            for (int c : commas) {
+                printComma[c] = true;
+            }
+        }
+
+        plan.printComma = printComma;
+        plan.printParenOpen = printParenOpen;
+        plan.printParenClose = printParenClose;
+    }
+
+    private static String renderTranslated(SourceFile sf, TranslatePlan plan) {
+        List<Token> tokens = plan.tokens;
+        Set<String> declared = plan.declared;
+        boolean[] skip = plan.skip;
+        boolean[] insertVoid = plan.insertVoid;
+        boolean[] insertOut = plan.insertOut;
+        boolean[] insertPrint = plan.insertPrint;
+        boolean[] inferVar = plan.inferVar;
+        boolean[] inferConst = plan.inferConst;
+        boolean[] insertForVar = plan.insertForVar;
+        boolean[] repeatStart = plan.repeatStart;
+        int[] repeatEnd = plan.repeatEnd;
+        String[] repeatHeader = plan.repeatHeader;
+        boolean[] renameLength = plan.renameLength;
+        boolean[] renameElseIf = plan.renameElseIf;
+        boolean[] renameSystem = plan.renameSystem;
+        boolean[] renameArraycopy = plan.renameArraycopy;
+        String[] staticCall = plan.staticCall;
+        boolean[] callMember = plan.callMember;
+        boolean[] declMember = plan.declMember;
+        boolean[] wrapGeneric = plan.wrapGeneric;
+        int[] arrayListFromEnd = plan.arrayListFromEnd;
+        boolean[] arrayListClose = plan.arrayListClose;
+        boolean[] printComma = plan.printComma;
+        boolean[] printParenOpen = plan.printParenOpen;
+        boolean[] printParenClose = plan.printParenClose;
         StringBuilder sb = new StringBuilder(sf.original.length() * 2);
         List<int[]> pending = new ArrayList<>(); // {origStart, origLen, genStart, genLen}
         int cursor = 0;
         for (int idx = 0; idx < tokens.size(); idx++) {
             Token t = tokens.get(idx);
+            // 前一 token 需要补的右括号：紧贴它的结尾输出，排在后续空白之前
+            if (idx > 0) {
+                if (arrayListClose[idx - 1]) {
+                    sb.append(')');
+                }
+                if (printParenClose[idx - 1]) {
+                    sb.append(')');
+                }
+            }
             if (skip[idx]) {
                 // 关键字已在前面的名称处输出，连同它与名称之间的空白一起跳过。
                 // 用 max 避免把 cursor 往回退（区域整体替换时 cursor 已越过后续 token）。
@@ -2194,6 +2596,14 @@ public class Cjc {
             }
             if (t.start > cursor) {
                 sb.append(sf.original, cursor, t.start);
+            }
+            if (printParenOpen[idx]) {
+                sb.append('(');
+            }
+            if (printComma[idx]) {
+                sb.append('+');
+                cursor = t.end;
+                continue;
             }
             if (repeatStart[idx]) {
                 // 计数循环：整段头部换成一个 for 语句，次数表达式已单独转译
@@ -2228,17 +2638,6 @@ public class Cjc {
                 sb.append(english);
                 pending.add(new int[]{t.start, t.text.length(), genStart, english.length()});
                 cursor = t.end;
-                continue;
-            }
-            if (swap[idx] != null) {
-                Token k = swap[idx];
-                String english = KEYWORDS.get(k.text);
-                int genStart = sb.length();
-                sb.append(english).append(' ');
-                sb.append(sf.original, t.start, t.end);
-                int genLen = sb.length() - genStart;
-                pending.add(new int[]{t.start, k.end - t.start, genStart, genLen});
-                cursor = k.end;
                 continue;
             }
             if (t.kind == KIND_IDENTIFIER && "入口".equals(t.text) && idx + 1 < tokens.size()) {
@@ -2326,8 +2725,22 @@ public class Cjc {
                 sb.append("var ");
                 pending.add(new int[]{t.start, 0, genStart, 4});
             }
+            if (arrayListFromEnd[idx] >= 0) {
+                // 4.5：`数组清单.从(` 整体换成 `new ArrayList<>(List.of(`，配对右括号后另补 `)`
+                int genStart = sb.length();
+                sb.append("new ArrayList<>(List.of(");
+                pending.add(new int[]{t.start, t.text.length(), genStart, sb.length() - genStart});
+                cursor = tokens.get(idx + 3).end;
+                skip[idx + 1] = true;
+                skip[idx + 2] = true;
+                skip[idx + 3] = true;
+                continue;
+            }
             if (t.kind == KIND_KEYWORD) {
                 String english = KEYWORDS.get(t.text);
+                if (wrapGeneric[idx]) {
+                    english = PRIMITIVE_WRAPPERS.get(english);
+                }
                 int genStart = sb.length();
                 sb.append(english);
                 int pad = t.text.length() - english.length();
@@ -2668,157 +3081,112 @@ public class Cjc {
 
     // ---------------------------------------------------------------- javac 诊断中文化
 
+    /** 诊断表的一行：正则 + 中文模板 + 可选建议；`{1}` / `{1:类型}` / `{1:去引号}` 为占位。 */
+    static final class DiagRule {
+        final Pattern pattern;
+        final String message;
+        final String hint;
+
+        DiagRule(Pattern pattern, String message, String hint) {
+            this.pattern = pattern;
+            this.message = message;
+            this.hint = hint;
+        }
+    }
+
+    static final List<DiagRule> DIAG_RULES = new ArrayList<>();
+
+    /**
+     * 加载诊断中文表：与关键字表同目录的 诊断中文表.txt，
+     * 每行「正则<TAB>中文模板[<TAB>建议模板]」；文件缺失时保持 javac 英文原文。
+     */
+    static void loadDiagnostics(Path tablePath) throws IOException {
+        Path diagPath = tablePath.resolveSibling("诊断中文表.txt");
+        if (!Files.exists(diagPath)) {
+            System.err.println("提示：未找到诊断中文表 " + diagPath + "，javac 诊断保持英文原文。");
+            return;
+        }
+        List<String> problems = new ArrayList<>();
+        List<DiagRule> rules = new ArrayList<>();
+        int lineNo = 0;
+        for (String raw : Files.readAllLines(diagPath, StandardCharsets.UTF_8)) {
+            lineNo++;
+            String line = raw;
+            if (lineNo == 1 && line.startsWith("\uFEFF")) {
+                line = line.substring(1);
+            }
+            if (line.strip().isEmpty() || line.strip().startsWith("#")) {
+                continue;
+            }
+            String[] cols = line.split("\t", -1);
+            if (cols.length < 2 || cols.length > 3) {
+                problems.add("第" + lineNo + "行应为「正则<TAB>中文模板[<TAB>建议模板]」：" + line);
+                continue;
+            }
+            String regex = cols[0].strip();
+            String message = cols[1].strip();
+            String hint = cols.length == 3 && !cols[2].strip().isEmpty() ? cols[2].strip() : null;
+            try {
+                rules.add(new DiagRule(Pattern.compile(regex), message, hint));
+            } catch (PatternSyntaxException e) {
+                problems.add("第" + lineNo + "行正则无法编译：" + e.getDescription());
+            }
+        }
+        if (rules.isEmpty()) {
+            problems.add("诊断中文表为空");
+        }
+        if (!problems.isEmpty()) {
+            for (String problem : problems) {
+                System.err.println("诊断中文表错误：" + problem);
+            }
+            System.err.println("诊断中文表校验未通过：" + problems.size() + " 处问题，文件 " + diagPath);
+            System.exit(2);
+        }
+        DIAG_RULES.clear();
+        DIAG_RULES.addAll(rules);
+    }
+
+    static final Pattern DIAG_PLACEHOLDER = Pattern.compile("\\{(\\d+)(?::([^}]+))?}");
+
+    /** 用正则匹配结果渲染模板：`{1}` 原样、`{1:类型}` 走 chineseType、`{1:去引号}` 去掉单引号。 */
+    static String renderDiagTemplate(String template, Matcher m) {
+        Matcher ph = DIAG_PLACEHOLDER.matcher(template);
+        StringBuilder sb = new StringBuilder();
+        while (ph.find()) {
+            String value = m.group(Integer.parseInt(ph.group(1)));
+            String modifier = ph.group(2);
+            if (modifier != null && value != null) {
+                if (modifier.equals("类型")) {
+                    value = chineseType(value.trim());
+                } else if (modifier.equals("去引号")) {
+                    value = value.replace("'", "");
+                }
+            }
+            ph.appendReplacement(sb, Matcher.quoteReplacement(value == null ? "" : value));
+        }
+        ph.appendTail(sb);
+        return sb.toString();
+    }
+
     /**
      * javac 自带的报错文本是英文（JDK 没有中文语言包），这里把常见错误翻成中文。
+     * 规则主体在 诊断中文表.txt；这里只保留 4 条无法表驱动的特例：
+     * 找不到符号（需要解析 symbol:/符号: 多行细节）、缺标点（分号/花括号/圆括号各给建议）。
      * 命中返回 {中文消息, 建议}；未命中返回 null，保留 javac 原文，避免 JDK 升级后误报。
      */
     static String[] localizeJavacMessage(String message) {
         String raw = message == null ? "" : message.replace("\r", "");
         String first = raw.split("\n", 2)[0].trim();
 
+        // 特例 1/2：找不到符号（英文与中文两套消息格式）
         if (first.startsWith("cannot find symbol")) {
             String symbol = captureAfter(raw, "symbol:");
             if (symbol == null) {
                 return rule("找不到符号", "检查拼写；确认变量已声明、类型已导入。");
             }
             String[] parts = symbol.split("\\s+", 2);
-            String kind = parts[0];
-            String name = parts.length > 1 ? parts[1] : "";
-            return symbolRule(kind, name);
+            return symbolRule(parts[0], parts.length > 1 ? parts[1] : "");
         }
-        Matcher m = findPattern("possible lossy conversion from (\\S+) to (\\S+)", first);
-        if (m != null) {
-            return rule("类型不匹配：从「" + chineseType(m.group(1)) + "」转「" + chineseType(m.group(2))
-                    + "」会丢失精度", "需要时写强制转换，例如「(整数) 值」。");
-        }
-        if (first.startsWith("incompatible types:")) {
-            m = findPattern("(.+) cannot be converted to (.+)", first);
-            if (m != null) {
-                String from = m.group(1).replaceFirst("incompatible types: ", "");
-                return rule("类型不匹配：「" + chineseType(from) + "」不能赋给「" + chineseType(m.group(2)) + "」",
-                        "检查变量与参数的类型，必要时显式转换。");
-            }
-            return rule("类型不匹配：两侧类型不一致", "检查变量与参数的类型。");
-        }
-        if (first.startsWith("class, interface") && first.endsWith("expected")) {
-            return rule("类外出现了多余的代码", "检查是否多写了一个「}」，或把语句写在了类的外面。");
-        }
-        if (first.startsWith("reached end of file while parsing")) {
-            return rule("文件在解析中途结束", "检查花括号与圆括号是否成对。");
-        }
-        if (first.startsWith("unclosed string literal")) {
-            return rule("字符串没有闭合", "检查这一行的引号是否成对。");
-        }
-        if (first.startsWith("unclosed comment")) {
-            return rule("注释没有闭合", "检查「/*」是否有对应的「*/」。");
-        }
-        if (first.startsWith("illegal character")) {
-            String ch = captureAfter(first, "illegal character:");
-            String tail = ch == null ? "" : "「" + ch.replace("'", "") + "」";
-            return rule("出现了非法字符" + tail, "中文标点请改成半角，例如「，」改「,」、「（」改「(」。");
-        }
-        if (first.startsWith("illegal start of expression")) {
-            return rule("表达式开头不合法", "最常见原因是上一行漏了分号，或用了无法映射的全角标点。");
-        }
-        if (first.startsWith("not a statement")) {
-            return rule("这不是一条合法语句", "检查这一行是不是赋值或方法调用。");
-        }
-        if (first.startsWith("missing return statement")) {
-            return rule("方法缺少 return", "所有分支都要返回值；不返回值时把返回类型写成「无」。");
-        }
-        m = findPattern("unreported exception (.+?); must be caught or declared", first);
-        if (m != null) {
-            return rule("可能抛出「" + chineseType(m.group(1)) + "」",
-                    "把这段代码放进「尝试 { … } 捕获 (… 出错) { … }」，或在方法签名后写「抛出」声明。");
-        }
-        if (first.startsWith("unreachable statement")) {
-            return rule("这行代码永远不会执行", "检查它前面是否有「返回」「抛出」「跳出」或「继续」。");
-        }
-        if (first.startsWith("identifier expected")) {
-            return rule("这里需要一个名称", "检查声明里是否漏了变量名或方法名。");
-        }
-        if (first.contains("unchecked conversion") || first.contains("[unchecked]")) {
-            return rule("未检查的泛型转换（可忽略此警告）", null);
-        }
-        m = findPattern("variable (\\S+) might not have been initialized", first);
-        if (m != null) {
-            return rule("变量「" + m.group(1) + "」可能未初始化", "声明时给它一个初始值。");
-        }
-        m = findPattern("non-static variable (\\S+) cannot be referenced from a static context", first);
-        if (m != null) {
-            return rule("静态方法里不能直接使用实例字段「" + m.group(1) + "」",
-                    "先「新建」对象再访问，或把字段改成「静态」。");
-        }
-        m = findPattern("non-static method (\\S+) cannot be referenced from a static context", first);
-        if (m != null) {
-            return rule("静态方法里不能直接调用实例方法「" + m.group(1) + "」",
-                    "先创建对象再调用，或把方法改成「静态」。");
-        }
-        m = findPattern("(?:variable|method|class|constructor) (.+?) is already defined", first);
-        if (m != null) {
-            return rule("「" + m.group(1) + "」重复定义", "换个名字，或删掉重复的声明。");
-        }
-        m = findPattern("(\\S+) has private access in", first);
-        if (m != null) {
-            return rule("「" + m.group(1) + "」是私有的，外部不能访问", "改用公有方法访问。");
-        }
-        m = findPattern("cannot assign a value to final variable (\\S+)", first);
-        if (m != null) {
-            return rule("不能给最终变量「" + m.group(1) + "」重新赋值", "去掉「最终」，或改在声明时赋值。");
-        }
-        if (first.startsWith("cannot return a value from method whose result type is void")) {
-            return rule("返回类型是「无」的方法不能返回值", "去掉 return 后面的值，或把返回类型改成实际类型。");
-        }
-        if (first.startsWith("invalid method declaration; return type required")) {
-            return rule("方法声明缺少返回类型", "在方法名前写返回类型，或用「无」；构造器名必须与类名完全一致。");
-        }
-        m = findPattern("class (\\S+) is public, should be declared in a file named", first);
-        if (m != null) {
-            return rule("公有类「" + m.group(1) + "」必须写在同名文件里",
-                    "文件名要与类名完全一致（含大小写），扩展名 .java。");
-        }
-        m = findPattern("array required, but (\\S+) found", first);
-        if (m != null) {
-            return rule("「" + m.group(1) + "」不是数组，不能用「[下标]」取值",
-                    "确认它声明成了数组，例如「整数[] 分数」。");
-        }
-        m = findPattern("package (\\S+) does not exist", first);
-        if (m != null) {
-            return rule("包「" + m.group(1) + "」不存在", "检查包名拼写与目录结构；Maven 工程需要先加依赖。");
-        }
-        m = findPattern("class file for (\\S+) not found", first);
-        if (m != null) {
-            return rule("找不到类文件「" + m.group(1) + "」", "检查 -cp 类路径或依赖是否齐全。");
-        }
-        m = findPattern("no suitable constructor found for (.+)", first);
-        if (m != null) {
-            return rule("没有匹配的构造器：" + m.group(1), "检查「新建」后面的参数个数与类型。");
-        }
-        if (first.contains("cannot be applied to given types") || first.startsWith("no suitable method found")) {
-            return rule("方法调用的参数不匹配", "检查参数个数、顺序与类型；构造器参数也要一一对应。");
-        }
-
-        m = findPattern("bad operand types for binary operator '(.+)'", first);
-        if (m != null) {
-            return rule("运算符「" + m.group(1) + "」不能用于这些类型", "检查两侧类型；拼接文本前先转成字符串。");
-        }
-        if (first.contains("does not override or implement a method from a supertype")) {
-            return rule("「覆写」标注的方法没有真正覆盖父类方法", "方法名与参数列表必须与父类完全一致。");
-        }
-        m = findPattern("class (.+) is not abstract and does not override abstract method (.+)", first);
-        if (m != null) {
-            return rule("类「" + m.group(1) + "」还有未实现的抽象方法「" + m.group(2) + "」",
-                    "实现它，或把类声明成「抽象」。");
-        }
-        if (first.startsWith("duplicate class")) {
-            return rule("类重复定义", "同一个包内类名不能重复。");
-        }
-        m = findPattern("^'(.+)' expected$", first);
-        if (m != null) {
-            return missingToken(m.group(1));
-        }
-
-        // ---- 中文消息（部分 JDK 自带中文语言包；中英文两套模式都兼容）
         if (first.startsWith("找不到符号")) {
             String symbol = captureAfter(raw, "符号:");
             if (symbol == null) {
@@ -2830,123 +3198,21 @@ public class Cjc {
             String[] parts = symbol.split("\\s+", 2);
             return symbolRule(parts[0], parts.length > 1 ? parts[1] : "");
         }
-        m = findPattern("从(\\S+)转换到(\\S+)可能会有损失", first);
+        // 特例 3/4：缺标点（分号 / 花括号 / 圆括号给出不同建议）
+        Matcher m = findPattern("^'(.+)' expected$", first);
         if (m != null) {
-            return rule("类型不匹配：从「" + chineseType(m.group(1)) + "」转「" + chineseType(m.group(2))
-                    + "」会丢失精度", "需要时写强制转换，例如「(整数) 值」。");
-        }
-        if (first.startsWith("不兼容的类型")) {
-            m = findPattern("不兼容的类型[:：]\\s*(.+?)无法转换为(.+)", first);
-            if (m != null) {
-                return rule("类型不匹配：「" + chineseType(m.group(1)) + "」不能赋给「" + chineseType(m.group(2)) + "」",
-                        "检查变量与参数的类型，必要时显式转换。");
-            }
-            return rule("类型不匹配：两侧类型不一致", "检查变量与参数的类型。");
+            return missingToken(m.group(1));
         }
         m = findPattern("需要'(.+)'", first);
         if (m != null) {
             return missingToken(m.group(1));
         }
-        m = findPattern("需要数组.*?但找到(.+)", first);
-        if (m != null) {
-            return rule("「" + chineseType(m.group(1)) + "」不是数组，不能用「[下标]」取值",
-                    "确认它声明成了数组，例如「整数[] 分数」。");
-        }
-        m = findPattern("类 (\\S+) 是公共的", first);
-        if (m != null) {
-            return rule("公有类「" + m.group(1) + "」必须写在同名文件里",
-                    "文件名要与类名完全一致（含大小写），扩展名 .java。");
-        }
-        m = findPattern("无法为 final 变量 (\\S+) 分配值", first);
-        if (m != null) {
-            return rule("不能给最终变量「" + m.group(1) + "」重新赋值", "去掉「最终」，或改在声明时赋值。");
-        }
-        m = findPattern("可能尚未初始化变量(.+)", first);
-        if (m != null) {
-            return rule("变量「" + m.group(1) + "」可能未初始化", "声明时给它一个初始值。");
-        }
-        m = findPattern("(\\S+) 在 .+ 中是 private 访问控制", first);
-        if (m != null) {
-            return rule("「" + m.group(1) + "」是私有的，外部不能访问", "改用公有方法访问。");
-        }
-        if (first.startsWith("缺少返回语句")) {
-            return rule("方法缺少 return", "所有分支都要返回值；不返回值时把返回类型写成「无」。");
-        }
-        m = findPattern("已在.+?中定义了(?:变量|方法|类|构造器) (.+)", first);
-        if (m != null) {
-            return rule("「" + m.group(1) + "」重复定义", "换个名字，或删掉重复的声明。");
-        }
-        m = findPattern("无法从静态上下文中引用非静态 (变量|方法) (.+)", first);
-        if (m != null) {
-            return "变量".equals(m.group(1))
-                    ? rule("静态方法里不能直接使用实例字段「" + m.group(2) + "」",
-                    "先「新建」对象再访问，或把字段改成「静态」。")
-                    : rule("静态方法里不能直接调用实例方法「" + m.group(2) + "」",
-                    "先创建对象再调用，或把方法改成「静态」。");
-        }
-        if (first.startsWith("不可达的语句")) {
-            return rule("这行代码永远不会执行", "检查它前面是否有「返回」「抛出」「跳出」或「继续」。");
-        }
-        if (first.startsWith("不是语句")) {
-            return rule("这不是一条合法语句", "检查这一行是不是赋值或方法调用。");
-        }
-        if (first.startsWith("非法表达式开始")) {
-            return rule("表达式开头不合法", "最常见原因是上一行漏了分号，或用了无法映射的全角标点。");
-        }
-        if (first.startsWith("非法的字符") || first.startsWith("非法字符")) {
-            String ch = captureAfter(first, "字符:");
-            String tail = ch == null ? "" : "「" + ch.replace("'", "") + "」";
-            return rule("出现了非法字符" + tail, "中文标点请改成半角，例如「，」改「,」、「（」改「(」。");
-        }
-        if (first.startsWith("方法声明无效")) {
-            return rule("方法声明缺少返回类型", "在方法名前写返回类型，或用「无」；构造器名必须与类名完全一致。");
-        }
-        m = findPattern("未报告的异常错误(.+?)[;；]", first);
-        if (m != null) {
-            return rule("可能抛出「" + chineseType(m.group(1).trim()) + "」",
-                    "把这段代码放进「尝试 { … } 捕获 (… 出错) { … }」，或在方法签名后写「抛出」声明。");
-        }
-        if (first.startsWith("void 方法不能返回值")) {
-            return rule("返回类型是「无」的方法不能返回值", "去掉 return 后面的值，或把返回类型改成实际类型。");
-        }
-        m = findPattern("二元运算符 '(.+)' 的操作数类型错误", first);
-        if (m != null) {
-            return rule("运算符「" + m.group(1) + "」不能用于这些类型", "检查两侧类型；拼接文本前先转成字符串。");
-        }
-        if (first.startsWith("类, 接口") || first.startsWith("类，接口")) {
-            return rule("类外出现了多余的代码", "检查是否多写了一个「}」，或把语句写在了类的外面。");
-        }
-        if (first.startsWith("在解析时已到达文件结尾") || first.startsWith("解析时已到达文件结尾")) {
-            return rule("文件在解析中途结束", "检查花括号与圆括号是否成对。");
-        }
-        if (first.startsWith("未结束的字符串字面值")) {
-            return rule("字符串没有闭合", "检查这一行的引号是否成对。");
-        }
-        if (first.startsWith("未结束的注释")) {
-            return rule("注释没有闭合", "检查「/*」是否有对应的「*/」。");
-        }
-        m = findPattern("程序包(.+)不存在", first);
-        if (m != null) {
-            return rule("包「" + m.group(1) + "」不存在", "检查包名拼写与目录结构；Maven 工程需要先加依赖。");
-        }
-        if (first.contains("无法应用于给定类型") || first.contains("未找到适合的方法")
-                || first.contains("找不到适合的方法")) {
-            return rule("方法调用的参数不匹配", "检查参数个数、顺序与类型；构造器参数也要一一对应。");
-        }
-        m = findPattern("没有找到适合的构造器(.+)", first);
-        if (m != null) {
-            return rule("没有匹配的构造器：" + m.group(1).trim(), "检查「新建」后面的参数个数与类型。");
-        }
-        if (first.startsWith("重复的类")) {
-            return rule("类重复定义", "同一个包内类名不能重复。");
-        }
-        m = findPattern("无法访问 (.+)", first);
-        if (m != null) {
-            return rule("无法访问「" + m.group(1) + "」", "检查访问修饰符（公有 / 私有 / 保护）。");
-        }
-        m = findPattern("找不到类文件 (.+)", first);
-        if (m != null) {
-            return rule("找不到类文件「" + m.group(1) + "」", "检查 -cp 类路径或依赖是否齐全。");
+        for (DiagRule r : DIAG_RULES) {
+            Matcher mm = r.pattern.matcher(first);
+            if (mm.find()) {
+                String hint = r.hint == null ? null : renderDiagTemplate(r.hint, mm);
+                return rule(renderDiagTemplate(r.message, mm), hint);
+            }
         }
         return null;
     }

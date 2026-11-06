@@ -25,18 +25,7 @@ $dictPath = Join-Path $PSScriptRoot '近义词典.txt'
 $configPath = Join-Path $PSScriptRoot '词典源.json'
 $syncPath = Join-Path $PSScriptRoot '同步词表.ps1'
 
-function Read-Utf8([string]$Path) {
-    return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
-}
-
-function Write-Utf8([string]$Path, [string]$Text) {
-    [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
-}
-
-function Split-List([string]$Text, [string[]]$Seps) {
-    $pattern = '[' + (($Seps | ForEach-Object { [regex]::Escape($_) }) -join '') + ']'
-    return @($Text -split $pattern | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-}
+Import-Module (Join-Path $PSScriptRoot '词表.psm1') -Force
 
 function Get-ByPath($Object, [string]$Path) {
     $current = $Object
@@ -125,28 +114,18 @@ if (-not $cfg.启用) {
 }
 
 # ---- 1. 读词典与索引 ----
-$text = Read-Utf8 $dictPath
-$nl = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
-$lines = $text -split "`r?`n"
-
-$groups = @{}
-$lineIndex = @{}
-$allWords = @{}
-for ($i = 0; $i -lt $lines.Count; $i++) {
-    $line = $lines[$i].Trim()
-    if ($i -eq 0 -and $line.Length -gt 0 -and [int]$line[0] -eq 0xFEFF) {
-        $line = $line.Substring(1).Trim()
-    }
-    if ($line -eq '' -or $line.StartsWith('#')) { continue }
-    if ($line -notmatch '^(.+?)=\[(.*)\]$') { continue }
-    $name = $Matches[1].Trim()
-    $words = Split-List $Matches[2] @('，', ',')
-    $groups[$name] = $words
-    $lineIndex[$name] = $i
-    # 组名本身也是关键字，先占位，避免其他组把它当近义词加进去
-    $allWords[$name] = $name
-    foreach ($word in $words) { $allWords[$word] = $name }
+try {
+    $词典 = 读取近义词典 $dictPath -宽松
+} catch {
+    Write-Error $_.Exception.Message
+    exit 2
 }
+$text = $词典.Text
+$nl = $词典.NewLine
+$lines = $词典.Lines
+$groups = $词典.Groups
+$lineIndex = $词典.LineIndex
+$allWords = $词典.AllWords
 if ($groups.Count -eq 0) {
     Write-Error '近义词典为空或格式错误'
     exit 2

@@ -12,7 +12,10 @@ import java.nio.file.Path;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.logging.Handler;
@@ -35,36 +38,38 @@ class 标准库测试 {
 
     @Test
     void 列表增删查与排序() {
-        列表<String> 名字 = 列表.由("小明", "小红", "小刚");
-        assertEquals(3, 名字.个数());
-        assertEquals("小明", 名字.取首());
-        assertEquals("小刚", 名字.取尾());
+        List<String> 名字 = new ArrayList<>(List.of("小明", "小红", "小刚"));
+        assertEquals(3, 名字.size());
+        assertEquals("小明", 名字.get(0));
+        assertEquals("小刚", 名字.get(2));
 
-        名字.加("小美").去(1);
-        assertEquals(3, 名字.个数());
-        assertTrue(名字.含("小美"));
-        assertFalse(名字.含("小红"));
+        名字.add("小美");
+        名字.remove(1);
+        assertEquals(3, 名字.size());
+        assertTrue(名字.contains("小美"));
+        assertFalse(名字.contains("小红"));
 
-        名字.排序();
-        assertEquals("小刚", 名字.取首());
-        assertEquals(0, 列表.由().个数());
+        Collections.sort(名字);
+        assertEquals("小刚", 名字.get(0));
+        assertTrue(List.of().isEmpty());
     }
 
     @Test
     void 映射存取与默认值() {
-        映射<String, Integer> 库存 = new 映射<>();
-        库存.放("苹果", 3).放("香蕉", 5);
+        Map<String, Integer> 库存 = new LinkedHashMap<>();
+        库存.put("苹果", 3);
+        库存.put("香蕉", 5);
 
-        assertEquals(3, 库存.取("苹果"));
-        assertEquals(0, 库存.取或("葡萄", 0));
-        assertTrue(库存.含键("香蕉"));
-        assertTrue(库存.含值(5));
-        assertEquals(2, 库存.个数());
+        assertEquals(3, 库存.get("苹果"));
+        assertEquals(0, 库存.getOrDefault("葡萄", 0));
+        assertTrue(库存.containsKey("香蕉"));
+        assertTrue(库存.containsValue(5));
+        assertEquals(2, 库存.size());
 
-        库存.删("苹果");
-        assertEquals(1, 库存.个数());
-        库存.清空();
-        assertTrue(库存.为空());
+        库存.remove("苹果");
+        assertEquals(1, 库存.size());
+        库存.clear();
+        assertTrue(库存.isEmpty());
     }
 
     @Test
@@ -127,7 +132,7 @@ class 标准库测试 {
 
     @Test
     void 集合工具排序与极值() {
-        List<Integer> 数值 = 列表.由(5, 2, 9);
+        List<Integer> 数值 = new ArrayList<>(List.of(5, 2, 9));
         集合工具.排序(数值);
         assertEquals(List.of(2, 5, 9), 数值);
         assertEquals(9, 集合工具.最大(数值));
@@ -217,9 +222,12 @@ class 标准库测试 {
 
     @Test
     void 数据JSON编码() {
-        映射<String, Object> 配置 = new 映射<>();
-        配置.放("名字", "小明").放("年龄", 18).放("标签", 列表.由("甲", "乙"))
-                .放("启用", true).放("备注", null);
+        Map<String, Object> 配置 = new LinkedHashMap<>();
+        配置.put("名字", "小明");
+        配置.put("年龄", 18);
+        配置.put("标签", List.of("甲", "乙"));
+        配置.put("启用", true);
+        配置.put("备注", null);
         assertEquals(
                 "{\"名字\":\"小明\",\"年龄\":18,\"标签\":[\"甲\",\"乙\"],\"启用\":true,\"备注\":null}",
                 数据.转JSON(配置));

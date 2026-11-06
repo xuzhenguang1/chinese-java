@@ -2,7 +2,7 @@
   "name": "chinese-java",
   "displayName": "中文 Java",
   "description": "为中文关键字 Java 提供语法高亮、代码片段、补全与悬停，并注入到标准 Java 语法，不改变文件语言模式。",
-  "version": "0.12.0",
+  "version": "0.14.0",
   "publisher": "cjc",
   "engines": {
     "vscode": "^1.80.0"
@@ -54,7 +54,12 @@
         "cjc.checkOnSave": {
           "type": "boolean",
           "default": true,
-          "description": "保存 .java 文件时运行 cjc 检查：CJK001（空格粘连）与 CJK002（全角标点）显示为错误，CJK101–CJK103 新手提示显示为警告。"
+          "description": "保存 .java 文件时运行 cjc 检查：CJK001（空格粘连）与 CJK002（全角标点）显示为错误，CJK101–CJK106 提示显示为警告。"
+        },
+        "cjc.checkOnType": {
+          "type": "boolean",
+          "default": true,
+          "description": "输入 .java 文件后 500ms 防抖运行 cjc 检查（检查内存中的内容，无需先保存）；CJK001/CJK002 显示为错误，CJK101–CJK106 显示为警告。"
         }
       }
     }
