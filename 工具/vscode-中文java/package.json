@@ -2,7 +2,7 @@
   "name": "chinese-java",
   "displayName": "中文 Java",
   "description": "为中文关键字 Java 提供语法高亮、代码片段、补全与悬停，并注入到标准 Java 语法，不改变文件语言模式。",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "publisher": "cjc",
   "engines": {
     "vscode": "^1.80.0"
