@@ -28,10 +28,6 @@ public final class 文本 {
         return 文本.repeat(次数);
     }
 
-    public static String 格式化(String 模板, Object... 参数) {
-        return String.format(模板, 参数);
-    }
-
     public static String 连接(String 分隔, Object... 值) {
         StringBuilder 构建器 = new StringBuilder();
         for (int i = 0; i < 值.length; i++) {

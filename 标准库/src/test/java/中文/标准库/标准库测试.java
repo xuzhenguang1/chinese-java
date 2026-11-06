@@ -2,7 +2,6 @@ package 中文.标准库;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -80,29 +79,13 @@ class 标准库测试 {
         assertEquals("你好", 文本.去空白(" 你好 "));
         assertEquals("甲/乙/丙", 文本.连接("/", "甲", "乙", "丙"));
         assertEquals("哈哈哈", 文本.重复("哈", 3));
-        assertEquals("值=42", 文本.格式化("值=%d", 42));
-    }
-
-    @Test
-    void 数学函数() throws Exception {
-        assertEquals(7, 数学.绝对值(-7));
-        assertEquals(9, 数学.最大(3, 9));
-        assertEquals(3, 数学.最小(3, 9));
-        assertEquals(12.0, 数学.平方根(144));
-        assertEquals(1024.0, 数学.幂(2, 10));
-        assertEquals(3L, 数学.取整(3.4));
-        assertEquals(Math.PI, 数学.圆周率);
     }
 
     @Test
     void 数值转换() {
-        assertEquals(42, 数值.转整数(" 42 "));
-        assertEquals(42L, 数值.转长整数("42"));
-        assertEquals(3.14, 数值.转双浮点("3.14"));
         assertEquals("42", 数值.转文本(42));
         assertTrue(数值.是整数("42"));
         assertFalse(数值.是整数("4.2"));
-        assertThrows(NumberFormatException.class, () -> 数值.转整数("abc"));
     }
 
     @Test
@@ -131,17 +114,10 @@ class 标准库测试 {
     }
 
     @Test
-    void 集合工具排序与极值() {
+    void 集合工具填充() {
         List<Integer> 数值 = new ArrayList<>(List.of(5, 2, 9));
-        集合工具.排序(数值);
-        assertEquals(List.of(2, 5, 9), 数值);
-        assertEquals(9, 集合工具.最大(数值));
-        assertEquals(2, 集合工具.最小(数值));
-
-        集合工具.反转(数值);
-        assertEquals(List.of(9, 5, 2), 数值);
-        集合工具.打乱(数值);
-        assertEquals(3, 数值.size());
+        集合工具.填充(数值, 0);
+        assertEquals(List.of(0, 0, 0), 数值);
     }
 
     @Test

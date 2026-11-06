@@ -93,7 +93,7 @@ public class Cjc {
     }
 
     // 中文标准库（包 中文.标准库）的类名：这些接收者上的成员调用保持原样，不走成员糖。
-    // 标准库类自己就提供中文方法（`文本.格式化`、`并发.关闭`、`集合工具.排序` 等），
+    // 标准库类自己就提供中文方法（`文本.去空白`、`并发.关闭`、`集合工具.填充` 等），
     // 若也按方法名全局改写，会变成这些类上不存在的方法名。
     // 白名单内容全部来自 工具\cjc\方法糖.txt 的 [白名单] 分区，这里只声明空集。
     static final Set<String> STDLIB_CLASSES = new LinkedHashSet<>();
@@ -917,7 +917,7 @@ public class Cjc {
         boolean script = looksLikeScript(text, tokens);
         int lineOffset = 0;
         // A3：文件里没有 导入 / 包，或只导入了 中文.标准库.* 时，自动补 6 个 JDK 包。
-        // 不自动补 中文.标准库.*：标准库类名（文本、数学、文件）容易与用户变量同名。
+        // 不自动补 中文.标准库.*：标准库类名（文本、数值、文件）容易与用户变量同名。
         if (!hasImportOrPackage(tokens) || hasOnlyStdlibImports(text, tokens)) {
             text = "导入 java.util.*;\n导入 java.nio.file.*;\n导入 java.io.*;\n导入 java.util.stream.*;\n"
                     + "导入 java.util.concurrent.*;\n导入 java.util.logging.*;\n" + text;
@@ -2471,7 +2471,7 @@ public class Cjc {
             if (!prevText(sf.original, tokens, idx + 1).equals("(")) {
                 continue;
             }
-            // 中文标准库类名上的调用保持原样：`文本.格式化` / `并发.关闭` / `集合工具.排序`
+            // 中文标准库类名上的调用保持原样：`文本.去空白` / `并发.关闭` / `集合工具.填充`
             // 是这些类自己的方法，若按方法名全局改写会变成不存在的方法名。
             // 但同名变量优先：文件里声明过 `文本` 变量时，`文本.修剪()` 仍要转译。
             if (isStdlibReceiver(tokens, sf.original, idx - 2, declared)) {
