@@ -137,96 +137,98 @@ public class Cjc {
     // 内容全部来自 方法糖.txt，这里只声明空表。
     static final LinkedHashMap<String, String> STATIC_CALLS = new LinkedHashMap<>();
 
+    /** 命令行选项：由 parseOptions 填充，main 只负责按命令分发。 */
+    static final class Options {
+        String command;
+        final List<String> inputs = new ArrayList<>();
+        Path outDir;
+        Path jarPath;
+        String mainClass;
+        String tableArg;
+        String classpath;
+        boolean includeCompile;
+    }
+
+    /** 解析 `命令 输入… [选项]`；缺值时打印中文错误并退出码 2。 */
+    static Options parseOptions(String[] args) {
+        Options opt = new Options();
+        opt.command = args[0];
+        for (int i = 1; i < args.length; i++) {
+            String arg = args[i];
+            if (arg.equals("-d")) {
+                opt.outDir = Paths.get(optionValue(args, ++i, "-d", "输出目录"));
+            } else if (arg.equals("-jar")) {
+                opt.jarPath = Paths.get(optionValue(args, ++i, "-jar", "jar 路径"));
+            } else if (arg.equals("-主类")) {
+                opt.mainClass = optionValue(args, ++i, "-主类", "全限定类名");
+            } else if (arg.equals("--表")) {
+                opt.tableArg = optionValue(args, ++i, "--表", "关键字表路径");
+            } else if (arg.equals("-cp") || arg.equals("--类路径")) {
+                opt.classpath = optionValue(args, ++i, arg, "类路径");
+            } else if (arg.equals("--允许推断")) {
+                allowInference = true;
+            } else if (arg.equals("--含编译")) {
+                opt.includeCompile = true;
+            } else if (arg.equals("--严格标点")) {
+                strictPunctuation = true;
+            } else {
+                opt.inputs.add(arg);
+            }
+        }
+        return opt;
+    }
+
+    /** 取选项值：缺少时报「错误：<开关> 后缺少<说明>」并退出码 2。 */
+    static String optionValue(String[] args, int index, String flag, String what) {
+        if (index >= args.length) {
+            System.err.println("错误：" + flag + " 后缺少" + what);
+            System.exit(2);
+        }
+        return args[index];
+    }
+
     public static void main(String[] args) throws IOException {
         if (args.length == 0) {
             usage();
             System.exit(2);
         }
-        String command = args[0];
-        List<String> inputs = new ArrayList<>();
-        Path outDir = null;
-        Path jarPath = null;
-        String mainClass = null;
-        String tableArg = null;
-        String classpath = null;
-        boolean includeCompile = false;
-        for (int i = 1; i < args.length; i++) {
-            if (args[i].equals("-d")) {
-                if (i + 1 >= args.length) {
-                    System.err.println("错误：-d 后缺少输出目录");
-                    System.exit(2);
-                }
-                outDir = Paths.get(args[++i]);
-            } else if (args[i].equals("-jar")) {
-                if (i + 1 >= args.length) {
-                    System.err.println("错误：-jar 后缺少 jar 路径");
-                    System.exit(2);
-                }
-                jarPath = Paths.get(args[++i]);
-            } else if (args[i].equals("-主类")) {
-                if (i + 1 >= args.length) {
-                    System.err.println("错误：-主类 后缺少全限定类名");
-                    System.exit(2);
-                }
-                mainClass = args[++i];
-            } else if (args[i].equals("--表")) {
-                if (i + 1 >= args.length) {
-                    System.err.println("错误：--表 后缺少关键字表路径");
-                    System.exit(2);
-                }
-                tableArg = args[++i];
-            } else if (args[i].equals("-cp") || args[i].equals("--类路径")) {
-                if (i + 1 >= args.length) {
-                    System.err.println("错误：" + args[i] + " 后缺少类路径");
-                    System.exit(2);
-                }
-                classpath = args[++i];
-            } else if (args[i].equals("--允许推断")) {
-                allowInference = true;
-            } else if (args[i].equals("--含编译")) {
-                includeCompile = true;
-            } else if (args[i].equals("--严格标点")) {
-                strictPunctuation = true;
-            } else {
-                inputs.add(args[i]);
-            }
-        }
-        boolean knownCommand = command.equals("检查") || command.equals("编译")
-                || command.equals("转译") || command.equals("反译") || command.equals("运行")
-                || command.equals("新建");
-        if (!knownCommand || inputs.isEmpty()) {
+        Options opt = parseOptions(args);
+        boolean knownCommand = opt.command.equals("检查") || opt.command.equals("编译")
+                || opt.command.equals("转译") || opt.command.equals("反译") || opt.command.equals("运行")
+                || opt.command.equals("新建");
+        if (!knownCommand || opt.inputs.isEmpty()) {
             usage();
             System.exit(2);
         }
-        if (jarPath != null && mainClass == null) {
+        if (opt.jarPath != null && opt.mainClass == null) {
             System.err.println("错误：-jar 需要同时用 -主类 指定入口类（例如 -主类 demo.app.Main）");
             System.exit(2);
         }
-        if (mainClass != null && jarPath == null && !command.equals("运行")) {
+        if (opt.mainClass != null && opt.jarPath == null && !opt.command.equals("运行")) {
             System.err.println("错误：-主类 只能配合 -jar 或 运行 命令使用");
             System.exit(2);
         }
 
-        if (command.equals("新建")) {
-            createProject(inputs, resolveTable(tableArg));
+        if (opt.command.equals("新建")) {
+            createProject(opt.inputs, resolveTable(opt.tableArg));
             return;
         }
 
-        Path tablePath = resolveTable(tableArg);
+        Path tablePath = resolveTable(opt.tableArg);
         loadKeywords(tablePath);
         loadMethodSugar(tablePath);
         loadDiagnostics(tablePath);
 
-        if (command.equals("反译")) {
-            if (outDir == null) {
+        if (opt.command.equals("反译")) {
+            if (opt.outDir == null) {
                 System.err.println("错误：反译命令需要指定输出目录，例如 -d 中文源码");
                 System.exit(2);
             }
-            reverse(inputs, outDir);
+            reverse(opt.inputs, opt.outDir);
             return;
         }
 
-        LinkedHashMap<Path, Path> collected = collect(inputs);
+        LinkedHashMap<Path, Path> collected = collect(opt.inputs);
         List<SourceFile> files = new ArrayList<>();
         Set<String> identifierNames = new HashSet<>();
         for (Map.Entry<Path, Path> e : collected.entrySet()) {
@@ -250,9 +252,9 @@ public class Cjc {
                     + " 处空格粘连，CJK002 " + punctuationErrors + " 处全角标点）。");
             System.exit(1);
         }
-        if (command.equals("检查")) {
-            if (includeCompile) {
-                String cp = classpath != null ? classpath : defaultStdlibClasspath(tablePath);
+        if (opt.command.equals("检查")) {
+            if (opt.includeCompile) {
+                String cp = opt.classpath != null ? opt.classpath : defaultStdlibClasspath(tablePath);
                 Path tempOut = Files.createTempDirectory("cjc-check-");
                 int compileErrors;
                 try {
@@ -279,35 +281,35 @@ public class Cjc {
             }
             return;
         }
-        if (command.equals("运行")) {
-            runExecution(files, classpath, mainClass);
+        if (opt.command.equals("运行")) {
+            runExecution(files, opt.classpath, opt.mainClass);
             return;
         }
-        if (outDir == null) {
-            System.err.println("错误：" + command + "命令需要指定输出目录，例如 -d 输出");
+        if (opt.outDir == null) {
+            System.err.println("错误：" + opt.command + "命令需要指定输出目录，例如 -d 输出");
             System.exit(2);
         }
-        if (command.equals("转译")) {
-            writeTranslated(files, outDir);
-            System.out.println("转译完成：" + files.size() + " 个文件 → " + outDir.toAbsolutePath().normalize());
+        if (opt.command.equals("转译")) {
+            writeTranslated(files, opt.outDir);
+            System.out.println("转译完成：" + files.size() + " 个文件 → " + opt.outDir.toAbsolutePath().normalize());
             return;
         }
 
-        int compileErrors = compile(files, outDir, classpath);
+        int compileErrors = compile(files, opt.outDir, opt.classpath);
         if (compileErrors > 0) {
             System.out.println();
             System.out.println("编译失败：" + compileErrors + " 个错误。");
             System.exit(1);
         }
-        System.out.println("编译成功，class 输出目录：" + outDir.toAbsolutePath().normalize());
+        System.out.println("编译成功，class 输出目录：" + opt.outDir.toAbsolutePath().normalize());
 
-        if (jarPath != null) {
-            if (packageJar(outDir, jarPath, mainClass) != 0) {
+        if (opt.jarPath != null) {
+            if (packageJar(opt.outDir, opt.jarPath, opt.mainClass) != 0) {
                 System.out.println();
                 System.out.println("打包失败。");
                 System.exit(1);
             }
-            System.out.println("打包成功，可运行 jar：" + jarPath.toAbsolutePath().normalize());
+            System.out.println("打包成功，可运行 jar：" + opt.jarPath.toAbsolutePath().normalize());
         }
     }
 
@@ -478,6 +480,50 @@ public class Cjc {
         return null;
     }
 
+    /** 词表文件的一行：行号（从 1 开始）与剥掉首行 BOM 后的原始文本。 */
+    static final class TableLine {
+        final int lineNo;
+        final String text;
+
+        TableLine(int lineNo, String text) {
+            this.lineNo = lineNo;
+            this.text = text;
+        }
+    }
+
+    /**
+     * 读词表文件：统一剥掉首行 BOM，跳过空行与 `#` 注释行，返回带真实行号的原始文本。
+     * 关键字表、近义词典、方法糖表、诊断中文表四个加载器共用。
+     */
+    static List<TableLine> readTableLines(Path path) throws IOException {
+        List<TableLine> lines = new ArrayList<>();
+        int lineNo = 0;
+        for (String raw : Files.readAllLines(path, StandardCharsets.UTF_8)) {
+            lineNo++;
+            String line = raw;
+            if (lineNo == 1 && line.startsWith("\uFEFF")) {
+                line = line.substring(1);
+            }
+            if (line.strip().isEmpty() || line.strip().startsWith("#")) {
+                continue;
+            }
+            lines.add(new TableLine(lineNo, line));
+        }
+        return lines;
+    }
+
+    /** 汇总词表问题：逐条打印「<表名>错误：…」，再打印校验未通过并退出码 2。 */
+    static void failTable(String label, Path path, List<String> problems) {
+        if (problems.isEmpty()) {
+            return;
+        }
+        for (String problem : problems) {
+            System.err.println(label + "错误：" + problem);
+        }
+        System.err.println(label + "校验未通过：" + problems.size() + " 处问题，文件 " + path);
+        System.exit(2);
+    }
+
     /**
      * 加载近义词典：与关键字表同目录的 近义词典.txt，格式「组名=[近义词1，近义词2，…]」。
      * 组名即反译规范名；词典可在不改关键字表的情况下随时增删近义词。
@@ -489,16 +535,9 @@ public class Cjc {
             return;
         }
         Set<String> seen = new HashSet<>();
-        int lineNo = 0;
-        for (String raw : Files.readAllLines(dictPath, StandardCharsets.UTF_8)) {
-            lineNo++;
-            String line = raw.strip();
-            if (lineNo == 1 && line.startsWith("\uFEFF")) {
-                line = line.substring(1).strip();
-            }
-            if (line.isEmpty() || line.startsWith("#")) {
-                continue;
-            }
+        for (TableLine entry : readTableLines(dictPath)) {
+            int lineNo = entry.lineNo;
+            String line = entry.text.strip();
             int eq = line.indexOf('=');
             if (eq <= 0 || eq == line.length() - 1) {
                 problems.add("近义词典第" + lineNo + "行格式错误，应为「组名=[近义词1，近义词2]」：" + line);
@@ -617,17 +656,9 @@ public class Cjc {
         }
         List<String> problems = new ArrayList<>();
         loadDictionary(tablePath, problems);
-        int lineNo = 0;
-        for (String raw : Files.readAllLines(tablePath, StandardCharsets.UTF_8)) {
-            lineNo++;
-            String line = raw.strip();
-            if (lineNo == 1 && line.startsWith("\uFEFF")) {
-                // 编辑器可能给首行写入 BOM，先剥离
-                line = line.substring(1).strip();
-            }
-            if (line.isEmpty() || line.startsWith("#")) {
-                continue;
-            }
+        for (TableLine entry : readTableLines(tablePath)) {
+            int lineNo = entry.lineNo;
+            String line = entry.text.strip();
             int eq = line.indexOf('=');
             if (eq <= 0 || eq == line.length() - 1) {
                 problems.add("第" + lineNo + "行格式错误，应为「中文=英文」或「英文=[中文1，中文2]」：" + line);
@@ -684,11 +715,7 @@ public class Cjc {
         // 翻译按整词匹配（标识符全文等于关键字才命中），因此长短词不会互相干扰，
         // 不必再做前缀无关校验；最长优先只用于 CJK001 粘连启发式的定位。
         if (!problems.isEmpty()) {
-            for (String problem : problems) {
-                System.err.println("关键字表错误：" + problem);
-            }
-            System.err.println("关键字表校验未通过：" + problems.size() + " 处问题，文件 " + tablePath);
-            System.exit(2);
+            failTable("关键字表", tablePath, problems);
         }
         SORTED_KEYWORDS.clear();
         SORTED_KEYWORDS.addAll(KEYWORDS.keySet());
@@ -722,16 +749,9 @@ public class Cjc {
         boolean[] seen = new boolean[4];
         List<String> problems = new ArrayList<>();
         String section = null;
-        int lineNo = 0;
-        for (String raw : Files.readAllLines(sugarPath, StandardCharsets.UTF_8)) {
-            lineNo++;
-            String line = raw.strip();
-            if (lineNo == 1 && line.startsWith("\uFEFF")) {
-                line = line.substring(1).strip();
-            }
-            if (line.isEmpty() || line.startsWith("#")) {
-                continue;
-            }
+        for (TableLine entry : readTableLines(sugarPath)) {
+            int lineNo = entry.lineNo;
+            String line = entry.text.strip();
             if (line.startsWith("[") && line.endsWith("]")) {
                 section = line.substring(1, line.length() - 1).strip();
                 int index = methodSugarSectionIndex(section);
@@ -790,11 +810,7 @@ public class Cjc {
             problems.add("方法糖表存在空分区");
         }
         if (!problems.isEmpty()) {
-            for (String problem : problems) {
-                System.err.println("方法糖表错误：" + problem);
-            }
-            System.err.println("方法糖表校验未通过：" + problems.size() + " 处问题，文件 " + sugarPath);
-            System.exit(2);
+            failTable("方法糖表", sugarPath, problems);
         }
         MEMBER_CALLS.clear();
         MEMBER_CALLS.putAll(members);
@@ -1312,57 +1328,24 @@ public class Cjc {
             }
             // 行注释
             if (cp == '/' && i + 1 < n && source.charAt(i + 1) == '/') {
-                int j = i + 2;
-                while (j < n && source.charAt(j) != '\n' && source.charAt(j) != '\r') {
-                    j++;
-                }
-                i = j;
+                i = skipLineComment(source, i);
                 continue;
             }
             // 块注释
             if (cp == '/' && i + 1 < n && source.charAt(i + 1) == '*') {
-                int j = source.indexOf("*/", i + 2);
-                i = (j < 0) ? n : j + 2;
+                i = skipBlockComment(source, i);
                 continue;
             }
             // 文本块
             if (cp == '"' && source.startsWith("\"\"\"", i)) {
-                int j = i + 3;
-                while (j < n) {
-                    int k = source.indexOf("\"\"\"", j);
-                    if (k < 0) {
-                        j = n;
-                        break;
-                    }
-                    if (k > 0 && source.charAt(k - 1) == '\\') {
-                        j = k + 1;
-                        continue;
-                    }
-                    j = k + 3;
-                    break;
-                }
+                int j = skipTextBlock(source, i);
                 tokens.add(new Token(KIND_OTHER, i, j, null));
                 i = j;
                 continue;
             }
             // 字符串 / 字符字面量
             if (cp == '"' || cp == '\'') {
-                int j = i + 1;
-                while (j < n) {
-                    char ch = source.charAt(j);
-                    if (ch == '\\') {
-                        j += 2;
-                        continue;
-                    }
-                    if (ch == cp || ch == '\n') {
-                        j++;
-                        break;
-                    }
-                    j++;
-                }
-                if (j > n) {
-                    j = n;
-                }
+                int j = skipLiteral(source, i, cp);
                 tokens.add(new Token(KIND_OTHER, i, j, null));
                 i = j;
                 continue;
@@ -1379,34 +1362,13 @@ public class Cjc {
                     i += Character.charCount(next);
                 }
                 String text = source.substring(start, i);
-                int kind;
-                if (english) {
-                    kind = ENGLISH_KEYWORDS.contains(text) ? KIND_EN_KEYWORD : KIND_IDENTIFIER;
-                } else {
-                    kind = KEYWORDS.containsKey(text) ? KIND_KEYWORD : KIND_IDENTIFIER;
-                }
-                tokens.add(new Token(kind, start, i, text));
+                tokens.add(new Token(identifierKind(text, english), start, i, text));
                 continue;
             }
             // 数字字面量（整体跳过，不参与关键字判定）
             if (Character.isDigit(cp) || (cp == '.' && i + 1 < n && Character.isDigit(source.charAt(i + 1)))) {
                 int start = i;
-                i += width;
-                while (i < n) {
-                    int next = source.codePointAt(i);
-                    if (Character.isJavaIdentifierPart(next) || next == '.') {
-                        i += Character.charCount(next);
-                        continue;
-                    }
-                    if ((next == '+' || next == '-') && i > start) {
-                        int prev = source.codePointBefore(i);
-                        if (prev == 'e' || prev == 'E') {
-                            i++;
-                            continue;
-                        }
-                    }
-                    break;
-                }
+                i = skipNumber(source, i);
                 tokens.add(new Token(KIND_OTHER, start, i, null));
                 continue;
             }
@@ -1417,31 +1379,10 @@ public class Cjc {
                 continue;
             }
             // 句号「。」与顿号「、」：默认自动纠正（只提示 CJK106），`--严格标点` 时仍报 CJK002。
-            // 句号在行末 / `}` 前按语句结束处理成 `;`，其余位置按成员访问处理成 `.`。
             if (cp == 0x3001 || cp == 0x3002) {
-                if (strictPunctuation) {
-                    tokens.add(new Token(KIND_BAD_PUNCT, i, i + width, new String(Character.toChars(cp))));
-                } else {
-                    String folded;
-                    if (cp == 0x3001) {
-                        folded = ",";
-                    } else {
-                        int k = i + 1;
-                        while (k < n) {
-                            char ch = source.charAt(k);
-                            if (ch == ' ' || ch == '\t' || ch == 0x3000) {
-                                k++;
-                                continue;
-                            }
-                            break;
-                        }
-                        boolean lineEnd = k >= n || source.charAt(k) == '\n' || source.charAt(k) == '\r'
-                                || source.charAt(k) == '}'
-                                || (source.charAt(k) == '/' && k + 1 < n && source.charAt(k + 1) == '/');
-                        folded = lineEnd ? ";" : ".";
-                    }
-                    tokens.add(new Token(KIND_PUNCT, i, i + width, folded));
-                }
+                String folded = strictPunctuation ? null : foldSentencePunctuation(cp, source, i);
+                tokens.add(new Token(folded == null ? KIND_BAD_PUNCT : KIND_PUNCT,
+                        i, i + width, folded == null ? new String(Character.toChars(cp)) : folded));
                 i += width;
                 continue;
             }
@@ -1455,6 +1396,114 @@ public class Cjc {
             i += width;
         }
         return tokens;
+    }
+
+    /** 标识符分类：反译时认英文关键字，正常转译时认中文关键字，其余为普通标识符。 */
+    static int identifierKind(String text, boolean english) {
+        if (english) {
+            return ENGLISH_KEYWORDS.contains(text) ? KIND_EN_KEYWORD : KIND_IDENTIFIER;
+        }
+        return KEYWORDS.containsKey(text) ? KIND_KEYWORD : KIND_IDENTIFIER;
+    }
+
+    /** 行注释：从 `//` 跳到行尾（不含换行符）。 */
+    static int skipLineComment(String source, int i) {
+        int n = source.length();
+        int j = i + 2;
+        while (j < n && source.charAt(j) != '\n' && source.charAt(j) != '\r') {
+            j++;
+        }
+        return j;
+    }
+
+    /** 块注释：从 `/*` 跳到 `*` + `/` 之后；未闭合时到文件末尾。 */
+    static int skipBlockComment(String source, int i) {
+        int j = source.indexOf("*/", i + 2);
+        return (j < 0) ? source.length() : j + 2;
+    }
+
+    /** 文本块：从 `"""` 跳到收尾 `"""` 之后；被 `\` 转义的引号不算结束。 */
+    static int skipTextBlock(String source, int i) {
+        int n = source.length();
+        int j = i + 3;
+        while (j < n) {
+            int k = source.indexOf("\"\"\"", j);
+            if (k < 0) {
+                return n;
+            }
+            if (k > 0 && source.charAt(k - 1) == '\\') {
+                j = k + 1;
+                continue;
+            }
+            return k + 3;
+        }
+        return n;
+    }
+
+    /** 字符串 / 字符字面量：跳到收尾引号（或行尾），`\` 转义整体跳过。 */
+    static int skipLiteral(String source, int i, int quoteCp) {
+        int n = source.length();
+        int j = i + 1;
+        while (j < n) {
+            char ch = source.charAt(j);
+            if (ch == '\\') {
+                j += 2;
+                continue;
+            }
+            if (ch == quoteCp || ch == '\n') {
+                j++;
+                break;
+            }
+            j++;
+        }
+        return Math.min(j, n);
+    }
+
+    /** 数字字面量：允许 `1.5`、`1e-3` 这类写法，整体跳过。 */
+    static int skipNumber(String source, int i) {
+        int n = source.length();
+        int start = i;
+        i += Character.charCount(source.codePointAt(i));
+        while (i < n) {
+            int next = source.codePointAt(i);
+            if (Character.isJavaIdentifierPart(next) || next == '.') {
+                i += Character.charCount(next);
+                continue;
+            }
+            if ((next == '+' || next == '-') && i > start) {
+                int prev = source.codePointBefore(i);
+                if (prev == 'e' || prev == 'E') {
+                    i++;
+                    continue;
+                }
+            }
+            break;
+        }
+        return i;
+    }
+
+    /**
+     * 句号「。」与顿号「、」折叠：顿号固定为 `,`；句号在行末 / `}` 前按语句结束处理成 `;`，
+     * 其余位置按成员访问处理成 `.`。
+     */
+    static String foldSentencePunctuation(int cp, String source, int i) {
+        if (cp == 0x3001) {
+            return ",";
+        }
+        int n = source.length();
+        int k = i + 1;
+        while (k < n) {
+            char ch = source.charAt(k);
+            if (ch == ' ' || ch == '\t' || ch == 0x3000) {
+                k++;
+                continue;
+            }
+            break;
+        }
+        boolean lineEnd = k >= n || source.charAt(k) == '\n' || source.charAt(k) == '\r'
+                || source.charAt(k) == '}'
+                || (source.charAt(k) == '/' && k + 1 < n && source.charAt(k + 1) == '/');
+        return lineEnd ? ";" : ".";
     }
 
     // ------------------------------------------------------------------ 空格硬约束检查
@@ -2171,46 +2220,68 @@ public class Cjc {
         Set<String> declared = plan.declared;
         // A5：类型推断 `令 名称 = …` → `var 名称 = …`、`常量 名称 = …` → `final var 名称 = …`。
         // 仅在语句开头、后接「名称 =」时识别；开关关闭时完全不动，`令` / `常量` 按普通标识符处理。
-        boolean[] inferVar = new boolean[tokens.size()];
-        boolean[] inferConst = new boolean[tokens.size()];
-        if (allowInference) {
-            for (int idx = 0; idx + 2 < tokens.size(); idx++) {
-                Token t = tokens.get(idx);
-                if (t.kind != KIND_IDENTIFIER) {
-                    continue;
-                }
-                boolean isVar = "令".equals(t.text);
-                boolean isConst = "常量".equals(t.text);
-                if (!isVar && !isConst) {
-                    continue;
-                }
-                if (idx > 0) {
-                    Token prev = tokens.get(idx - 1);
-                    String prevText = prev.text != null ? prev.text : sf.original.substring(prev.start, prev.end);
-                    if (!(prevText.equals("{") || prevText.equals("}") || prevText.equals(";")
-                            || prevText.equals("(") || prevText.equals(":"))) {
-                        continue;
-                    }
-                }
-                if (tokens.get(idx + 1).kind != KIND_IDENTIFIER) {
-                    continue;
-                }
-                Token eq = tokens.get(idx + 2);
-                String eqText = eq.text != null ? eq.text : sf.original.substring(eq.start, eq.end);
-                if (!eqText.equals("=")) {
-                    continue;
-                }
-                if (isVar) {
-                    inferVar[idx] = true;
-                } else {
-                    inferConst[idx] = true;
-                }
-            }
-        }
+        plan.inferVar = planInference(sf, tokens, "令");
+        plan.inferConst = planInference(sf, tokens, "常量");
 
         // 增强 for 省略类型：`对于 (名 : 名单)` → `for (var 名 : 名单)`。
         // 只认 `for (` 之后是「单个标识符 + 冒号」的形式：带类型的写法首 token 是类型别名
         // （按关键字处理），传统三段式 for 的标识符后是 `=`，都不会命中。
+        plan.insertForVar = planForVar(sf, tokens);
+
+        // 计数循环糖：`重复 3 次 { … }` → `for (int 序号 = 1; 序号 <= 3; 序号++) { … }`。
+        // 默认循环变量名 `序号`；写成 `重复 3 次 (名) {` 可自选变量名，避免与同名变量冲突。
+        // 只认语句开头的 `重复`，且「次数」后必须紧跟 `{`；次数表达式原样交给 translateFragment 转译。
+        RepeatPlan repeat = planRepeat(sf, tokens, declared);
+        plan.repeatStart = repeat.start;
+        plan.repeatEnd = repeat.end;
+        plan.repeatHeader = repeat.header;
+
+        // 中文属性 `长度`：`数组.长度` → `数组.length`（方法调用 `字符串.长度()` 同样适用）。
+        // 只认 `.` 之后的位置，名为 `长度` 的变量与字段声明不受影响。
+        plan.renameLength = planLength(sf, tokens);
+
+        // 语法糖 `否则若 (`：`否则` + `若` 粘连成一个标识符，这里整体还原成 `else if`。
+        plan.renameElseIf = planElseIf(sf, tokens);
+
+        // 中文类名 `系统`：`系统.数组复制(...)` → `System.arraycopy(...)`。
+        // 只认后接 `.` 的位置，名为 `系统` 的变量不受影响。
+        plan.renameSystem = planSystem(sf, tokens);
+
+        // 系统方法 `数组复制`：`系统.数组复制(...)` → `System.arraycopy(...)`。
+        plan.renameArraycopy = planArraycopy(sf, tokens);
+    }
+
+    /** A5 类型推断：`令 名称 = …` / `常量 名称 = …` 位于语句开头时标记；开关关闭时全为 false。 */
+    private static boolean[] planInference(SourceFile sf, List<Token> tokens, String word) {
+        boolean[] flag = new boolean[tokens.size()];
+        if (!allowInference) {
+            return flag;
+        }
+        for (int idx = 0; idx + 2 < tokens.size(); idx++) {
+            Token t = tokens.get(idx);
+            if (t.kind != KIND_IDENTIFIER || !word.equals(t.text)) {
+                continue;
+            }
+            if (idx > 0) {
+                String prev = prevText(sf.original, tokens, idx - 1);
+                if (!(prev.equals("{") || prev.equals("}") || prev.equals(";")
+                        || prev.equals("(") || prev.equals(":"))) {
+                    continue;
+                }
+            }
+            if (tokens.get(idx + 1).kind != KIND_IDENTIFIER) {
+                continue;
+            }
+            if (!prevText(sf.original, tokens, idx + 2).equals("=")) {
+                continue;
+            }
+            flag[idx] = true;
+        }
+        return flag;
+    }
+
+    /** 增强 for 省略类型：`对于 (名 : 名单)` → `for (var 名 : 名单)`。 */
+    private static boolean[] planForVar(SourceFile sf, List<Token> tokens) {
         boolean[] insertForVar = new boolean[tokens.size()];
         for (int idx = 0; idx + 3 < tokens.size(); idx++) {
             Token f = tokens.get(idx);
@@ -2227,13 +2298,29 @@ public class Cjc {
                 insertForVar[idx + 2] = true;
             }
         }
+        return insertForVar;
+    }
 
-        // 计数循环糖：`重复 3 次 { … }` → `for (int 序号 = 1; 序号 <= 3; 序号++) { … }`。
-        // 默认循环变量名 `序号`；写成 `重复 3 次 (名) {` 可自选变量名，避免与同名变量冲突。
-        // 只认语句开头的 `重复`，且「次数」后必须紧跟 `{`；次数表达式原样交给 translateFragment 转译。
-        boolean[] repeatStart = new boolean[tokens.size()];
-        int[] repeatEnd = new int[tokens.size()];
-        String[] repeatHeader = new String[tokens.size()];
+    /** 计数循环 `重复 N 次 [(名)] {` 的起止 token 与生成的 for 头部。 */
+    static final class RepeatPlan {
+        final boolean[] start;
+        final int[] end;
+        final String[] header;
+
+        RepeatPlan(int size) {
+            start = new boolean[size];
+            end = new int[size];
+            header = new String[size];
+        }
+    }
+
+    /**
+     * 计数循环糖：`重复 3 次 { … }` → `for (int 序号 = 1; 序号 <= 3; 序号++) { … }`。
+     * 默认循环变量名 `序号`；写成 `重复 3 次 (名) {` 可自选变量名。只认语句开头的 `重复`，
+     * 且「次数」后必须紧跟 `{`；次数表达式原样交给 translateFragment 转译。
+     */
+    private static RepeatPlan planRepeat(SourceFile sf, List<Token> tokens, Set<String> declared) {
+        RepeatPlan repeat = new RepeatPlan(tokens.size());
         for (int idx = 0; idx < tokens.size(); idx++) {
             Token t = tokens.get(idx);
             if (t.kind != KIND_IDENTIFIER || !"重复".equals(t.text)) {
@@ -2284,75 +2371,70 @@ public class Cjc {
                     || !prevText(sf.original, tokens, headerEnd + 1).equals("{")) {
                 continue;
             }
-            repeatStart[idx] = true;
-            repeatEnd[idx] = headerEnd;
-            repeatHeader[idx] = "for (int " + name + " = 1; " + name + " <= "
+            repeat.start[idx] = true;
+            repeat.end[idx] = headerEnd;
+            repeat.header[idx] = "for (int " + name + " = 1; " + name + " <= "
                     + translateFragment(expression, declared) + "; " + name + "++)";
         }
+        return repeat;
+    }
 
-        // 中文属性 `长度`：`数组.长度` → `数组.length`（方法调用 `字符串.长度()` 同样适用）。
-        // 只认 `.` 之后的位置，名为 `长度` 的变量与字段声明不受影响。
+    /** 中文属性 `长度`：`数组.长度` → `数组.length`。只认 `.` 之后的位置。 */
+    private static boolean[] planLength(SourceFile sf, List<Token> tokens) {
         boolean[] renameLength = new boolean[tokens.size()];
         for (int idx = 1; idx < tokens.size(); idx++) {
             Token t = tokens.get(idx);
             if (t.kind != KIND_IDENTIFIER || !"长度".equals(t.text)) {
                 continue;
             }
-            Token prev = tokens.get(idx - 1);
-            String prevText = prev.text != null ? prev.text : sf.original.substring(prev.start, prev.end);
-            if (prevText.equals(".")) {
+            if (prevText(sf.original, tokens, idx - 1).equals(".")) {
                 renameLength[idx] = true;
             }
         }
+        return renameLength;
+    }
 
-        // 语法糖 `否则若 (`：`否则` + `若` 粘连成一个标识符，这里整体还原成 `else if`。
+    /** 语法糖 `否则若`：整体还原成 `else if`。 */
+    private static boolean[] planElseIf(SourceFile sf, List<Token> tokens) {
         boolean[] renameElseIf = new boolean[tokens.size()];
         for (int idx = 0; idx < tokens.size(); idx++) {
             if (isElseIfSugar(sf, idx)) {
                 renameElseIf[idx] = true;
             }
         }
+        return renameElseIf;
+    }
 
-        // 中文类名 `系统`：`系统.数组复制(...)` → `System.arraycopy(...)`。
-        // 只认后接 `.` 的位置，名为 `系统` 的变量不受影响。
+    /** 中文类名 `系统`：`系统.数组复制(...)` → `System.arraycopy(...)`。只认后接 `.` 的位置。 */
+    private static boolean[] planSystem(SourceFile sf, List<Token> tokens) {
         boolean[] renameSystem = new boolean[tokens.size()];
         for (int idx = 0; idx + 1 < tokens.size(); idx++) {
             Token t = tokens.get(idx);
             if (t.kind != KIND_IDENTIFIER || !"系统".equals(t.text)) {
                 continue;
             }
-            Token next = tokens.get(idx + 1);
-            String nextText = next.text != null ? next.text : sf.original.substring(next.start, next.end);
-            if (nextText.equals(".")) {
+            if (prevText(sf.original, tokens, idx + 1).equals(".")) {
                 renameSystem[idx] = true;
             }
         }
+        return renameSystem;
+    }
 
-        // 系统方法 `数组复制`：`系统.数组复制(...)` → `System.arraycopy(...)`。
+    /** 系统方法 `数组复制`：仅当左侧是 `系统.` 时标记。 */
+    private static boolean[] planArraycopy(SourceFile sf, List<Token> tokens) {
         boolean[] renameArraycopy = new boolean[tokens.size()];
         for (int idx = 2; idx < tokens.size(); idx++) {
             Token t = tokens.get(idx);
             if (t.kind != KIND_IDENTIFIER || !"数组复制".equals(t.text)) {
                 continue;
             }
-            String prev1Text = prevText(sf.original, tokens, idx - 1);
-            Token prev2 = tokens.get(idx - 2);
-            String prev2Text = prev2.text != null ? prev2.text : sf.original.substring(prev2.start, prev2.end);
-            if (prev1Text.equals(".") && "系统".equals(prev2Text)) {
+            String prev1 = prevText(sf.original, tokens, idx - 1);
+            String prev2 = prevText(sf.original, tokens, idx - 2);
+            if (prev1.equals(".") && "系统".equals(prev2)) {
                 renameArraycopy[idx] = true;
             }
         }
-
-        plan.inferVar = inferVar;
-        plan.inferConst = inferConst;
-        plan.insertForVar = insertForVar;
-        plan.repeatStart = repeatStart;
-        plan.repeatEnd = repeatEnd;
-        plan.repeatHeader = repeatHeader;
-        plan.renameLength = renameLength;
-        plan.renameElseIf = renameElseIf;
-        plan.renameSystem = renameSystem;
-        plan.renameArraycopy = renameArraycopy;
+        return renameArraycopy;
     }
 
     private static void planCalls(SourceFile sf, TranslatePlan plan) {
@@ -2618,26 +2700,16 @@ public class Cjc {
                 continue;
             }
             if (staticCall[idx] != null) {
-                int genStart = sb.length();
-                sb.append(staticCall[idx]);
-                pending.add(new int[]{t.start, t.end - t.start, genStart, sb.length() - genStart});
+                emit(sb, pending, t.start, t.end - t.start, staticCall[idx]);
                 cursor = t.end;
                 continue;
             }
             if (callMember[idx]) {
-                String english = MEMBER_CALLS.get(t.text);
-                int genStart = sb.length();
-                sb.append(english);
-                pending.add(new int[]{t.start, t.text.length(), genStart, english.length()});
-                cursor = t.end;
+                cursor = emitToken(sb, pending, t, MEMBER_CALLS.get(t.text));
                 continue;
             }
             if (declMember[idx]) {
-                String english = MEMBER_DECLS.get(t.text);
-                int genStart = sb.length();
-                sb.append(english);
-                pending.add(new int[]{t.start, t.text.length(), genStart, english.length()});
-                cursor = t.end;
+                cursor = emitToken(sb, pending, t, MEMBER_DECLS.get(t.text));
                 continue;
             }
             if (t.kind == KIND_IDENTIFIER && "入口".equals(t.text) && idx + 1 < tokens.size()) {
@@ -2645,91 +2717,60 @@ public class Cjc {
                 String nextText = next.text != null ? next.text : sf.original.substring(next.start, next.end);
                 if (nextText.equals("{")) {
                     // 入口 { … } 语法糖：直接展开成 main 方法声明
-                    int genStart = sb.length();
-                    sb.append("public static void main(String[] 参数)");
-                    pending.add(new int[]{t.start, t.text.length(), genStart, sb.length() - genStart});
-                    cursor = t.end;
+                    cursor = emitToken(sb, pending, t, "public static void main(String[] 参数)");
                     continue;
                 }
             }
             if (inferVar[idx] || inferConst[idx]) {
                 // 类型推断：`令` → `var`、`常量` → `final var`，名称与初始化原样保留
-                int genStart = sb.length();
-                sb.append(inferConst[idx] ? "final var" : "var");
-                pending.add(new int[]{t.start, t.text.length(), genStart, sb.length() - genStart});
-                cursor = t.end;
+                cursor = emitToken(sb, pending, t, inferConst[idx] ? "final var" : "var");
                 continue;
             }
             if (renameArraycopy[idx]) {
                 // `数组复制` → `arraycopy`
-                int genStart = sb.length();
-                sb.append("arraycopy");
-                pending.add(new int[]{t.start, t.text.length(), genStart, 9});
-                cursor = t.end;
+                cursor = emitToken(sb, pending, t, "arraycopy");
                 continue;
             }
             if (renameSystem[idx]) {
                 // `系统` → `System`
-                int genStart = sb.length();
-                sb.append("System");
-                pending.add(new int[]{t.start, t.text.length(), genStart, 6});
-                cursor = t.end;
+                cursor = emitToken(sb, pending, t, "System");
                 continue;
             }
             if (renameLength[idx]) {
                 // `长度` → `length`
-                int genStart = sb.length();
-                sb.append("length");
-                pending.add(new int[]{t.start, t.text.length(), genStart, 6});
-                cursor = t.end;
+                cursor = emitToken(sb, pending, t, "length");
                 continue;
             }
             if (renameElseIf[idx]) {
                 // 语法糖 `否则若` → `else if`
-                int genStart = sb.length();
-                sb.append("else if");
-                pending.add(new int[]{t.start, t.text.length(), genStart, 7});
-                cursor = t.end;
+                cursor = emitToken(sb, pending, t, "else if");
                 continue;
             }
             if (insertOut[idx]) {
                 // 补 `System.out.` 前缀；原长度按 0 登记，列号仍能回映射
-                int genStart = sb.length();
                 if ("打印行".equals(t.text)) {
                     // 中文糖：把 `打印行` 整体换成 `System.out.println`
-                    sb.append("System.out.println");
-                    pending.add(new int[]{t.start, t.text.length(), genStart, 18});
-                    cursor = t.end;
+                    cursor = emitToken(sb, pending, t, "System.out.println");
                     continue;
                 }
-                sb.append("System.out.");
-                pending.add(new int[]{t.start, 0, genStart, 11});
+                emit(sb, pending, t.start, 0, "System.out.");
             }
             if (insertPrint[idx]) {
                 // 中文糖：把 `打印` 整体换成 `System.out.print`
-                int genStart = sb.length();
-                sb.append("System.out.print");
-                pending.add(new int[]{t.start, t.text.length(), genStart, 16});
-                cursor = t.end;
+                cursor = emitToken(sb, pending, t, "System.out.print");
                 continue;
             }
             if (insertVoid[idx]) {
                 // 省略了返回类型，补一个 `void `；原长度按 0 登记，列号仍能回映射
-                int genStart = sb.length();
-                sb.append("void ");
-                pending.add(new int[]{t.start, 0, genStart, 5});
+                emit(sb, pending, t.start, 0, "void ");
             }
             if (insertForVar[idx]) {
                 // 增强 for 省略了类型，补一个 `var `；原长度按 0 登记
-                int genStart = sb.length();
-                sb.append("var ");
-                pending.add(new int[]{t.start, 0, genStart, 4});
+                emit(sb, pending, t.start, 0, "var ");
             }
             if (arrayListFromEnd[idx] >= 0) {
                 // 4.5：`数组清单.从(` 整体换成 `new ArrayList<>(List.of(`，配对右括号后另补 `)`
-                int genStart = sb.length();
-                sb.append("new ArrayList<>(List.of(");
-                pending.add(new int[]{t.start, t.text.length(), genStart, sb.length() - genStart});
+                emit(sb, pending, t.start, t.text.length(), "new ArrayList<>(List.of(");
                 cursor = tokens.get(idx + 3).end;
                 skip[idx + 1] = true;
                 skip[idx + 2] = true;
@@ -2770,7 +2811,25 @@ public class Cjc {
             sb.append(sf.original, cursor, sf.original.length());
         }
         String translated = sb.toString();
+        recordReplacements(sf, pending, translated);
+        return translated;
+    }
 
+    /** 登记一段生成文本：原起点、原长度、生成起点、生成长度，供诊断位置回映射。 */
+    private static void emit(StringBuilder sb, List<int[]> pending, int start, int origLen, String generated) {
+        int genStart = sb.length();
+        sb.append(generated);
+        pending.add(new int[]{start, origLen, genStart, generated.length()});
+    }
+
+    /** 整体替换当前 token，返回下一个游标位置。 */
+    private static int emitToken(StringBuilder sb, List<int[]> pending, Token t, String generated) {
+        emit(sb, pending, t.start, t.text.length(), generated);
+        return t.end;
+    }
+
+    /** 把生成文本里的位置换算回原源码，登记到 sf.replacements 供诊断回映射。 */
+    private static void recordReplacements(SourceFile sf, List<int[]> pending, String translated) {
         int[] genLineStarts = lineStarts(translated);
         for (int[] r : pending) {
             int genLine = lineOf(genLineStarts, r[2]);
@@ -2779,7 +2838,6 @@ public class Cjc {
             int origCol = r[0] - sf.origLineStarts[origLine];
             sf.replacements.add(new Replacement(genLine, genCol, origCol, r[1], r[3]));
         }
-        return translated;
     }
 
     /**
@@ -3108,16 +3166,9 @@ public class Cjc {
         }
         List<String> problems = new ArrayList<>();
         List<DiagRule> rules = new ArrayList<>();
-        int lineNo = 0;
-        for (String raw : Files.readAllLines(diagPath, StandardCharsets.UTF_8)) {
-            lineNo++;
-            String line = raw;
-            if (lineNo == 1 && line.startsWith("\uFEFF")) {
-                line = line.substring(1);
-            }
-            if (line.strip().isEmpty() || line.strip().startsWith("#")) {
-                continue;
-            }
+        for (TableLine entry : readTableLines(diagPath)) {
+            int lineNo = entry.lineNo;
+            String line = entry.text;
             String[] cols = line.split("\t", -1);
             if (cols.length < 2 || cols.length > 3) {
                 problems.add("第" + lineNo + "行应为「正则<TAB>中文模板[<TAB>建议模板]」：" + line);
@@ -3136,11 +3187,7 @@ public class Cjc {
             problems.add("诊断中文表为空");
         }
         if (!problems.isEmpty()) {
-            for (String problem : problems) {
-                System.err.println("诊断中文表错误：" + problem);
-            }
-            System.err.println("诊断中文表校验未通过：" + problems.size() + " 处问题，文件 " + diagPath);
-            System.exit(2);
+            failTable("诊断中文表", diagPath, problems);
         }
         DIAG_RULES.clear();
         DIAG_RULES.addAll(rules);
