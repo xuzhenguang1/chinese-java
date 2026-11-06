@@ -211,8 +211,8 @@ if ($译后 -match '数值\.转文本' -and $译后 -match '文本\.格式化') 
 }
 
 # 2.7) 简化糖：增强 for 省类型、集合工厂（清单.从/集.从/键值表.从）、Stream 成员糖与收集器
-$简化输出 = & "$root\工具\对话\运行.ps1" "$root\示例\集合与流.java" 2>&1 | Out-String
-if ($LASTEXITCODE -eq 0 -and $简化输出.Contains("张、李") -and $简化输出.Contains("转清单 2，转集 3")) {
+$简化输出 = & "$root\工具\对话\运行.ps1" "$root\教程\第32课集合与流.java" 2>&1 | Out-String
+if ($LASTEXITCODE -eq 0 -and $简化输出.Contains("姓张的有 2 人") -and $简化输出.Contains("大写：张三、李四、张小明")) {
     Write-Host "简化糖（增强 for / 集合工厂 / Stream）：通过" -ForegroundColor Green
 } else {
     $失败 += "简化糖"
@@ -221,8 +221,8 @@ if ($LASTEXITCODE -eq 0 -and $简化输出.Contains("张、李") -and $简化输
 }
 
 # 2.8) 计数循环糖：`重复 N 次 { … }` 与 `重复 N 次 (名) { … }`
-$重复输出 = & "$root\工具\对话\运行.ps1" "$root\示例\重复循环.java" 2>&1 | Out-String
-if ($LASTEXITCODE -eq 0 -and $重复输出.Contains("第 3 个：丙") -and $重复输出.Contains("合计 3")) {
+$重复输出 = & "$root\工具\对话\运行.ps1" "$root\教程\第31课重复循环.java" 2>&1 | Out-String
+if ($LASTEXITCODE -eq 0 -and $重复输出.Contains("第3次") -and $重复输出.Contains("处理第3份")) {
     Write-Host "计数循环（重复 N 次）：通过" -ForegroundColor Green
 } else {
     $失败 += "计数循环"
