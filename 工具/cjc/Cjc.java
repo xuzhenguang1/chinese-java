@@ -2946,10 +2946,13 @@ public class Cjc {
         return -1;
     }
 
-    /** `入口 {` 展开成 main：入口后紧跟 `{`。 */
+    /** `入口 {` 展开成 main：入口后紧跟 `{`；也允许 `入口 声明抛出 A, B {`（带 throws）。 */
     private static boolean isEntrySugar(SourceFile sf, List<Token> tokens, Token t, int idx) {
-        return t.kind == KIND_IDENTIFIER && "入口".equals(t.text)
-                && idx + 1 < tokens.size() && textAt(sf, tokens, idx + 1).equals("{");
+        if (t.kind != KIND_IDENTIFIER || !"入口".equals(t.text) || idx + 1 >= tokens.size()) {
+            return false;
+        }
+        String next = textAt(sf, tokens, idx + 1);
+        return next.equals("{") || next.equals("声明抛出");
     }
 
     /** 插入式语法糖：`打印行` / `打印` / 省略返回类型 / 增强 for 省略类型；不命中返回 -1。 */

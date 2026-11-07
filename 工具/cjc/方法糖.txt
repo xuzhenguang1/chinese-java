@@ -21,6 +21,7 @@
 取出=get
 设定=set
 移除=remove
+清空=clear
 元素数=size
 是空=isEmpty
 整理=sort
@@ -29,6 +30,7 @@
 值集合=values
 键集合=keySet
 含键=containsKey
+含值=containsValue
 追加=append
 转文本=toString
 比较=compareTo
