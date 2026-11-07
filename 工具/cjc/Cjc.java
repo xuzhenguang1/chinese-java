@@ -149,6 +149,12 @@ public class Cjc {
         boolean includeCompile;
     }
 
+    /** 已加载的源文件集合：关键字表路径、文件清单与全部标识符名。 */
+    private record LoadedSources(Path tablePath, List<SourceFile> files, Set<String> identifierNames) {}
+
+    /** 四类检查的结果计数：粘连错误、标点错误、新手易错提示、自动纠正提示。 */
+    private record CheckCounts(int sticky, int punctuation, int traps, int folded) {}
+
     /** 解析 `命令 输入… [选项]`；缺值时打印中文错误并退出码 2。 */
     static Options parseOptions(String[] args) {
         Options opt = new Options();
@@ -181,8 +187,7 @@ public class Cjc {
     /** 取选项值：缺少时报「错误：<开关> 后缺少<说明>」并退出码 2。 */
     static String optionValue(String[] args, int index, String flag, String what) {
         if (index >= args.length) {
-            System.err.println("错误：" + flag + " 后缺少" + what);
-            System.exit(2);
+            fail("错误：" + flag + " 后缺少" + what);
         }
         return args[index];
     }
@@ -193,6 +198,37 @@ public class Cjc {
             System.exit(2);
         }
         Options opt = parseOptions(args);
+        validateOptions(opt);
+        Path tablePath = resolveTable(opt.tableArg);
+        if (opt.command.equals("新建")) {
+            createProject(opt.inputs, tablePath);
+            return;
+        }
+        loadKeywords(tablePath);
+        loadMethodSugar(tablePath);
+        loadDiagnostics(tablePath);
+        if (opt.command.equals("反译")) {
+            if (opt.outDir == null) {
+                fail("错误：反译命令需要指定输出目录，例如 -d 中文源码");
+            }
+            reverse(opt.inputs, opt.outDir);
+            return;
+        }
+        LoadedSources sources = loadSources(opt.inputs, tablePath);
+        CheckCounts counts = runChecks(sources.files(), sources.identifierNames());
+        if (opt.command.equals("检查")) {
+            reportCheck(opt, sources, counts);
+            return;
+        }
+        if (opt.command.equals("运行")) {
+            runExecution(sources.files(), opt.classpath, opt.mainClass);
+            return;
+        }
+        runTranslateOrCompile(opt, sources.files());
+    }
+
+    /** 校验命令名与选项组合；不合法时打印用法并以码 2 退出。 */
+    private static void validateOptions(Options opt) {
         boolean knownCommand = opt.command.equals("检查") || opt.command.equals("编译")
                 || opt.command.equals("转译") || opt.command.equals("反译") || opt.command.equals("运行")
                 || opt.command.equals("新建");
@@ -201,34 +237,16 @@ public class Cjc {
             System.exit(2);
         }
         if (opt.jarPath != null && opt.mainClass == null) {
-            System.err.println("错误：-jar 需要同时用 -主类 指定入口类（例如 -主类 demo.app.Main）");
-            System.exit(2);
+            fail("错误：-jar 需要同时用 -主类 指定入口类（例如 -主类 demo.app.Main）");
         }
         if (opt.mainClass != null && opt.jarPath == null && !opt.command.equals("运行")) {
-            System.err.println("错误：-主类 只能配合 -jar 或 运行 命令使用");
-            System.exit(2);
+            fail("错误：-主类 只能配合 -jar 或 运行 命令使用");
         }
+    }
 
-        if (opt.command.equals("新建")) {
-            createProject(opt.inputs, resolveTable(opt.tableArg));
-            return;
-        }
-
-        Path tablePath = resolveTable(opt.tableArg);
-        loadKeywords(tablePath);
-        loadMethodSugar(tablePath);
-        loadDiagnostics(tablePath);
-
-        if (opt.command.equals("反译")) {
-            if (opt.outDir == null) {
-                System.err.println("错误：反译命令需要指定输出目录，例如 -d 中文源码");
-                System.exit(2);
-            }
-            reverse(opt.inputs, opt.outDir);
-            return;
-        }
-
-        LinkedHashMap<Path, Path> collected = collect(opt.inputs);
+    /** 收集并加载全部源文件，同时记下所有标识符名供空格粘连检查使用。 */
+    private static LoadedSources loadSources(List<String> inputs, Path tablePath) throws IOException {
+        LinkedHashMap<Path, Path> collected = collect(inputs);
         List<SourceFile> files = new ArrayList<>();
         Set<String> identifierNames = new HashSet<>();
         for (Map.Entry<Path, Path> e : collected.entrySet()) {
@@ -240,61 +258,64 @@ public class Cjc {
                 }
             }
         }
+        return new LoadedSources(tablePath, files, identifierNames);
+    }
 
-        int stickyErrors = checkSticky(files, identifierNames);
-        int punctuationErrors = checkPunctuation(files);
-        int trapWarnings = checkBeginnerTraps(files);
-        int foldWarnings = checkFoldedPunctuation(files);
-        int totalErrors = stickyErrors + punctuationErrors;
+    /** 跑四类检查；有 CJK001/CJK002 错误时打印汇总并以码 1 退出。 */
+    private static CheckCounts runChecks(List<SourceFile> files, Set<String> identifierNames) {
+        CheckCounts counts = new CheckCounts(checkSticky(files, identifierNames), checkPunctuation(files),
+                checkBeginnerTraps(files), checkFoldedPunctuation(files));
+        int totalErrors = counts.sticky() + counts.punctuation();
         if (totalErrors > 0) {
             System.out.println();
-            System.out.println("检查未通过：" + totalErrors + " 处错误（CJK001 " + stickyErrors
-                    + " 处空格粘连，CJK002 " + punctuationErrors + " 处全角标点）。");
+            System.out.println("检查未通过：" + totalErrors + " 处错误（CJK001 " + counts.sticky()
+                    + " 处空格粘连，CJK002 " + counts.punctuation() + " 处全角标点）。");
             System.exit(1);
         }
-        if (opt.command.equals("检查")) {
-            if (opt.includeCompile) {
-                String cp = opt.classpath != null ? opt.classpath : defaultStdlibClasspath(tablePath);
-                Path tempOut = Files.createTempDirectory("cjc-check-");
-                int compileErrors;
-                try {
-                    compileErrors = compile(files, tempOut, cp);
-                } finally {
-                    deleteRecursively(tempOut);
-                }
-                if (compileErrors > 0) {
-                    System.out.println();
-                    System.out.println("检查未通过：" + compileErrors + " 处编译错误。");
-                    System.exit(1);
-                }
-                System.out.println("检查通过（含编译）：" + files.size() + " 个文件（关键字 " + wordCount(false)
-                        + " 条 + 类型别名 " + wordCount(true) + " 条，词典 " + DICT_GROUPS.size() + " 组）。");
-            } else {
-                System.out.println("检查通过：" + files.size() + " 个文件（关键字 " + wordCount(false)
-                        + " 条 + 类型别名 " + wordCount(true) + " 条，词典 " + DICT_GROUPS.size() + " 组）。");
+        return counts;
+    }
+
+    /** `检查` 命令：可选含编译，最后输出通过信息与提示。 */
+    private static void reportCheck(Options opt, LoadedSources sources, CheckCounts counts) throws IOException {
+        List<SourceFile> files = sources.files();
+        if (opt.includeCompile) {
+            String cp = opt.classpath != null ? opt.classpath : defaultStdlibClasspath(sources.tablePath());
+            Path tempOut = Files.createTempDirectory("cjc-check-");
+            int compileErrors;
+            try {
+                compileErrors = compile(files, tempOut, cp);
+            } finally {
+                deleteRecursively(tempOut);
             }
-            if (foldWarnings > 0) {
-                System.out.println("另有 " + foldWarnings + " 处标点已自动纠正（CJK106，仅提示，不影响编译）。");
+            if (compileErrors > 0) {
+                System.out.println();
+                System.out.println("检查未通过：" + compileErrors + " 处编译错误。");
+                System.exit(1);
             }
-            if (trapWarnings > 0) {
-                System.out.println("另有 " + trapWarnings + " 处新手易错提示（仅建议，不影响编译）。");
-            }
-            return;
+            System.out.println("检查通过（含编译）：" + files.size() + " 个文件（关键字 " + wordCount(false)
+                    + " 条 + 类型别名 " + wordCount(true) + " 条，词典 " + DICT_GROUPS.size() + " 组）。");
+        } else {
+            System.out.println("检查通过：" + files.size() + " 个文件（关键字 " + wordCount(false)
+                    + " 条 + 类型别名 " + wordCount(true) + " 条，词典 " + DICT_GROUPS.size() + " 组）。");
         }
-        if (opt.command.equals("运行")) {
-            runExecution(files, opt.classpath, opt.mainClass);
-            return;
+        if (counts.folded() > 0) {
+            System.out.println("另有 " + counts.folded() + " 处标点已自动纠正（CJK106，仅提示，不影响编译）。");
         }
+        if (counts.traps() > 0) {
+            System.out.println("另有 " + counts.traps() + " 处新手易错提示（仅建议，不影响编译）。");
+        }
+    }
+
+    /** `转译` / `编译` 命令：写转译结果，或编译并可选打包 jar。 */
+    private static void runTranslateOrCompile(Options opt, List<SourceFile> files) throws IOException {
         if (opt.outDir == null) {
-            System.err.println("错误：" + opt.command + "命令需要指定输出目录，例如 -d 输出");
-            System.exit(2);
+            fail("错误：" + opt.command + "命令需要指定输出目录，例如 -d 输出");
         }
         if (opt.command.equals("转译")) {
             writeTranslated(files, opt.outDir);
             System.out.println("转译完成：" + files.size() + " 个文件 → " + opt.outDir.toAbsolutePath().normalize());
             return;
         }
-
         int compileErrors = compile(files, opt.outDir, opt.classpath);
         if (compileErrors > 0) {
             System.out.println();
@@ -302,7 +323,6 @@ public class Cjc {
             System.exit(1);
         }
         System.out.println("编译成功，class 输出目录：" + opt.outDir.toAbsolutePath().normalize());
-
         if (opt.jarPath != null) {
             if (packageJar(opt.outDir, opt.jarPath, opt.mainClass) != 0) {
                 System.out.println();
@@ -316,14 +336,12 @@ public class Cjc {
     /** `新建 项目 <名称>`：在当前目录生成可直接 mvn package 的中文工程骨架。 */
     static void createProject(List<String> inputs, Path tablePath) throws IOException {
         if (inputs.size() != 2 || !inputs.get(0).equals("项目")) {
-            System.err.println("错误：用法为 新建 项目 <项目名>，例如 .\\cjc.ps1 新建 项目 我的工具");
-            System.exit(2);
+            fail("错误：用法为 新建 项目 <项目名>，例如 .\\cjc.ps1 新建 项目 我的工具");
         }
         String name = inputs.get(1);
         Path project = Paths.get("").toAbsolutePath().resolve(name);
         if (Files.exists(project)) {
-            System.err.println("错误：目录已存在：" + project);
-            System.exit(2);
+            fail("错误：目录已存在：" + project);
         }
         // 项目里的 pom 需要相对路径指回仓库里的 cjc 与关键字表
         Path repoRoot = tablePath.toAbsolutePath().normalize().getParent().getParent().getParent();
@@ -419,6 +437,12 @@ public class Cjc {
         System.out.println("      弯引号、书名号等无法映射的标点仍报 CJK002。");
     }
 
+    /** 致命错误：打印一行中文诊断后以码 2 退出。 */
+    private static void fail(String line) {
+        System.err.println(line);
+        System.exit(2);
+    }
+
     // ------------------------------------------------------------------ 关键字表
 
     static Path resolveTable(String explicit) {
@@ -438,8 +462,7 @@ public class Cjc {
                 return candidate;
             }
         }
-        System.err.println("错误：找不到关键字表，请用 --表 <路径> 指定，或在工程根目录运行 cjc.ps1。");
-        System.exit(2);
+        fail("错误：找不到关键字表，请用 --表 <路径> 指定，或在工程根目录运行 cjc.ps1。");
         return null;
     }
 
@@ -520,8 +543,7 @@ public class Cjc {
         for (String problem : problems) {
             System.err.println(label + "错误：" + problem);
         }
-        System.err.println(label + "校验未通过：" + problems.size() + " 处问题，文件 " + path);
-        System.exit(2);
+        fail(label + "校验未通过：" + problems.size() + " 处问题，文件 " + path);
     }
 
     /**
@@ -651,8 +673,7 @@ public class Cjc {
 
     static void loadKeywords(Path tablePath) throws IOException {
         if (!Files.exists(tablePath)) {
-            System.err.println("错误：找不到关键字表 " + tablePath);
-            System.exit(2);
+            fail("错误：找不到关键字表 " + tablePath);
         }
         List<String> problems = new ArrayList<>();
         loadDictionary(tablePath, problems);
@@ -739,8 +760,7 @@ public class Cjc {
     static void loadMethodSugar(Path tablePath) throws IOException {
         Path sugarPath = tablePath.resolveSibling("方法糖.txt");
         if (!Files.exists(sugarPath)) {
-            System.err.println("方法糖表缺失：" + sugarPath + "（与关键字表必须放在同一目录）");
-            System.exit(2);
+            fail("方法糖表缺失：" + sugarPath + "（与关键字表必须放在同一目录）");
         }
         LinkedHashMap<String, String> members = new LinkedHashMap<>();
         LinkedHashMap<String, String> decls = new LinkedHashMap<>();
@@ -861,8 +881,7 @@ public class Cjc {
         for (String input : inputs) {
             Path root = Paths.get(input).toAbsolutePath().normalize();
             if (!Files.exists(root)) {
-                System.err.println("错误：找不到路径 " + input);
-                System.exit(2);
+                fail("错误：找不到路径 " + input);
             }
             if (Files.isDirectory(root)) {
                 List<Path> list = new ArrayList<>();
@@ -880,8 +899,7 @@ public class Cjc {
             }
         }
         if (map.isEmpty()) {
-            System.err.println("错误：没有找到 .java 文件");
-            System.exit(2);
+            fail("错误：没有找到 .java 文件");
         }
         return map;
     }
@@ -1094,8 +1112,7 @@ public class Cjc {
     static void runExecution(List<SourceFile> files, String classpath, String mainClass) throws IOException {
         String entry = mainClass != null ? mainClass : entryClass(files);
         if (entry == null) {
-            System.err.println("错误：无法确定入口类，请用 -主类 <全限定类名> 指定");
-            System.exit(2);
+            fail("错误：无法确定入口类，请用 -主类 <全限定类名> 指定");
         }
         Path outDir = Files.createTempDirectory("cjc-run-");
         int exitCode = 1;
@@ -2067,7 +2084,8 @@ public class Cjc {
         TranslatePlan plan = new TranslatePlan();
         plan.tokens = sf.tokens;
         plan.declared = declaredNames(sf.tokens, sf.original);
-        planSkip(sf, plan);
+        // skip 标记：语法糖插入/替换时用来跳过已被消费的 token。
+        plan.skip = new boolean[sf.tokens.size()];
         planVoidAndPrint(sf, plan);
         planSugar(sf, plan);
         planCalls(sf, plan);
@@ -2076,18 +2094,26 @@ public class Cjc {
         return renderTranslated(sf, plan);
     }
 
-    private static void planSkip(SourceFile sf, TranslatePlan plan) {
-        // skip 标记：语法糖插入/替换时用来跳过已被消费的 token。
-        plan.skip = new boolean[plan.tokens.size()];
+    /** 类型上下文：每个 token 所在类型名、类型种类，以及是否直接位于类型体成员层。 */
+    private static final class TypeScope {
+        String[] typeAt;
+        String[] kindAt;
+        boolean[] inTypeBody;
     }
 
     private static void planVoidAndPrint(SourceFile sf, TranslatePlan plan) {
-        List<Token> tokens = plan.tokens;
-        // 省略返回类型：`公有 加一() {` 等价于 `公有 无 加一() {`，翻译时补上 `void`。
-        // 只在修饰符之后、名称后紧跟 `(`、且名称不等于所在类型名（构造器）时补，
-        // 避免误伤方法调用、字段声明与构造器。
-        // 另：无修饰符的接口方法 `加一();` 也补 `void` —— 方法调用只可能出现在方法体内，
-        // 直接位于类型体成员层的 `名称(` 必然是声明。
+        TypeScope scope = planTypeScopes(sf, plan.tokens);
+        plan.typeAt = scope.typeAt;
+        plan.kindAt = scope.kindAt;
+        plan.inTypeBody = scope.inTypeBody;
+        plan.insertVoid = planVoid(sf, plan.tokens, scope);
+        plan.insertOut = new boolean[plan.tokens.size()];
+        plan.insertPrint = new boolean[plan.tokens.size()];
+        planPrint(sf, plan.tokens, plan.insertOut, plan.insertPrint);
+    }
+
+    /** 扫描花括号层级，记录每个 token 所在类型名、类型种类与是否在类型体成员层。 */
+    private static TypeScope planTypeScopes(SourceFile sf, List<Token> tokens) {
         String[] typeAt = new String[tokens.size()];
         String[] kindAt = new String[tokens.size()];
         boolean[] inTypeBody = new boolean[tokens.size()];
@@ -2134,6 +2160,19 @@ public class Cjc {
                 currentKind = kindStack.isEmpty() ? null : kindStack.get(kindStack.size() - 1);
             }
         }
+        TypeScope scope = new TypeScope();
+        scope.typeAt = typeAt;
+        scope.kindAt = kindAt;
+        scope.inTypeBody = inTypeBody;
+        return scope;
+    }
+
+    // 省略返回类型：`公有 加一() {` 等价于 `公有 无 加一() {`，翻译时补上 `void`。
+    // 只在修饰符之后、名称后紧跟 `(`、且名称不等于所在类型名（构造器）时补，
+    // 避免误伤方法调用、字段声明与构造器。
+    // 另：无修饰符的接口方法 `加一();` 也补 `void` —— 方法调用只可能出现在方法体内，
+    // 直接位于类型体成员层的 `名称(` 必然是声明。
+    private static boolean[] planVoid(SourceFile sf, List<Token> tokens, TypeScope scope) {
         boolean[] insertVoid = new boolean[tokens.size()];
         for (int idx = 1; idx + 1 < tokens.size(); idx++) {
             Token t = tokens.get(idx);
@@ -2151,28 +2190,29 @@ public class Cjc {
                 String prevEnglish = KEYWORDS.get(prev.text);
                 declaration = prevEnglish != null && isModifier(prevEnglish);
             }
-            if (!declaration && inTypeBody[idx]) {
+            if (!declaration && scope.inTypeBody[idx]) {
                 String prevText = prev.text != null ? prev.text : sf.original.substring(prev.start, prev.end);
                 declaration = prevText.equals("{") || prevText.equals("}") || prevText.equals(";");
                 // 枚举体以常量开头，`红();` 是枚举常量而不是方法
-                if (declaration && "enum".equals(kindAt[idx]) && prevText.equals("{")) {
+                if (declaration && "enum".equals(scope.kindAt[idx]) && prevText.equals("{")) {
                     declaration = false;
                 }
             }
             if (!declaration) {
                 continue;
             }
-            if (t.text.equals(typeAt[idx])) {
+            if (t.text.equals(scope.typeAt[idx])) {
                 continue; // 构造器：名称与所在类型同名
             }
             insertVoid[idx] = true;
         }
+        return insertVoid;
+    }
 
-        // 简化打印：语句开头的 `println(...)` / `打印行(...)` 自动补成 `System.out.println(...)`，
-        // `打印(...)` 自动补成 `System.out.print(...)`。
-        // 只认 `{`、`}`、`;`、`->` 之后的位置，带 `.` 前缀的调用与自定义同名方法不会被改写。
-        boolean[] insertOut = new boolean[tokens.size()];
-        boolean[] insertPrint = new boolean[tokens.size()];
+    // 简化打印：语句开头的 `println(...)` / `打印行(...)` 自动补成 `System.out.println(...)`，
+    // `打印(...)` 自动补成 `System.out.print(...)`。
+    // 只认 `{`、`}`、`;`、`->` 之后的位置，带 `.` 前缀的调用与自定义同名方法不会被改写。
+    private static void planPrint(SourceFile sf, List<Token> tokens, boolean[] insertOut, boolean[] insertPrint) {
         for (int idx = 0; idx + 1 < tokens.size(); idx++) {
             Token t = tokens.get(idx);
             boolean isLine = "println".equals(t.text) || "打印行".equals(t.text);
@@ -2206,13 +2246,6 @@ public class Cjc {
                 }
             }
         }
-
-        plan.typeAt = typeAt;
-        plan.kindAt = kindAt;
-        plan.inTypeBody = inTypeBody;
-        plan.insertVoid = insertVoid;
-        plan.insertOut = insertOut;
-        plan.insertPrint = insertPrint;
     }
 
     private static void planSugar(SourceFile sf, TranslatePlan plan) {
@@ -2632,43 +2665,14 @@ public class Cjc {
 
     private static String renderTranslated(SourceFile sf, TranslatePlan plan) {
         List<Token> tokens = plan.tokens;
-        Set<String> declared = plan.declared;
         boolean[] skip = plan.skip;
-        boolean[] insertVoid = plan.insertVoid;
-        boolean[] insertOut = plan.insertOut;
-        boolean[] insertPrint = plan.insertPrint;
-        boolean[] inferVar = plan.inferVar;
-        boolean[] inferConst = plan.inferConst;
-        boolean[] insertForVar = plan.insertForVar;
-        boolean[] repeatStart = plan.repeatStart;
-        int[] repeatEnd = plan.repeatEnd;
-        String[] repeatHeader = plan.repeatHeader;
-        boolean[] renameLength = plan.renameLength;
-        boolean[] renameElseIf = plan.renameElseIf;
-        boolean[] renameSystem = plan.renameSystem;
-        boolean[] renameArraycopy = plan.renameArraycopy;
-        String[] staticCall = plan.staticCall;
-        boolean[] callMember = plan.callMember;
-        boolean[] declMember = plan.declMember;
-        boolean[] wrapGeneric = plan.wrapGeneric;
-        int[] arrayListFromEnd = plan.arrayListFromEnd;
-        boolean[] arrayListClose = plan.arrayListClose;
-        boolean[] printComma = plan.printComma;
-        boolean[] printParenOpen = plan.printParenOpen;
-        boolean[] printParenClose = plan.printParenClose;
         StringBuilder sb = new StringBuilder(sf.original.length() * 2);
         List<int[]> pending = new ArrayList<>(); // {origStart, origLen, genStart, genLen}
         int cursor = 0;
         for (int idx = 0; idx < tokens.size(); idx++) {
             Token t = tokens.get(idx);
-            // 前一 token 需要补的右括号：紧贴它的结尾输出，排在后续空白之前
             if (idx > 0) {
-                if (arrayListClose[idx - 1]) {
-                    sb.append(')');
-                }
-                if (printParenClose[idx - 1]) {
-                    sb.append(')');
-                }
+                appendPendingClosers(sb, idx - 1, plan.arrayListClose, plan.printParenClose);
             }
             if (skip[idx]) {
                 // 关键字已在前面的名称处输出，连同它与名称之间的空白一起跳过。
@@ -2679,36 +2683,28 @@ public class Cjc {
             if (t.start > cursor) {
                 sb.append(sf.original, cursor, t.start);
             }
-            if (printParenOpen[idx]) {
+            if (plan.printParenOpen[idx]) {
                 sb.append('(');
             }
-            if (printComma[idx]) {
+            if (plan.printComma[idx]) {
                 sb.append('+');
                 cursor = t.end;
                 continue;
             }
-            if (repeatStart[idx]) {
-                // 计数循环：整段头部换成一个 for 语句，次数表达式已单独转译
-                int genStart = sb.length();
-                sb.append(repeatHeader[idx]);
-                pending.add(new int[]{t.start, tokens.get(repeatEnd[idx]).end - t.start,
-                        genStart, sb.length() - genStart});
-                cursor = tokens.get(repeatEnd[idx]).end;
-                for (int k = idx + 1; k <= repeatEnd[idx]; k++) {
-                    skip[k] = true;
-                }
+            if (plan.repeatStart[idx]) {
+                cursor = renderRepeat(plan, sb, pending, idx);
                 continue;
             }
-            if (staticCall[idx] != null) {
-                emit(sb, pending, t.start, t.end - t.start, staticCall[idx]);
+            if (plan.staticCall[idx] != null) {
+                emit(sb, pending, t.start, t.end - t.start, plan.staticCall[idx]);
                 cursor = t.end;
                 continue;
             }
-            if (callMember[idx]) {
+            if (plan.callMember[idx]) {
                 cursor = emitToken(sb, pending, t, MEMBER_CALLS.get(t.text));
                 continue;
             }
-            if (declMember[idx]) {
+            if (plan.declMember[idx]) {
                 cursor = emitToken(sb, pending, t, MEMBER_DECLS.get(t.text));
                 continue;
             }
@@ -2721,89 +2717,29 @@ public class Cjc {
                     continue;
                 }
             }
-            if (inferVar[idx] || inferConst[idx]) {
+            if (plan.inferVar[idx] || plan.inferConst[idx]) {
                 // 类型推断：`令` → `var`、`常量` → `final var`，名称与初始化原样保留
-                cursor = emitToken(sb, pending, t, inferConst[idx] ? "final var" : "var");
+                cursor = emitToken(sb, pending, t, plan.inferConst[idx] ? "final var" : "var");
                 continue;
             }
-            if (renameArraycopy[idx]) {
-                // `数组复制` → `arraycopy`
-                cursor = emitToken(sb, pending, t, "arraycopy");
+            if (plan.renameArraycopy[idx] || plan.renameSystem[idx]
+                    || plan.renameLength[idx] || plan.renameElseIf[idx]) {
+                cursor = renderRenamed(plan, sb, pending, t, idx);
                 continue;
             }
-            if (renameSystem[idx]) {
-                // `系统` → `System`
-                cursor = emitToken(sb, pending, t, "System");
+            int inserted = renderInserted(plan, sb, pending, t, idx);
+            if (inserted >= 0) {
+                cursor = inserted;
                 continue;
             }
-            if (renameLength[idx]) {
-                // `长度` → `length`
-                cursor = emitToken(sb, pending, t, "length");
-                continue;
-            }
-            if (renameElseIf[idx]) {
-                // 语法糖 `否则若` → `else if`
-                cursor = emitToken(sb, pending, t, "else if");
-                continue;
-            }
-            if (insertOut[idx]) {
-                // 补 `System.out.` 前缀；原长度按 0 登记，列号仍能回映射
-                if ("打印行".equals(t.text)) {
-                    // 中文糖：把 `打印行` 整体换成 `System.out.println`
-                    cursor = emitToken(sb, pending, t, "System.out.println");
-                    continue;
-                }
-                emit(sb, pending, t.start, 0, "System.out.");
-            }
-            if (insertPrint[idx]) {
-                // 中文糖：把 `打印` 整体换成 `System.out.print`
-                cursor = emitToken(sb, pending, t, "System.out.print");
-                continue;
-            }
-            if (insertVoid[idx]) {
-                // 省略了返回类型，补一个 `void `；原长度按 0 登记，列号仍能回映射
-                emit(sb, pending, t.start, 0, "void ");
-            }
-            if (insertForVar[idx]) {
-                // 增强 for 省略了类型，补一个 `var `；原长度按 0 登记
-                emit(sb, pending, t.start, 0, "var ");
-            }
-            if (arrayListFromEnd[idx] >= 0) {
-                // 4.5：`数组清单.从(` 整体换成 `new ArrayList<>(List.of(`，配对右括号后另补 `)`
-                emit(sb, pending, t.start, t.text.length(), "new ArrayList<>(List.of(");
-                cursor = tokens.get(idx + 3).end;
-                skip[idx + 1] = true;
-                skip[idx + 2] = true;
-                skip[idx + 3] = true;
+            if (plan.arrayListFromEnd[idx] >= 0) {
+                cursor = renderArrayListFrom(plan, sb, pending, idx);
                 continue;
             }
             if (t.kind == KIND_KEYWORD) {
-                String english = KEYWORDS.get(t.text);
-                if (wrapGeneric[idx]) {
-                    english = PRIMITIVE_WRAPPERS.get(english);
-                }
-                int genStart = sb.length();
-                sb.append(english);
-                int pad = t.text.length() - english.length();
-                if (pad > 0) {
-                    sb.append(" ".repeat(pad));
-                }
-                pending.add(new int[]{t.start, t.text.length(), genStart, Math.max(t.text.length(), english.length())});
-            } else if (t.kind == KIND_PUNCT) {
-                // 标点规范化是 1 字符换 1 字符，不影响列号
-                sb.append(t.text);
-            } else if (t.kind == KIND_OTHER && t.text == null
-                    && sf.original.charAt(t.start) == '"') {
-                // 字符串插值："{名字}" → "" + 名字
-                String raw = sf.original.substring(t.start, t.end);
-                int genStart = sb.length();
-                if (appendInterpolated(sb, raw, declared)) {
-                    pending.add(new int[]{t.start, raw.length(), genStart, sb.length() - genStart});
-                } else {
-                    sb.append(raw);
-                }
+                renderKeyword(plan, sb, pending, idx);
             } else {
-                sb.append(sf.original, t.start, t.end);
+                renderLiteral(sf, plan, sb, pending, t);
             }
             cursor = t.end;
         }
@@ -2813,6 +2749,115 @@ public class Cjc {
         String translated = sb.toString();
         recordReplacements(sf, pending, translated);
         return translated;
+    }
+
+    /** 插入式语法糖：`打印行` / `打印` / 省略返回类型 / 增强 for 省略类型；不命中返回 -1。 */
+    private static int renderInserted(TranslatePlan plan, StringBuilder sb, List<int[]> pending, Token t, int idx) {
+        // 补 `System.out.` 前缀；原长度按 0 登记，列号仍能回映射
+        if (plan.insertOut[idx] && "打印行".equals(t.text)) {
+            // 中文糖：把 `打印行` 整体换成 `System.out.println`
+            return emitToken(sb, pending, t, "System.out.println");
+        }
+        if (plan.insertOut[idx]) {
+            emit(sb, pending, t.start, 0, "System.out.");
+        }
+        if (plan.insertPrint[idx]) {
+            // 中文糖：把 `打印` 整体换成 `System.out.print`
+            return emitToken(sb, pending, t, "System.out.print");
+        }
+        if (plan.insertVoid[idx]) {
+            // 省略了返回类型，补一个 `void `
+            emit(sb, pending, t.start, 0, "void ");
+        }
+        if (plan.insertForVar[idx]) {
+            // 增强 for 省略了类型，补一个 `var `
+            emit(sb, pending, t.start, 0, "var ");
+        }
+        return -1;
+    }
+
+    /** 整词改写：`数组复制` / `系统` / `长度` / `否则若`；不命中返回 -1。 */
+    private static int renderRenamed(TranslatePlan plan, StringBuilder sb, List<int[]> pending, Token t, int idx) {
+        String replacement;
+        if (plan.renameArraycopy[idx]) {
+            replacement = "arraycopy";
+        } else if (plan.renameSystem[idx]) {
+            replacement = "System";
+        } else if (plan.renameLength[idx]) {
+            replacement = "length";
+        } else {
+            replacement = "else if";
+        }
+        return emitToken(sb, pending, t, replacement);
+    }
+
+    /** 补上一 token 需要补的右括号：紧贴它的结尾输出，排在后续空白之前。 */
+    private static void appendPendingClosers(StringBuilder sb, int idx, boolean[] arrayListClose, boolean[] printParenClose) {
+        if (arrayListClose[idx]) {
+            sb.append(')');
+        }
+        if (printParenClose[idx]) {
+            sb.append(')');
+        }
+    }
+
+    /** 计数循环：整段头部换成一个 for 语句，次数表达式已单独转译；返回新的扫描位置。 */
+    private static int renderRepeat(TranslatePlan plan, StringBuilder sb, List<int[]> pending, int idx) {
+        List<Token> tokens = plan.tokens;
+        int end = plan.repeatEnd[idx];
+        int genStart = sb.length();
+        sb.append(plan.repeatHeader[idx]);
+        pending.add(new int[]{tokens.get(idx).start, tokens.get(end).end - tokens.get(idx).start,
+                genStart, sb.length() - genStart});
+        for (int k = idx + 1; k <= end; k++) {
+            plan.skip[k] = true;
+        }
+        return tokens.get(end).end;
+    }
+
+    /** 4.5：`数组清单.从(` 整体换成 `new ArrayList<>(List.of(`，配对右括号后另补 `)`。 */
+    private static int renderArrayListFrom(TranslatePlan plan, StringBuilder sb, List<int[]> pending, int idx) {
+        Token t = plan.tokens.get(idx);
+        emit(sb, pending, t.start, t.text.length(), "new ArrayList<>(List.of(");
+        plan.skip[idx + 1] = true;
+        plan.skip[idx + 2] = true;
+        plan.skip[idx + 3] = true;
+        return plan.tokens.get(idx + 3).end;
+    }
+
+    /** 关键字 → 英文；泛型实参位置换成包装类，并用空格补齐长度以保持列号。 */
+    private static void renderKeyword(TranslatePlan plan, StringBuilder sb, List<int[]> pending, int idx) {
+        Token t = plan.tokens.get(idx);
+        String english = KEYWORDS.get(t.text);
+        if (plan.wrapGeneric[idx]) {
+            english = PRIMITIVE_WRAPPERS.get(english);
+        }
+        int genStart = sb.length();
+        sb.append(english);
+        int pad = t.text.length() - english.length();
+        if (pad > 0) {
+            sb.append(" ".repeat(pad));
+        }
+        pending.add(new int[]{t.start, t.text.length(), genStart, Math.max(t.text.length(), english.length())});
+    }
+
+    /** 非关键字：标点规范化（1 换 1，不影响列号）、字符串插值或原样输出。 */
+    private static void renderLiteral(SourceFile sf, TranslatePlan plan, StringBuilder sb, List<int[]> pending, Token t) {
+        if (t.kind == KIND_PUNCT) {
+            sb.append(t.text);
+        } else if (t.kind == KIND_OTHER && t.text == null
+                && sf.original.charAt(t.start) == '"') {
+            // 字符串插值："{名字}" → "" + 名字
+            String raw = sf.original.substring(t.start, t.end);
+            int genStart = sb.length();
+            if (appendInterpolated(sb, raw, plan.declared)) {
+                pending.add(new int[]{t.start, raw.length(), genStart, sb.length() - genStart});
+            } else {
+                sb.append(raw);
+            }
+        } else {
+            sb.append(sf.original, t.start, t.end);
+        }
     }
 
     /** 登记一段生成文本：原起点、原长度、生成起点、生成长度，供诊断位置回映射。 */
