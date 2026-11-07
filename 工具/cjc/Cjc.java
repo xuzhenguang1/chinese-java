@@ -370,6 +370,17 @@ public class Cjc {
     }
 
     static String pomTemplate(String name, String relative) {
+        StringBuilder sb = new StringBuilder(pomHead(name));
+        appendCjcPlugin(sb, relative);
+        appendJarPlugin(sb);
+        sb.append("        </plugins>\n");
+        sb.append("    </build>\n");
+        sb.append("</project>\n");
+        return sb.toString();
+    }
+
+    /** POM 头部：XML 声明、项目坐标、编码与编译器版本，以及 <plugins> 开始标签。 */
+    private static String pomHead(String name) {
         StringBuilder sb = new StringBuilder();
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         sb.append("<project xmlns=\"http://maven.apache.org/POM/4.0.0\"\n");
@@ -387,6 +398,11 @@ public class Cjc {
         sb.append("    </properties>\n");
         sb.append("    <build>\n");
         sb.append("        <plugins>\n");
+        return sb.toString();
+    }
+
+    /** cjc-maven-plugin：用仓库里的 Cjc.java 与关键字表转译中文源码。 */
+    private static void appendCjcPlugin(StringBuilder sb, String relative) {
         sb.append("            <plugin>\n");
         sb.append("                <groupId>cjc</groupId>\n");
         sb.append("                <artifactId>cjc-maven-plugin</artifactId>\n");
@@ -402,6 +418,10 @@ public class Cjc {
         sb.append("                    <table>${project.basedir}/").append(relative).append("/工具/cjc/关键字表.txt</table>\n");
         sb.append("                </configuration>\n");
         sb.append("            </plugin>\n");
+    }
+
+    /** maven-jar-plugin：可执行 jar 的主类固定为 演示.应用.主程序。 */
+    private static void appendJarPlugin(StringBuilder sb) {
         sb.append("            <plugin>\n");
         sb.append("                <groupId>org.apache.maven.plugins</groupId>\n");
         sb.append("                <artifactId>maven-jar-plugin</artifactId>\n");
@@ -414,10 +434,6 @@ public class Cjc {
         sb.append("                    </archive>\n");
         sb.append("                </configuration>\n");
         sb.append("            </plugin>\n");
-        sb.append("        </plugins>\n");
-        sb.append("    </build>\n");
-        sb.append("</project>\n");
-        return sb.toString();
     }
 
     static void usage() {
@@ -558,44 +574,57 @@ public class Cjc {
         }
         Set<String> seen = new HashSet<>();
         for (TableLine entry : readTableLines(dictPath)) {
-            int lineNo = entry.lineNo;
-            String line = entry.text.strip();
-            int eq = line.indexOf('=');
-            if (eq <= 0 || eq == line.length() - 1) {
-                problems.add("近义词典第" + lineNo + "行格式错误，应为「组名=[近义词1，近义词2]」：" + line);
-                continue;
-            }
-            String name = line.substring(0, eq).strip();
-            String right = line.substring(eq + 1).strip();
-            if (!right.startsWith("[") || !right.endsWith("]")) {
-                problems.add("近义词典第" + lineNo + "行缺少方括号：" + line);
-                continue;
-            }
-            if (DICT_GROUPS.containsKey(name)) {
-                problems.add("近义词典第" + lineNo + "行组名重复：" + name);
-                continue;
-            }
-            List<String> synonyms = new ArrayList<>();
-            boolean any = false;
-            for (String part : right.substring(1, right.length() - 1).split("[，,]")) {
-                String word = part.strip();
-                if (word.isEmpty()) {
-                    continue;
-                }
-                any = true;
-                if (!seen.add(word)) {
-                    problems.add("近义词典第" + lineNo + "行近义词重复：" + word);
-                    continue;
-                }
-                synonyms.add(word);
-            }
-            if (!any) {
-                problems.add("近义词典第" + lineNo + "行近义词列表为空：" + line);
-                continue;
-            }
-            seen.add(name);
-            DICT_GROUPS.put(name, synonyms);
+            parseDictionaryLine(entry, seen, problems);
         }
+    }
+
+    /** 解析近义词典一行：校验「组名=[近义词1，近义词2]」并写入 DICT_GROUPS。 */
+    private static void parseDictionaryLine(TableLine entry, Set<String> seen, List<String> problems) {
+        int lineNo = entry.lineNo;
+        String line = entry.text.strip();
+        int eq = line.indexOf('=');
+        if (eq <= 0 || eq == line.length() - 1) {
+            problems.add("近义词典第" + lineNo + "行格式错误，应为「组名=[近义词1，近义词2]」：" + line);
+            return;
+        }
+        String name = line.substring(0, eq).strip();
+        String right = line.substring(eq + 1).strip();
+        if (!right.startsWith("[") || !right.endsWith("]")) {
+            problems.add("近义词典第" + lineNo + "行缺少方括号：" + line);
+            return;
+        }
+        if (DICT_GROUPS.containsKey(name)) {
+            problems.add("近义词典第" + lineNo + "行组名重复：" + name);
+            return;
+        }
+        List<String> synonyms = new ArrayList<>();
+        if (!collectSynonyms(lineNo, line, right, synonyms, seen, problems)) {
+            return;
+        }
+        seen.add(name);
+        DICT_GROUPS.put(name, synonyms);
+    }
+
+    /** 拆分方括号内的近义词列表并去重；返回 false 表示列表为空（已记入 problems）。 */
+    private static boolean collectSynonyms(int lineNo, String line, String right, List<String> synonyms,
+                                           Set<String> seen, List<String> problems) {
+        boolean any = false;
+        for (String part : right.substring(1, right.length() - 1).split("[，,]")) {
+            String word = part.strip();
+            if (word.isEmpty()) {
+                continue;
+            }
+            any = true;
+            if (!seen.add(word)) {
+                problems.add("近义词典第" + lineNo + "行近义词重复：" + word);
+                continue;
+            }
+            synonyms.add(word);
+        }
+        if (!any) {
+            problems.add("近义词典第" + lineNo + "行近义词列表为空：" + line);
+        }
+        return any;
     }
 
     /** 把关键字表中的中文写法展开为「规范名 + 词典同义词」；不在词典中的词按原样使用。 */
@@ -826,15 +855,7 @@ public class Cjc {
         int lineNo = entry.lineNo;
         String line = entry.text.strip();
         if (line.startsWith("[") && line.endsWith("]")) {
-            String name = line.substring(1, line.length() - 1).strip();
-            int index = methodSugarSectionIndex(name);
-            if (index < 0) {
-                tables.problems.add("第" + lineNo + "行未知分区：" + line + "（只支持 [成员] / [声明] / [静态] / [白名单]）");
-                tables.section = null;
-            } else {
-                tables.section = name;
-                tables.seen[index] = true;
-            }
+            parseSugarSection(lineNo, line, tables);
             return;
         }
         if (tables.section == null) {
@@ -842,14 +863,37 @@ public class Cjc {
             return;
         }
         if (tables.section.equals("白名单")) {
-            for (String part : line.split("/")) {
-                String name = part.strip();
-                if (!name.isEmpty()) {
-                    tables.whitelist.add(name);
-                }
-            }
+            parseWhitelist(line, tables);
             return;
         }
+        parseSugarEntry(lineNo, line, tables);
+    }
+
+    /** 分区头：`[成员]` / `[声明]` / `[静态]` / `[白名单]`；未知分区记错误并清空当前分区。 */
+    private static void parseSugarSection(int lineNo, String line, SugarTables tables) {
+        String name = line.substring(1, line.length() - 1).strip();
+        int index = methodSugarSectionIndex(name);
+        if (index < 0) {
+            tables.problems.add("第" + lineNo + "行未知分区：" + line + "（只支持 [成员] / [声明] / [静态] / [白名单]）");
+            tables.section = null;
+        } else {
+            tables.section = name;
+            tables.seen[index] = true;
+        }
+    }
+
+    /** 白名单行：斜杠分隔的标准库类名，逐个加入白名单。 */
+    private static void parseWhitelist(String line, SugarTables tables) {
+        for (String part : line.split("/")) {
+            String name = part.strip();
+            if (!name.isEmpty()) {
+                tables.whitelist.add(name);
+            }
+        }
+    }
+
+    /** 条目行：`中文=英文`，按当前分区去重并校验英文格式后写入。 */
+    private static void parseSugarEntry(int lineNo, String line, SugarTables tables) {
         int eq = line.indexOf('=');
         if (eq <= 0 || eq == line.length() - 1) {
             tables.problems.add("第" + lineNo + "行格式错误，应为「中文=英文」：" + line);
@@ -1366,7 +1410,29 @@ public class Cjc {
     static int scanAt(String source, int i, boolean english, List<Token> tokens) {
         int cp = source.codePointAt(i);
         int width = Character.charCount(cp);
+        int opaque = scanOpaqueSpan(source, i, cp, width, english, tokens);
+        if (opaque >= 0) {
+            return opaque;
+        }
+        // 全角 ASCII 标点（U+FF01..U+FF5E）：平移 0xFEE0 得到半角
+        if (cp >= 0xFF01 && cp <= 0xFF5E) {
+            tokens.add(new Token(KIND_PUNCT, i, i + 1, String.valueOf((char) (cp - 0xFEE0))));
+            return i + 1;
+        }
+        // 句号「。」与顿号「、」：默认自动纠正（只提示 CJK106），`--严格标点` 时仍报 CJK002。
+        if (cp == 0x3001 || cp == 0x3002) {
+            return scanFoldedPunct(source, i, cp, width, tokens);
+        }
+        // 无法映射到半角的 CJK 标点：保留原文，报 CJK002
+        if (CJK_PUNCTUATION.contains(cp)) {
+            return addBadPunct(tokens, i, cp, width);
+        }
+        tokens.add(new Token(KIND_OTHER, i, i + width, null));
+        return i + width;
+    }
 
+    /** 整段跳过的情形：空白、注释、字面量、标识符、数字；返回 -1 表示不是这类片段。 */
+    private static int scanOpaqueSpan(String source, int i, int cp, int width, boolean english, List<Token> tokens) {
         // 全角空格：javac 会报「非法字符」，这里统一转成半角空格
         if (cp == 0x3000) {
             tokens.add(new Token(KIND_PUNCT, i, i + 1, " "));
@@ -1396,21 +1462,7 @@ public class Cjc {
                 && Character.isDigit(source.charAt(i + 1)))) {
             return addRangeToken(tokens, i, skipNumber(source, i));
         }
-        // 全角 ASCII 标点（U+FF01..U+FF5E）：平移 0xFEE0 得到半角
-        if (cp >= 0xFF01 && cp <= 0xFF5E) {
-            tokens.add(new Token(KIND_PUNCT, i, i + 1, String.valueOf((char) (cp - 0xFEE0))));
-            return i + 1;
-        }
-        // 句号「。」与顿号「、」：默认自动纠正（只提示 CJK106），`--严格标点` 时仍报 CJK002。
-        if (cp == 0x3001 || cp == 0x3002) {
-            return scanFoldedPunct(source, i, cp, width, tokens);
-        }
-        // 无法映射到半角的 CJK 标点：保留原文，报 CJK002
-        if (CJK_PUNCTUATION.contains(cp)) {
-            return addBadPunct(tokens, i, cp, width);
-        }
-        tokens.add(new Token(KIND_OTHER, i, i + width, null));
-        return i + width;
+        return -1;
     }
 
     /** 句号「。」与顿号「、」：默认自动纠正（只提示 CJK106），`--严格标点` 时仍报 CJK002。 */
@@ -2167,46 +2219,56 @@ public class Cjc {
         String[] typeAt = new String[tokens.size()];
         String[] kindAt = new String[tokens.size()];
         boolean[] inTypeBody = new boolean[tokens.size()];
-        List<String> ownerStack = new ArrayList<>();
-        List<String> kindStack = new ArrayList<>();
-        List<Boolean> bodyStack = new ArrayList<>();
-        String pendingType = null;
-        String pendingKind = null;
-        String currentType = null;
-        String currentKind = null;
+        ScopeWalk walk = new ScopeWalk();
         for (int idx = 0; idx < tokens.size(); idx++) {
             Token t = tokens.get(idx);
             String text = textAt(sf, tokens, idx);
             String declKind = typeDeclarationKind(t);
             if (declKind != null) {
-                pendingKind = declKind;
+                walk.pendingKind = declKind;
                 if (idx + 1 < tokens.size() && tokens.get(idx + 1).kind == KIND_IDENTIFIER) {
-                    pendingType = tokens.get(idx + 1).text;
+                    walk.pendingType = tokens.get(idx + 1).text;
                 }
             }
-            typeAt[idx] = currentType;
-            kindAt[idx] = currentKind;
-            inTypeBody[idx] = !bodyStack.isEmpty() && bodyStack.get(bodyStack.size() - 1);
-            if (text.equals("{")) {
-                boolean typeBody = pendingType != null;
-                ownerStack.add(typeBody ? pendingType : currentType);
-                kindStack.add(typeBody ? pendingKind : currentKind);
-                bodyStack.add(typeBody);
-                currentType = ownerStack.get(ownerStack.size() - 1);
-                currentKind = kindStack.get(kindStack.size() - 1);
-                pendingType = null;
-                pendingKind = null;
-            } else if (text.equals("}")) {
-                String[] state = popTypeScope(ownerStack, kindStack, bodyStack);
-                currentType = state[0];
-                currentKind = state[1];
-            }
+            typeAt[idx] = walk.currentType;
+            kindAt[idx] = walk.currentKind;
+            inTypeBody[idx] = !walk.bodies.isEmpty() && walk.bodies.get(walk.bodies.size() - 1);
+            stepTypeScope(text, walk);
         }
         TypeScope scope = new TypeScope();
         scope.typeAt = typeAt;
         scope.kindAt = kindAt;
         scope.inTypeBody = inTypeBody;
         return scope;
+    }
+
+    /** 类型作用域遍历的可变状态：待定的类型声明、当前类型与「所有者/种类/类型体」三层栈。 */
+    private static final class ScopeWalk {
+        final List<String> owners = new ArrayList<>();
+        final List<String> kinds = new ArrayList<>();
+        final List<Boolean> bodies = new ArrayList<>();
+        String pendingType;
+        String pendingKind;
+        String currentType;
+        String currentKind;
+    }
+
+    /** 遇到 `{` 进入新作用域、`}` 退出；其他 token 不改动作用域。 */
+    private static void stepTypeScope(String text, ScopeWalk walk) {
+        if (text.equals("{")) {
+            boolean typeBody = walk.pendingType != null;
+            walk.owners.add(typeBody ? walk.pendingType : walk.currentType);
+            walk.kinds.add(typeBody ? walk.pendingKind : walk.currentKind);
+            walk.bodies.add(typeBody);
+            walk.currentType = walk.owners.get(walk.owners.size() - 1);
+            walk.currentKind = walk.kinds.get(walk.kinds.size() - 1);
+            walk.pendingType = null;
+            walk.pendingKind = null;
+        } else if (text.equals("}")) {
+            String[] state = popTypeScope(walk.owners, walk.kinds, walk.bodies);
+            walk.currentType = state[0];
+            walk.currentKind = state[1];
+        }
     }
 
     /** `类` / `接口` / `枚举` 返回对应英文种类；其他 token 返回 null。 */
