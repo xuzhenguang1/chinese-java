@@ -4,6 +4,10 @@
   "description": "为中文关键字 Java 提供语法高亮、代码片段、补全与悬停，并注入到标准 Java 语法，不改变文件语言模式。",
   "version": "0.14.1",
   "publisher": "cjc",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xuzhenguang1/chinese-java.git"
+  },
   "engines": {
     "vscode": "^1.80.0"
   },
