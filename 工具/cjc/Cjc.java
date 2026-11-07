@@ -1186,43 +1186,61 @@ public class Cjc {
             fail("错误：无法确定入口类，请用 -主类 <全限定类名> 指定");
         }
         Path outDir = Files.createTempDirectory("cjc-run-");
-        int exitCode = 1;
+        int exitCode;
         try {
-            if (compile(files, outDir, classpath) > 0) {
-                System.out.println();
-                System.out.println("运行失败：编译未通过。");
-            } else {
-                List<String> cmd = new ArrayList<>();
-                cmd.add(javaBinary());
-                cmd.add("-Dstdout.encoding=UTF-8");
-                cmd.add("-Dstderr.encoding=UTF-8");
-                String cp = outDir.toAbsolutePath().normalize().toString();
-                if (classpath != null && !classpath.isBlank()) {
-                    cp = cp + java.io.File.pathSeparator + classpath;
-                }
-                cmd.add("-cp");
-                cmd.add(cp);
-                cmd.add(entry);
-                System.out.println();
-                Process process = new ProcessBuilder(cmd)
-                        .redirectInput(ProcessBuilder.Redirect.INHERIT)
-                        .redirectOutput(ProcessBuilder.Redirect.INHERIT)
-                        .start();
-                Thread pump = new Thread(() -> pumpStandardError(process), "cjc-stderr");
-                pump.setDaemon(true);
-                pump.start();
-                try {
-                    exitCode = process.waitFor();
-                    pump.join(200);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    exitCode = 130;
-                }
-            }
+            exitCode = compileAndRun(files, outDir, classpath, entry);
         } finally {
             deleteRecursively(outDir);
         }
         System.exit(exitCode);
+    }
+
+    /** 编译到临时目录并运行入口类；编译失败打印提示并返回 1。 */
+    private static int compileAndRun(List<SourceFile> files, Path outDir, String classpath,
+                                     String entry) throws IOException {
+        if (compile(files, outDir, classpath) > 0) {
+            System.out.println();
+            System.out.println("运行失败：编译未通过。");
+            return 1;
+        }
+        List<String> cmd = buildRunCommand(outDir, classpath, entry);
+        System.out.println();
+        Process process = new ProcessBuilder(cmd)
+                .redirectInput(ProcessBuilder.Redirect.INHERIT)
+                .redirectOutput(ProcessBuilder.Redirect.INHERIT)
+                .start();
+        return waitForExit(process);
+    }
+
+    /** 组装 `java -cp <输出目录><分隔符><类路径> <入口类>` 命令行。 */
+    private static List<String> buildRunCommand(Path outDir, String classpath, String entry) {
+        List<String> cmd = new ArrayList<>();
+        cmd.add(javaBinary());
+        cmd.add("-Dstdout.encoding=UTF-8");
+        cmd.add("-Dstderr.encoding=UTF-8");
+        String cp = outDir.toAbsolutePath().normalize().toString();
+        if (classpath != null && !classpath.isBlank()) {
+            cp = cp + java.io.File.pathSeparator + classpath;
+        }
+        cmd.add("-cp");
+        cmd.add(cp);
+        cmd.add(entry);
+        return cmd;
+    }
+
+    /** 启动 stderr 中文化线程并等待子进程结束；被中断时按 130 返回。 */
+    private static int waitForExit(Process process) {
+        Thread pump = new Thread(() -> pumpStandardError(process), "cjc-stderr");
+        pump.setDaemon(true);
+        pump.start();
+        try {
+            int code = process.waitFor();
+            pump.join(200);
+            return code;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return 130;
+        }
     }
 
     /** 实时把子进程的 stderr 逐行转成中文后输出；不属于异常栈的行原样保留。 */
@@ -1261,45 +1279,60 @@ public class Cjc {
         String line = raw.trim();
         Matcher header = RUNTIME_HEADER.matcher(line);
         if (header.matches()) {
-            String thread = header.group(2);
-            String detail = header.group(3).trim();
-            int colon = detail.indexOf(':');
-            String type = colon >= 0 ? detail.substring(0, colon) : detail;
-            String message = colon >= 0 ? detail.substring(colon + 1).trim() : "";
-            message = chineseRuntimeMessage(message);
-            String simple = type.substring(type.lastIndexOf('.') + 1);
-            String chinese = chineseExceptionName(simple);
-            StringBuilder sb = new StringBuilder("程序运行出错（线程「").append(thread).append("」）：").append(chinese);
-            if (!message.isEmpty()) {
-                sb.append("：").append(message);
-            }
-            if (chinese.equals(simple)) {
-                sb.append("（异常类型 ").append(type).append("）");
-            }
-            return new String[]{sb.toString(), exceptionSuggestion(simple)};
+            return runtimeHeaderLine(header);
         }
         if (line.startsWith("Caused by:")) {
-            String rest = line.substring("Caused by:".length()).trim();
-            int colon = rest.indexOf(':');
-            String type = colon >= 0 ? rest.substring(0, colon) : rest;
-            String message = colon >= 0 ? rest.substring(colon + 1).trim() : "";
-            String simple = type.substring(type.lastIndexOf('.') + 1);
-            String text = "由以下原因引起：" + chineseExceptionName(simple) + (message.isEmpty() ? "" : "：" + message);
-            return new String[]{text, null};
+            return causedByLine(line);
         }
         Matcher frame = STACK_FRAME.matcher(line);
         if (frame.matches()) {
-            String where = frame.group(1);
-            String source = frame.group(2)
-                    .replace("Native Method", "本地方法")
-                    .replace("Unknown Source", "未知位置");
-            Matcher pos = STACK_POSITION.matcher(source);
-            if (pos.matches()) {
-                source = pos.group(1) + " 第" + pos.group(2) + "行";
-            }
-            return new String[]{"    位置：" + where + "（" + source + "）", null};
+            return stackFrameLine(frame);
         }
         return null;
+    }
+
+    /** 异常头 `Exception in thread "…" 类型: 消息` → {中文消息, 建议}。 */
+    private static String[] runtimeHeaderLine(Matcher header) {
+        String thread = header.group(2);
+        String detail = header.group(3).trim();
+        int colon = detail.indexOf(':');
+        String type = colon >= 0 ? detail.substring(0, colon) : detail;
+        String message = colon >= 0 ? detail.substring(colon + 1).trim() : "";
+        message = chineseRuntimeMessage(message);
+        String simple = type.substring(type.lastIndexOf('.') + 1);
+        String chinese = chineseExceptionName(simple);
+        StringBuilder sb = new StringBuilder("程序运行出错（线程「").append(thread).append("」）：").append(chinese);
+        if (!message.isEmpty()) {
+            sb.append("：").append(message);
+        }
+        if (chinese.equals(simple)) {
+            sb.append("（异常类型 ").append(type).append("）");
+        }
+        return new String[]{sb.toString(), exceptionSuggestion(simple)};
+    }
+
+    /** `Caused by: 类型: 消息` → 中文一行，不给建议。 */
+    private static String[] causedByLine(String line) {
+        String rest = line.substring("Caused by:".length()).trim();
+        int colon = rest.indexOf(':');
+        String type = colon >= 0 ? rest.substring(0, colon) : rest;
+        String message = colon >= 0 ? rest.substring(colon + 1).trim() : "";
+        String simple = type.substring(type.lastIndexOf('.') + 1);
+        String text = "由以下原因引起：" + chineseExceptionName(simple) + (message.isEmpty() ? "" : "：" + message);
+        return new String[]{text, null};
+    }
+
+    /** 栈帧 `at 类.方法(文件:行)` → 中文「位置」一行。 */
+    private static String[] stackFrameLine(Matcher frame) {
+        String where = frame.group(1);
+        String source = frame.group(2)
+                .replace("Native Method", "本地方法")
+                .replace("Unknown Source", "未知位置");
+        Matcher pos = STACK_POSITION.matcher(source);
+        if (pos.matches()) {
+            source = pos.group(1) + " 第" + pos.group(2) + "行";
+        }
+        return new String[]{"    位置：" + where + "（" + source + "）", null};
     }
 
     /** 常见异常消息的英文片段换成中文；无法识别的原样返回。 */
@@ -1749,48 +1782,28 @@ public class Cjc {
 
     /** 给无法映射的全角标点一个可直接替换的半角写法；没有对应项时返回通用建议。 */
     static String suggestionFor(String punct) {
-        switch (punct) {
-            case "、":
-                return "改用半角「,」（多用于分隔参数、列表项）。";
-            case "。":
-                return "改用半角「.」或「;」（句末按语句结束习惯选择）。";
-            case "“":
-            case "”":
-            case "「":
-            case "」":
-            case "『":
-            case "』":
-                return "改用半角「\"」（字符串定界符）。";
-            case "‘":
-            case "’":
-                return "改用半角「'」（字符定界符）。";
-            case "《":
-            case "〈":
-                return "改用半角「<」（泛型或比较）。";
-            case "》":
-            case "〉":
-                return "改用半角「>」（泛型或比较）。";
-            case "【":
-            case "〔":
-            case "〖":
-                return "改用半角「[」（数组下标）。";
-            case "】":
-            case "〕":
-            case "〗":
-                return "改用半角「]」（数组下标）。";
-            case "–":
-            case "—":
-            case "〜":
-                return "改用半角「-」（减号或连字符）。";
-            case "…":
-                return "改用三个半角句点「...」（可变参数或省略）。";
-            case "·":
-                return "改用半角「.」（成员访问）。";
-            case "※":
-                return "改用半角「*」（注释或通配）。";
-            default:
-                return "改用半角标点（, . ? : ; \" ' ( ) 等）。";
+        return switch (punct) {
+            case "、", "。" -> endPunctSuggestion(punct);
+            case "“", "”", "「", "」", "『", "』" -> "改用半角「\"」（字符串定界符）。";
+            case "‘", "’" -> "改用半角「'」（字符定界符）。";
+            case "《", "〈" -> "改用半角「<」（泛型或比较）。";
+            case "》", "〉" -> "改用半角「>」（泛型或比较）。";
+            case "【", "〔", "〖" -> "改用半角「[」（数组下标）。";
+            case "】", "〕", "〗" -> "改用半角「]」（数组下标）。";
+            case "–", "—", "〜" -> "改用半角「-」（减号或连字符）。";
+            case "…" -> "改用三个半角句点「...」（可变参数或省略）。";
+            case "·" -> "改用半角「.」（成员访问）。";
+            case "※" -> "改用半角「*」（注释或通配）。";
+            default -> "改用半角标点（, . ? : ; \" ' ( ) 等）。";
+        };
+    }
+
+    /** 顿号 / 句号：按分隔用途或语句结束用途给半角替换。 */
+    private static String endPunctSuggestion(String punct) {
+        if (punct.equals("、")) {
+            return "改用半角「,」（多用于分隔参数、列表项）。";
         }
+        return "改用半角「.」或「;」（句末按语句结束习惯选择）。";
     }
 
     // ------------------------------------------------------------------ 新手易错提示（不阻断编译）
@@ -1965,32 +1978,37 @@ public class Cjc {
             if (!textAt(sf, tokens, i + 1).equals("(")) {
                 continue;
             }
-            List<Integer> semicolons = new ArrayList<>();
-            int close = findLoopClose(sf, tokens, i + 2, isFor, semicolons);
-            if (close < 0) {
-                continue;
-            }
-            int start = i + 2;
-            int end = close;
-            if (isFor) {
-                if (semicolons.size() < 2) {
-                    continue;
-                }
-                start = semicolons.get(0) + 1;
-                end = semicolons.get(1);
-            }
-            int hit = nextComparisonEnd(sf, tokens, start, end);
-            if (hit < 0) {
-                continue;
-            }
-            String expr = describeBound(sf, tokens, hit, end);
-            if (reportTrap(sf, tokens.get(hit), "CJK104",
-                    "循环条件「… <= " + expr + "」会多走一轮，取下标时最后一次越界。",
-                    "把「<=」改成「<」（0 起始取下标）；确实要包含末尾时写「<= " + expr + " - 1」。")) {
+            if (inspectLoopBound(sf, tokens, i, isFor)) {
                 count++;
             }
         }
         return count;
+    }
+
+    /** 检查一个循环条件的上界比较；命中提示并输出时返回 true。 */
+    private static boolean inspectLoopBound(SourceFile sf, List<Token> tokens, int i, boolean isFor) {
+        List<Integer> semicolons = new ArrayList<>();
+        int close = findLoopClose(sf, tokens, i + 2, isFor, semicolons);
+        if (close < 0) {
+            return false;
+        }
+        int start = i + 2;
+        int end = close;
+        if (isFor) {
+            if (semicolons.size() < 2) {
+                return false;
+            }
+            start = semicolons.get(0) + 1;
+            end = semicolons.get(1);
+        }
+        int hit = nextComparisonEnd(sf, tokens, start, end);
+        if (hit < 0) {
+            return false;
+        }
+        String expr = describeBound(sf, tokens, hit, end);
+        return reportTrap(sf, tokens.get(hit), "CJK104",
+                "循环条件「… <= " + expr + "」会多走一轮，取下标时最后一次越界。",
+                "把「<=」改成「<」（0 起始取下标）；确实要包含末尾时写「<= " + expr + " - 1」。");
     }
 
     /** 找到循环条件右括号的位置，同时收集 for 头部的分号；找不到返回 -1。 */
@@ -2842,38 +2860,14 @@ public class Cjc {
 
     private static String renderTranslated(SourceFile sf, TranslatePlan plan) {
         List<Token> tokens = plan.tokens;
-        boolean[] skip = plan.skip;
         StringBuilder sb = new StringBuilder(sf.original.length() * 2);
         List<int[]> pending = new ArrayList<>(); // {origStart, origLen, genStart, genLen}
         int cursor = 0;
         for (int idx = 0; idx < tokens.size(); idx++) {
-            Token t = tokens.get(idx);
             if (idx > 0) {
                 appendPendingClosers(sb, idx - 1, plan.arrayListClose, plan.printParenClose);
             }
-            if (skip[idx]) {
-                // 关键字已在前面的名称处输出，连同它与名称之间的空白一起跳过。
-                // 用 max 避免把 cursor 往回退（区域整体替换时 cursor 已越过后续 token）。
-                cursor = Math.max(cursor, t.end);
-                continue;
-            }
-            if (t.start > cursor) {
-                sb.append(sf.original, cursor, t.start);
-            }
-            if (plan.printParenOpen[idx]) {
-                sb.append('(');
-            }
-            int sugared = renderSugared(sf, plan, sb, pending, t, idx);
-            if (sugared >= 0) {
-                cursor = sugared;
-                continue;
-            }
-            if (t.kind == KIND_KEYWORD) {
-                renderKeyword(plan, sb, pending, idx);
-            } else {
-                renderLiteral(sf, plan, sb, pending, t);
-            }
-            cursor = t.end;
+            cursor = renderToken(sf, plan, sb, pending, idx, cursor);
         }
         if (cursor < sf.original.length()) {
             sb.append(sf.original, cursor, sf.original.length());
@@ -2881,6 +2875,33 @@ public class Cjc {
         String translated = sb.toString();
         recordReplacements(sf, pending, translated);
         return translated;
+    }
+
+    /** 输出第 idx 个 token（含前置括号与语法糖），返回新的 cursor。 */
+    private static int renderToken(SourceFile sf, TranslatePlan plan, StringBuilder sb,
+                                  List<int[]> pending, int idx, int cursor) {
+        Token t = plan.tokens.get(idx);
+        if (plan.skip[idx]) {
+            // 关键字已在前面的名称处输出，连同它与名称之间的空白一起跳过。
+            // 用 max 避免把 cursor 往回退（区域整体替换时 cursor 已越过后续 token）。
+            return Math.max(cursor, t.end);
+        }
+        if (t.start > cursor) {
+            sb.append(sf.original, cursor, t.start);
+        }
+        if (plan.printParenOpen[idx]) {
+            sb.append('(');
+        }
+        int sugared = renderSugared(sf, plan, sb, pending, t, idx);
+        if (sugared >= 0) {
+            return sugared;
+        }
+        if (t.kind == KIND_KEYWORD) {
+            renderKeyword(plan, sb, pending, idx);
+        } else {
+            renderLiteral(sf, plan, sb, pending, t);
+        }
+        return t.end;
     }
 
     /** 输出语法糖 token；命中返回新 cursor，未命中返回 -1。 */
@@ -3383,40 +3404,50 @@ public class Cjc {
         Path tempDir = Files.createTempDirectory("cjc-");
         Map<Path, SourceFile> byTempPath = new LinkedHashMap<>();
         try {
-            for (SourceFile sf : files) {
-                Path temp = tempDir.resolve(sf.relative);
-                Files.createDirectories(temp.getParent());
-                Files.writeString(temp, sf.translated, StandardCharsets.UTF_8);
-                sf.tempPath = temp;
-                byTempPath.put(temp.toAbsolutePath().normalize(), sf);
-            }
+            writeTempSources(files, tempDir, byTempPath);
             Files.createDirectories(outDir);
-
             JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
             if (compiler == null) {
                 System.err.println("错误：当前运行环境没有 javac 编译器（需要 JDK，而不是 JRE）");
                 return 1;
             }
             DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();
-            int errorCount;
-            try (StandardJavaFileManager fileManager =
-                         compiler.getStandardFileManager(diagnostics, Locale.CHINA, StandardCharsets.UTF_8)) {
-                List<String> options = new ArrayList<>(List.of(
-                        "-d", outDir.toAbsolutePath().normalize().toString(),
-                        "-encoding", "UTF-8",
-                        "-proc:none"));
-                if (classpath != null) {
-                    options.add("-classpath");
-                    options.add(classpath);
-                }
-                Iterable<? extends JavaFileObject> units = fileManager.getJavaFileObjectsFromPaths(
-                        files.stream().map(f -> f.tempPath).collect(Collectors.toList()));
-                compiler.getTask(null, fileManager, diagnostics, options, null, units).call();
-            }
-            errorCount = printDiagnostics(diagnostics, byTempPath);
-            return errorCount;
+            runCompiler(compiler, files, outDir, classpath, diagnostics);
+            return printDiagnostics(diagnostics, byTempPath);
         } finally {
             deleteRecursively(tempDir);
+        }
+    }
+
+    /** 把转译结果写到临时目录，并登记「临时路径 → 源文件」供诊断回映射。 */
+    private static void writeTempSources(List<SourceFile> files, Path tempDir,
+                                         Map<Path, SourceFile> byTempPath) throws IOException {
+        for (SourceFile sf : files) {
+            Path temp = tempDir.resolve(sf.relative);
+            Files.createDirectories(temp.getParent());
+            Files.writeString(temp, sf.translated, StandardCharsets.UTF_8);
+            sf.tempPath = temp;
+            byTempPath.put(temp.toAbsolutePath().normalize(), sf);
+        }
+    }
+
+    /** 调用 javac 编译全部临时文件；诊断收集后由调用方汇总输出。 */
+    private static void runCompiler(JavaCompiler compiler, List<SourceFile> files, Path outDir,
+                                    String classpath, DiagnosticCollector<JavaFileObject> diagnostics)
+            throws IOException {
+        try (StandardJavaFileManager fileManager =
+                     compiler.getStandardFileManager(diagnostics, Locale.CHINA, StandardCharsets.UTF_8)) {
+            List<String> options = new ArrayList<>(List.of(
+                    "-d", outDir.toAbsolutePath().normalize().toString(),
+                    "-encoding", "UTF-8",
+                    "-proc:none"));
+            if (classpath != null) {
+                options.add("-classpath");
+                options.add(classpath);
+            }
+            Iterable<? extends JavaFileObject> units = fileManager.getJavaFileObjectsFromPaths(
+                    files.stream().map(f -> f.tempPath).collect(Collectors.toList()));
+            compiler.getTask(null, fileManager, diagnostics, options, null, units).call();
         }
     }
 
@@ -3508,32 +3539,15 @@ public class Cjc {
         String raw = message == null ? "" : message.replace("\r", "");
         String first = raw.split("\n", 2)[0].trim();
 
-        // 特例 1/2：找不到符号（英文与中文两套消息格式）
-        if (first.startsWith("cannot find symbol")) {
-            String symbol = captureAfter(raw, "symbol:");
-            if (symbol == null) {
-                return rule("找不到符号", "检查拼写；确认变量已声明、类型已导入。");
-            }
-            String[] parts = symbol.split("\\s+", 2);
-            return symbolRule(parts[0], parts.length > 1 ? parts[1] : "");
-        }
-        if (first.startsWith("找不到符号")) {
-            String symbol = captureAfter(raw, "符号:");
-            if (symbol == null) {
-                symbol = captureAfter(raw, "符号：");
-            }
-            if (symbol == null) {
-                return rule("找不到符号", "检查拼写；确认变量已声明、类型已导入。");
-            }
-            String[] parts = symbol.split("\\s+", 2);
-            return symbolRule(parts[0], parts.length > 1 ? parts[1] : "");
+        String[] symbol = symbolDiagnostic(first, raw);
+        if (symbol != null) {
+            return symbol;
         }
         // 特例 3/4：缺标点（分号 / 花括号 / 圆括号给出不同建议）
         Matcher m = findPattern("^'(.+)' expected$", first);
-        if (m != null) {
-            return missingToken(m.group(1));
+        if (m == null) {
+            m = findPattern("需要'(.+)'", first);
         }
-        m = findPattern("需要'(.+)'", first);
         if (m != null) {
             return missingToken(m.group(1));
         }
@@ -3545,6 +3559,30 @@ public class Cjc {
             }
         }
         return null;
+    }
+
+    /** 特例 1/2：找不到符号（英文与中文两套消息格式）；不是这类消息返回 null。 */
+    private static String[] symbolDiagnostic(String first, String raw) {
+        if (first.startsWith("cannot find symbol")) {
+            return symbolFromDetail(captureAfter(raw, "symbol:"));
+        }
+        if (first.startsWith("找不到符号")) {
+            String detail = captureAfter(raw, "符号:");
+            if (detail == null) {
+                detail = captureAfter(raw, "符号：");
+            }
+            return symbolFromDetail(detail);
+        }
+        return null;
+    }
+
+    /** 符号明细形如「种类 名称」；缺明细时退回通用建议。 */
+    private static String[] symbolFromDetail(String detail) {
+        if (detail == null) {
+            return rule("找不到符号", "检查拼写；确认变量已声明、类型已导入。");
+        }
+        String[] parts = detail.split("\\s+", 2);
+        return symbolRule(parts[0], parts.length > 1 ? parts[1] : "");
     }
 
     /** 缺标点提示：分号/花括号/圆括号各给一条针对性的建议。 */
@@ -3629,11 +3667,7 @@ public class Cjc {
             if (d.getKind() == Diagnostic.Kind.NOTE) {
                 continue;
             }
-            String label = switch (d.getKind()) {
-                case ERROR -> "错误";
-                case WARNING, MANDATORY_WARNING -> "警告";
-                default -> "提示";
-            };
+            String label = diagnosticLabel(d.getKind());
             SourceFile sf = resolveSource(d, byTempPath);
             // 固定取英文原文：JDK 自带的中文消息格式不统一，先拿到稳定英文再自行中文化。
             String message = d.getMessage(Locale.ENGLISH);
@@ -3641,30 +3675,50 @@ public class Cjc {
             String shown = localized == null ? message : localized[0];
             String hint = localized == null ? null : localized[1];
             if (sf == null || d.getLineNumber() <= 0) {
-                System.err.println(label + "：" + shown);
-                if (hint != null) {
-                    System.err.println("    建议：" + hint);
-                }
+                printPlainDiagnostic(label, shown, hint);
             } else {
-                int wrappedLine = (int) d.getLineNumber();
-                int line = wrappedLine - sf.lineOffset;  // 脚本模式：换算回正文行号
-                int col = remapColumn(sf, wrappedLine, (int) d.getColumnNumber());
-                System.err.println();
-                System.err.println(label + "：第" + line + "行 第" + col + "列  " + shown);
-                if (hint != null) {
-                    System.err.println("    建议：" + hint);
-                }
-                System.err.println("    " + String.format("%4d", line) + " | "
-                        + lineText(sf.original, sf.origLineStarts, wrappedLine));
-                if (col > 0) {
-                    System.err.println("         | " + spaces(col - 1) + "^");
-                }
+                printLocatedDiagnostic(sf, d, label, shown, hint);
             }
             if (d.getKind() == Diagnostic.Kind.ERROR) {
                 errors++;
             }
         }
         return errors;
+    }
+
+    /** 诊断级别 → 中文标签。 */
+    private static String diagnosticLabel(Diagnostic.Kind kind) {
+        return switch (kind) {
+            case ERROR -> "错误";
+            case WARNING, MANDATORY_WARNING -> "警告";
+            default -> "提示";
+        };
+    }
+
+    /** 没有有效源码位置时只打印消息与建议。 */
+    private static void printPlainDiagnostic(String label, String shown, String hint) {
+        System.err.println(label + "：" + shown);
+        if (hint != null) {
+            System.err.println("    建议：" + hint);
+        }
+    }
+
+    /** 有源码位置时打印中文行列、原文行与脱字符。 */
+    private static void printLocatedDiagnostic(SourceFile sf, Diagnostic<? extends JavaFileObject> d,
+                                               String label, String shown, String hint) {
+        int wrappedLine = (int) d.getLineNumber();
+        int line = wrappedLine - sf.lineOffset;  // 脚本模式：换算回正文行号
+        int col = remapColumn(sf, wrappedLine, (int) d.getColumnNumber());
+        System.err.println();
+        System.err.println(label + "：第" + line + "行 第" + col + "列  " + shown);
+        if (hint != null) {
+            System.err.println("    建议：" + hint);
+        }
+        System.err.println("    " + String.format("%4d", line) + " | "
+                + lineText(sf.original, sf.origLineStarts, wrappedLine));
+        if (col > 0) {
+            System.err.println("         | " + spaces(col - 1) + "^");
+        }
     }
 
     static SourceFile resolveSource(Diagnostic<? extends JavaFileObject> d,
