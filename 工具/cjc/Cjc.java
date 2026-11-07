@@ -1357,89 +1357,112 @@ public class Cjc {
         int n = source.length();
         int i = 0;
         while (i < n) {
-            int cp = source.codePointAt(i);
-            int width = Character.charCount(cp);
-
-            // 全角空格：javac 会报「非法字符」，这里统一转成半角空格
-            if (cp == 0x3000) {
-                tokens.add(new Token(KIND_PUNCT, i, i + 1, " "));
-                i++;
-                continue;
-            }
-            if (Character.isWhitespace(cp)) {
-                i += width;
-                continue;
-            }
-            // 行注释
-            if (cp == '/' && i + 1 < n && source.charAt(i + 1) == '/') {
-                i = skipLineComment(source, i);
-                continue;
-            }
-            // 块注释
-            if (cp == '/' && i + 1 < n && source.charAt(i + 1) == '*') {
-                i = skipBlockComment(source, i);
-                continue;
-            }
-            // 文本块
-            if (cp == '"' && source.startsWith("\"\"\"", i)) {
-                int j = skipTextBlock(source, i);
-                tokens.add(new Token(KIND_OTHER, i, j, null));
-                i = j;
-                continue;
-            }
-            // 字符串 / 字符字面量
-            if (cp == '"' || cp == '\'') {
-                int j = skipLiteral(source, i, cp);
-                tokens.add(new Token(KIND_OTHER, i, j, null));
-                i = j;
-                continue;
-            }
-            // 标识符（含中文标识符）
-            if (Character.isJavaIdentifierStart(cp)) {
-                int start = i;
-                i += width;
-                while (i < n) {
-                    int next = source.codePointAt(i);
-                    if (!Character.isJavaIdentifierPart(next)) {
-                        break;
-                    }
-                    i += Character.charCount(next);
-                }
-                String text = source.substring(start, i);
-                tokens.add(new Token(identifierKind(text, english), start, i, text));
-                continue;
-            }
-            // 数字字面量（整体跳过，不参与关键字判定）
-            if (Character.isDigit(cp) || (cp == '.' && i + 1 < n && Character.isDigit(source.charAt(i + 1)))) {
-                int start = i;
-                i = skipNumber(source, i);
-                tokens.add(new Token(KIND_OTHER, start, i, null));
-                continue;
-            }
-            // 全角 ASCII 标点（U+FF01..U+FF5E）：平移 0xFEE0 得到半角
-            if (cp >= 0xFF01 && cp <= 0xFF5E) {
-                tokens.add(new Token(KIND_PUNCT, i, i + 1, String.valueOf((char) (cp - 0xFEE0))));
-                i++;
-                continue;
-            }
-            // 句号「。」与顿号「、」：默认自动纠正（只提示 CJK106），`--严格标点` 时仍报 CJK002。
-            if (cp == 0x3001 || cp == 0x3002) {
-                String folded = strictPunctuation ? null : foldSentencePunctuation(cp, source, i);
-                tokens.add(new Token(folded == null ? KIND_BAD_PUNCT : KIND_PUNCT,
-                        i, i + width, folded == null ? new String(Character.toChars(cp)) : folded));
-                i += width;
-                continue;
-            }
-            // 无法映射到半角的 CJK 标点：保留原文，报 CJK002
-            if (CJK_PUNCTUATION.contains(cp)) {
-                tokens.add(new Token(KIND_BAD_PUNCT, i, i + width, new String(Character.toChars(cp))));
-                i += width;
-                continue;
-            }
-            tokens.add(new Token(KIND_OTHER, i, i + width, null));
-            i += width;
+            i = scanAt(source, i, english, tokens);
         }
         return tokens;
+    }
+
+    /** 扫描从 i 开始的一个词法单元，追加到 tokens，返回下一个扫描位置。 */
+    static int scanAt(String source, int i, boolean english, List<Token> tokens) {
+        int cp = source.codePointAt(i);
+        int width = Character.charCount(cp);
+
+        // 全角空格：javac 会报「非法字符」，这里统一转成半角空格
+        if (cp == 0x3000) {
+            tokens.add(new Token(KIND_PUNCT, i, i + 1, " "));
+            return i + 1;
+        }
+        if (Character.isWhitespace(cp)) {
+            return i + width;
+        }
+        int skipped = skipComment(source, i);
+        if (skipped >= 0) {
+            return skipped;
+        }
+        // 文本块
+        if (cp == '"' && source.startsWith("\"\"\"", i)) {
+            return addRangeToken(tokens, i, skipTextBlock(source, i));
+        }
+        // 字符串 / 字符字面量
+        if (cp == '"' || cp == '\'') {
+            return addRangeToken(tokens, i, skipLiteral(source, i, cp));
+        }
+        // 标识符（含中文标识符）
+        if (Character.isJavaIdentifierStart(cp)) {
+            return scanIdentifier(source, i, english, tokens);
+        }
+        // 数字字面量（整体跳过，不参与关键字判定）
+        if (Character.isDigit(cp) || (cp == '.' && i + 1 < source.length()
+                && Character.isDigit(source.charAt(i + 1)))) {
+            return addRangeToken(tokens, i, skipNumber(source, i));
+        }
+        // 全角 ASCII 标点（U+FF01..U+FF5E）：平移 0xFEE0 得到半角
+        if (cp >= 0xFF01 && cp <= 0xFF5E) {
+            tokens.add(new Token(KIND_PUNCT, i, i + 1, String.valueOf((char) (cp - 0xFEE0))));
+            return i + 1;
+        }
+        // 句号「。」与顿号「、」：默认自动纠正（只提示 CJK106），`--严格标点` 时仍报 CJK002。
+        if (cp == 0x3001 || cp == 0x3002) {
+            return scanFoldedPunct(source, i, cp, width, tokens);
+        }
+        // 无法映射到半角的 CJK 标点：保留原文，报 CJK002
+        if (CJK_PUNCTUATION.contains(cp)) {
+            return addBadPunct(tokens, i, cp, width);
+        }
+        tokens.add(new Token(KIND_OTHER, i, i + width, null));
+        return i + width;
+    }
+
+    /** 句号「。」与顿号「、」：默认自动纠正（只提示 CJK106），`--严格标点` 时仍报 CJK002。 */
+    static int scanFoldedPunct(String source, int i, int cp, int width, List<Token> tokens) {
+        String folded = strictPunctuation ? null : foldSentencePunctuation(cp, source, i);
+        tokens.add(new Token(folded == null ? KIND_BAD_PUNCT : KIND_PUNCT,
+                i, i + width, folded == null ? new String(Character.toChars(cp)) : folded));
+        return i + width;
+    }
+
+    /** 追加一个无法映射到半角的 CJK 标点 token（报 CJK002），返回其后位置。 */
+    static int addBadPunct(List<Token> tokens, int i, int cp, int width) {
+        tokens.add(new Token(KIND_BAD_PUNCT, i, i + width, new String(Character.toChars(cp))));
+        return i + width;
+    }
+
+    /** 注释：行注释跳到行尾，块注释跳到右界之后；不是注释返回 -1。 */
+    static int skipComment(String source, int i) {
+        if (i + 1 >= source.length() || source.charAt(i) != '/') {
+            return -1;
+        }
+        char next = source.charAt(i + 1);
+        if (next == '/') {
+            return skipLineComment(source, i);
+        }
+        if (next == '*') {
+            return skipBlockComment(source, i);
+        }
+        return -1;
+    }
+
+    /** 追加一个原文区间 token（文本块 / 字面量 / 数字），返回区间末尾。 */
+    static int addRangeToken(List<Token> tokens, int start, int end) {
+        tokens.add(new Token(KIND_OTHER, start, end, null));
+        return end;
+    }
+
+    /** 标识符（含中文标识符）：登记关键字或普通标识符，返回标识符末尾。 */
+    static int scanIdentifier(String source, int i, boolean english, List<Token> tokens) {
+        int n = source.length();
+        int start = i;
+        i += Character.charCount(source.codePointAt(i));
+        while (i < n) {
+            int next = source.codePointAt(i);
+            if (!Character.isJavaIdentifierPart(next)) {
+                break;
+            }
+            i += Character.charCount(next);
+        }
+        String text = source.substring(start, i);
+        tokens.add(new Token(identifierKind(text, english), start, i, text));
+        return i;
     }
 
     /** 标识符分类：反译时认英文关键字，正常转译时认中文关键字，其余为普通标识符。 */
@@ -1611,21 +1634,17 @@ public class Cjc {
     }
 
     static void reportSticky(SourceFile sf, Token token, String keyword, String rest) {
-        int lineIndex = lineOf(sf.origLineStarts, token.start);
-        int wrappedLine = lineIndex + 1;
-        int line = wrappedLine - sf.lineOffset;  // 脚本模式：换算回正文行号
-        int tokenCol = token.start - sf.origLineStarts[lineIndex];
-        int gapCol = tokenCol + keyword.length();
-        String lineText = lineText(sf.original, sf.origLineStarts, wrappedLine);
+        SourcePos pos = linePosition(sf, token.start);
+        int gapCol = pos.col() + keyword.length();
 
         System.err.println();
-        System.err.println("错误 CJK001  第" + line + "行 第" + (gapCol + 1) + "列");
+        System.err.println("错误 CJK001  第" + pos.line() + "行 第" + (gapCol + 1) + "列");
         System.err.println("  中文关键字「" + keyword + "」后缺少空格，与名称「" + rest
                 + "」粘连，被整体识别为标识符「" + token.text + "」。");
         System.err.println("  建议：在「" + keyword + "」后补一个空格，写成「" + keyword + " " + rest + "」。");
-        System.err.println("    " + String.format("%4d", line) + " | " + lineText);
+        System.err.println("    " + String.format("%4d", pos.line()) + " | " + pos.lineText());
         System.err.println("         | " + spaces(gapCol) + "^ 这里缺一个空格");
-        String fixedLine = lineText.substring(0, gapCol) + " " + lineText.substring(gapCol);
+        String fixedLine = pos.lineText().substring(0, gapCol) + " " + pos.lineText().substring(gapCol);
         System.err.println("  修正：" + fixedLine.trim());
     }
 
@@ -1639,18 +1658,14 @@ public class Cjc {
                     continue;
                 }
                 count++;
-                int lineIndex = lineOf(sf.origLineStarts, t.start);
-                int wrappedLine = lineIndex + 1;
-                int line = wrappedLine - sf.lineOffset;  // 脚本模式：换算回正文行号
-                int col = t.start - sf.origLineStarts[lineIndex];
-                String lineText = lineText(sf.original, sf.origLineStarts, wrappedLine);
+                SourcePos pos = linePosition(sf, t.start);
                 System.err.println();
-                System.err.println("错误 CJK002  第" + line + "行 第" + (col + 1) + "列");
+                System.err.println("错误 CJK002  第" + pos.line() + "行 第" + (pos.col() + 1) + "列");
                 System.err.println("  不支持的全角标点「" + t.text + "」，请改用半角标点"
                         + "（, . ? : ; \" ' ( ) 等）。");
                 System.err.println("  建议：" + suggestionFor(t.text));
-                System.err.println("    " + String.format("%4d", line) + " | " + lineText);
-                System.err.println("         | " + spaces(col) + "^");
+                System.err.println("    " + String.format("%4d", pos.line()) + " | " + pos.lineText());
+                System.err.println("         | " + spaces(pos.col()) + "^");
             }
         }
         return count;
@@ -1669,13 +1684,10 @@ public class Cjc {
                     continue;
                 }
                 count++;
-                int lineIndex = lineOf(sf.origLineStarts, t.start);
-                int wrappedLine = lineIndex + 1;
-                int line = wrappedLine - sf.lineOffset;
-                int col = t.start - sf.origLineStarts[lineIndex];
+                SourcePos pos = linePosition(sf, t.start);
                 String original = ch == 0x3001 ? "、" : "。";
                 System.out.println();
-                System.out.println("提示 CJK106  第" + line + "行 第" + (col + 1) + "列");
+                System.out.println("提示 CJK106  第" + pos.line() + "行 第" + (pos.col() + 1) + "列");
                 System.out.println("  全角标点「" + original + "」已自动纠正为「" + t.text + "」。"
                         + "如需保留旧行为（按 CJK002 阻断），加 --严格标点。");
             }
@@ -1880,9 +1892,7 @@ public class Cjc {
 
     /** 行尾写了 `// 忽略提示`（可带代码）时，跳过该行提示。 */
     static boolean trapSuppressed(SourceFile sf, Token token) {
-        int lineIndex = lineOf(sf.origLineStarts, token.start);
-        int wrappedLine = lineIndex + 1;
-        return lineText(sf.original, sf.origLineStarts, wrappedLine).contains("忽略提示");
+        return linePosition(sf, token.start).lineText().contains("忽略提示");
     }
 
     /** CJK104：`for` / `当` 的条件里 `<= 集合.元素数()` / `<= 数组.长度` 会多走一轮。 */
@@ -2078,16 +2088,12 @@ public class Cjc {
         if (trapSuppressed(sf, token)) {
             return false;
         }
-        int lineIndex = lineOf(sf.origLineStarts, token.start);
-        int wrappedLine = lineIndex + 1;
-        int line = wrappedLine - sf.lineOffset;  // 脚本模式：换算回正文行号
-        int col = token.start - sf.origLineStarts[lineIndex];
+        SourcePos pos = linePosition(sf, token.start);
         System.out.println();
-        System.out.println("提示 " + code + "  第" + line + "行 第" + (col + 1) + "列");
+        System.out.println("提示 " + code + "  第" + pos.line() + "行 第" + (pos.col() + 1) + "列");
         System.out.println("  " + problem);
         System.out.println("  建议：" + suggestion);
-        System.out.println("    " + String.format("%4d", line) + " | "
-                + lineText(sf.original, sf.origLineStarts, wrappedLine));
+        System.out.println("    " + String.format("%4d", pos.line()) + " | " + pos.lineText());
         return true;
     }
 
@@ -2398,32 +2404,10 @@ public class Cjc {
             if (t.kind != KIND_IDENTIFIER || !"重复".equals(t.text)) {
                 continue;
             }
-            if (idx > 0) {
-                String prev = textAt(sf.original, tokens, idx - 1);
-                if (!(prev.equals("{") || prev.equals("}") || prev.equals(";") || prev.equals(":"))) {
-                    continue;
-                }
+            if (idx > 0 && !isStatementStart(textAt(sf.original, tokens, idx - 1))) {
+                continue;
             }
-            // 找同层的 `次`：括号内的 `次` 不算（次数表达式里可能带括号）
-            int depth = 0;
-            int ci = -1;
-            for (int j = idx + 1; j < tokens.size(); j++) {
-                String s = textAt(sf.original, tokens, j);
-                if (s.equals("{")) {
-                    break;
-                }
-                if (s.equals("(") || s.equals("[")) {
-                    depth++;
-                } else if (s.equals(")") || s.equals("]")) {
-                    depth--;
-                    if (depth < 0) {
-                        break;
-                    }
-                } else if (depth == 0 && tokens.get(j).kind == KIND_IDENTIFIER && "次".equals(tokens.get(j).text)) {
-                    ci = j;
-                    break;
-                }
-            }
+            int ci = findRepeatMarker(sf, tokens, idx);
             if (ci < 0 || ci == idx + 1) {
                 continue;
             }
@@ -2431,24 +2415,55 @@ public class Cjc {
             if (expression.isEmpty()) {
                 continue;
             }
-            String name = "序号";
-            int headerEnd = ci;
-            if (ci + 1 < tokens.size() && textAt(sf.original, tokens, ci + 1).equals("(")
-                    && ci + 3 < tokens.size() && tokens.get(ci + 2).kind == KIND_IDENTIFIER
-                    && textAt(sf.original, tokens, ci + 3).equals(")")) {
-                name = tokens.get(ci + 2).text;
-                headerEnd = ci + 3;
-            }
+            int headerEnd = repeatHeaderEnd(sf, tokens, ci);
             if (headerEnd + 1 >= tokens.size()
                     || !textAt(sf.original, tokens, headerEnd + 1).equals("{")) {
                 continue;
             }
+            String name = headerEnd > ci ? tokens.get(ci + 2).text : "序号";
             repeat.start[idx] = true;
             repeat.end[idx] = headerEnd;
             repeat.header[idx] = "for (int " + name + " = 1; " + name + " <= "
                     + translateFragment(expression, declared) + "; " + name + "++)";
         }
         return repeat;
+    }
+
+    /** 语句边界：开头或 `{` / `}` / `;` / `:` 之后。 */
+    private static boolean isStatementStart(String prev) {
+        return prev.equals("{") || prev.equals("}") || prev.equals(";") || prev.equals(":");
+    }
+
+    /** 找同层的 `次`：括号内的 `次` 不算（次数表达式里可能带括号）；找不到返回 -1。 */
+    private static int findRepeatMarker(SourceFile sf, List<Token> tokens, int idx) {
+        int depth = 0;
+        for (int j = idx + 1; j < tokens.size(); j++) {
+            String s = textAt(sf.original, tokens, j);
+            if (s.equals("{")) {
+                break;
+            }
+            if (s.equals("(") || s.equals("[")) {
+                depth++;
+            } else if (s.equals(")") || s.equals("]")) {
+                depth--;
+                if (depth < 0) {
+                    break;
+                }
+            } else if (depth == 0 && tokens.get(j).kind == KIND_IDENTIFIER && "次".equals(tokens.get(j).text)) {
+                return j;
+            }
+        }
+        return -1;
+    }
+
+    /** `次` 之后的头部：`(名)` 时返回右括号下标，否则返回 `次` 的下标。 */
+    private static int repeatHeaderEnd(SourceFile sf, List<Token> tokens, int ci) {
+        if (ci + 1 < tokens.size() && textAt(sf.original, tokens, ci + 1).equals("(")
+                && ci + 3 < tokens.size() && tokens.get(ci + 2).kind == KIND_IDENTIFIER
+                && textAt(sf.original, tokens, ci + 3).equals(")")) {
+            return ci + 3;
+        }
+        return ci;
     }
 
     /** 中文属性 `长度`：`数组.长度` → `数组.length`。只认 `.` 之后的位置。 */
@@ -2510,13 +2525,17 @@ public class Cjc {
     }
 
     private static void planCalls(SourceFile sf, TranslatePlan plan) {
+        plan.staticCall = planStaticCalls(sf, plan);
+        plan.callMember = planMemberCalls(sf, plan);
+        plan.declMember = planMethodDecls(sf, plan);
+    }
+
+    /** 中文静态调用：`算术.平方根(…)` → `Math.sqrt(…)`；类名与方法名一起登记，跳过 `.` 与方法名。 */
+    private static String[] planStaticCalls(SourceFile sf, TranslatePlan plan) {
         List<Token> tokens = plan.tokens;
         boolean[] skip = plan.skip;
-        Set<String> declared = plan.declared;
-        // 中文静态调用：`算术.平方根(…)` → `Math.sqrt(…)`；类名与方法名一起登记，跳过 `.` 与方法名。
         String[] staticCall = new String[tokens.size()];
         for (int idx = 0; idx + 2 < tokens.size(); idx++) {
-            Token a = tokens.get(idx);
             String aText = textAt(sf, tokens, idx);
             String dot = textAt(sf.original, tokens, idx + 1);
             String bText = textAt(sf.original, tokens, idx + 2);
@@ -2527,10 +2546,17 @@ public class Cjc {
                 skip[idx + 2] = true;
             }
         }
+        return staticCall;
+    }
 
-        // 中文成员方法：`名称.加入(…)` → `名称.add(…)`，只认 `.` 之后且后接 `(`。
-        // `.` 之后是成员名上下文，即使该词同时是关键字近义词（如 `遍历` 是 for 的近义词）
-        // 也按成员糖处理：Java 不允许用关键字作方法名，这样写唯一合理的解释就是成员糖。
+    /**
+     * 中文成员方法：`名称.加入(…)` → `名称.add(…)`，只认 `.` 之后且后接 `(`。
+     * `.` 之后是成员名上下文，即使该词同时是关键字近义词（如 `遍历` 是 for 的近义词）
+     * 也按成员糖处理：Java 不允许用关键字作方法名，这样写唯一合理的解释就是成员糖。
+     */
+    private static boolean[] planMemberCalls(SourceFile sf, TranslatePlan plan) {
+        List<Token> tokens = plan.tokens;
+        Set<String> declared = plan.declared;
         boolean[] callMember = new boolean[tokens.size()];
         for (int idx = 1; idx + 1 < tokens.size(); idx++) {
             Token t = tokens.get(idx);
@@ -2551,9 +2577,15 @@ public class Cjc {
             }
             callMember[idx] = true;
         }
+        return callMember;
+    }
 
-        // 中文重写方法声明：不带 `.` 前缀、后接 `(` 的 `转文本` / `等于` / `哈希码`。
-        // 带 `.` 前缀的是调用（由 callMember 处理），这里只负责声明侧。
+    /**
+     * 中文重写方法声明：不带 `.` 前缀、后接 `(` 的 `转文本` / `等于` / `哈希码`。
+     * 带 `.` 前缀的是调用（由 planMemberCalls 处理），这里只负责声明侧。
+     */
+    private static boolean[] planMethodDecls(SourceFile sf, TranslatePlan plan) {
+        List<Token> tokens = plan.tokens;
         boolean[] declMember = new boolean[tokens.size()];
         for (int idx = 0; idx + 1 < tokens.size(); idx++) {
             Token t = tokens.get(idx);
@@ -2568,17 +2600,25 @@ public class Cjc {
             }
             declMember[idx] = true;
         }
-
-        plan.staticCall = staticCall;
-        plan.callMember = callMember;
-        plan.declMember = declMember;
+        return declMember;
     }
 
     private static void planGenerics(SourceFile sf, TranslatePlan plan) {
-        List<Token> tokens = plan.tokens;
-        // 泛型实参中的基本类型别名：`清单<整数>` → `List<Integer>`。
-        // 基本类型是保留词，只可能出现在类型位置，所以「前 `<`/`,` 且后 `>`/`,`」足够安全；
-        // 其他位置（如 `整数 甲 = 1;`、`新建 整数[5]`）行为不变。
+        plan.wrapGeneric = planWrapGenerics(sf, plan.tokens);
+        ArrayListPlan from = planArrayListFrom(sf, plan.tokens);
+        plan.arrayListFromEnd = from.fromEnd();
+        plan.arrayListClose = from.close();
+    }
+
+    /** `数组清单.从(...)` 的配对信息：起始下标 → 右括号下标，以及右括号标记。 */
+    private record ArrayListPlan(int[] fromEnd, boolean[] close) {}
+
+    /**
+     * 泛型实参中的基本类型别名：`清单<整数>` → `List<Integer>`。
+     * 基本类型是保留词，只可能出现在类型位置，所以「前 `<`/`,` 且后 `>`/`,`」足够安全；
+     * 其他位置（如 `整数 甲 = 1;`、`新建 整数[5]`）行为不变。
+     */
+    private static boolean[] planWrapGenerics(SourceFile sf, List<Token> tokens) {
         boolean[] wrapGeneric = new boolean[tokens.size()];
         for (int idx = 0; idx < tokens.size(); idx++) {
             Token t = tokens.get(idx);
@@ -2595,9 +2635,14 @@ public class Cjc {
                 wrapGeneric[idx] = true;
             }
         }
+        return wrapGeneric;
+    }
 
-        // 4.5 `数组清单.从(...)` → `new ArrayList<>(List.of(...))`：
-        // 记下配对的右括号，输出时在右括号后再补一个 `)`，可变清单也就能一行建成。
+    /**
+     * 4.5 `数组清单.从(...)` → `new ArrayList<>(List.of(...))`：
+     * 记下配对的右括号，输出时在右括号后再补一个 `)`，可变清单也就能一行建成。
+     */
+    private static ArrayListPlan planArrayListFrom(SourceFile sf, List<Token> tokens) {
         int[] arrayListFromEnd = new int[tokens.size()];
         for (int i = 0; i < arrayListFromEnd.length; i++) {
             arrayListFromEnd[i] = -1;
@@ -2613,30 +2658,31 @@ public class Cjc {
                     || !textAt(sf.original, tokens, idx + 3).equals("(")) {
                 continue;
             }
-            int depth = 0;
-            int close = -1;
-            for (int j = idx + 3; j < tokens.size(); j++) {
-                String txt = textAt(sf.original, tokens, j);
-                if (txt.equals("(")) {
-                    depth++;
-                } else if (txt.equals(")")) {
-                    depth--;
-                    if (depth == 0) {
-                        close = j;
-                        break;
-                    }
-                }
-            }
+            int close = findMatchingParen(sf, tokens, idx + 3);
             if (close < 0) {
                 continue;
             }
             arrayListFromEnd[idx] = close;
             arrayListClose[close] = true;
         }
+        return new ArrayListPlan(arrayListFromEnd, arrayListClose);
+    }
 
-        plan.wrapGeneric = wrapGeneric;
-        plan.arrayListFromEnd = arrayListFromEnd;
-        plan.arrayListClose = arrayListClose;
+    /** 从左括号位置找配对的右括号；找不到返回 -1。 */
+    private static int findMatchingParen(SourceFile sf, List<Token> tokens, int open) {
+        int depth = 0;
+        for (int j = open; j < tokens.size(); j++) {
+            String txt = textAt(sf.original, tokens, j);
+            if (txt.equals("(")) {
+                depth++;
+            } else if (txt.equals(")")) {
+                depth--;
+                if (depth == 0) {
+                    return j;
+                }
+            }
+        }
+        return -1;
     }
 
     private static void planPrintArgs(SourceFile sf, TranslatePlan plan) {
@@ -2655,51 +2701,63 @@ public class Cjc {
             if (!textAt(sf.original, tokens, idx + 1).equals("(")) {
                 continue;
             }
-            int depth = 0;
-            int close = -1;
-            List<Integer> commas = new ArrayList<>();
-            for (int j = idx + 1; j < tokens.size(); j++) {
-                String txt = textAt(sf.original, tokens, j);
-                if (txt.equals("(")) {
-                    depth++;
-                } else if (txt.equals(")")) {
-                    depth--;
-                    if (depth == 0) {
-                        close = j;
-                        break;
-                    }
-                } else if (txt.equals(",") && depth == 1) {
-                    commas.add(j);
-                }
-            }
-            if (close < 0 || commas.isEmpty()) {
-                continue;
-            }
-            // 按顶层逗号切分实参；下标区间 [first, last]
-            List<int[]> args = new ArrayList<>();
-            int start = idx + 2;
-            for (int c : commas) {
-                args.add(new int[]{start, c - 1});
-                start = c + 1;
-            }
-            args.add(new int[]{start, close - 1});
-            for (int[] a : args) {
-                if (a[0] > a[1]) {
-                    continue;
-                }
-                if (a[1] > a[0]) {
-                    printParenOpen[a[0]] = true;
-                    printParenClose[a[1]] = true;
-                }
-            }
-            for (int c : commas) {
-                printComma[c] = true;
+            PrintArgs args = scanPrintArgs(sf, tokens, idx);
+            if (args != null) {
+                markPrintArgs(args, idx, printComma, printParenOpen, printParenClose);
             }
         }
-
         plan.printComma = printComma;
         plan.printParenOpen = printParenOpen;
         plan.printParenClose = printParenClose;
+    }
+
+    /** `打印行(...)` 的实参信息：右括号下标与顶层逗号下标。 */
+    private record PrintArgs(int close, List<Integer> commas) {}
+
+    /** 扫描一次打印调用的实参；没有顶层逗号或括号不闭合时返回 null。 */
+    private static PrintArgs scanPrintArgs(SourceFile sf, List<Token> tokens, int idx) {
+        int depth = 0;
+        int close = -1;
+        List<Integer> commas = new ArrayList<>();
+        for (int j = idx + 1; j < tokens.size(); j++) {
+            String txt = textAt(sf.original, tokens, j);
+            if (txt.equals("(")) {
+                depth++;
+            } else if (txt.equals(")")) {
+                depth--;
+                if (depth == 0) {
+                    close = j;
+                    break;
+                }
+            } else if (txt.equals(",") && depth == 1) {
+                commas.add(j);
+            }
+        }
+        return close < 0 || commas.isEmpty() ? null : new PrintArgs(close, commas);
+    }
+
+    /** 按顶层逗号切分实参，多 token 实参加括号，逗号标记为 `+`。 */
+    private static void markPrintArgs(PrintArgs args, int idx, boolean[] printComma,
+                                      boolean[] printParenOpen, boolean[] printParenClose) {
+        List<int[]> spans = new ArrayList<>();
+        int start = idx + 2;
+        for (int c : args.commas()) {
+            spans.add(new int[]{start, c - 1});
+            start = c + 1;
+        }
+        spans.add(new int[]{start, args.close() - 1});
+        for (int[] a : spans) {
+            if (a[0] > a[1]) {
+                continue;
+            }
+            if (a[1] > a[0]) {
+                printParenOpen[a[0]] = true;
+                printParenClose[a[1]] = true;
+            }
+        }
+        for (int c : args.commas()) {
+            printComma[c] = true;
+        }
     }
 
     private static String renderTranslated(SourceFile sf, TranslatePlan plan) {
@@ -2933,7 +2991,27 @@ public class Cjc {
                 || !literal.endsWith("\"")) {
             return false;
         }
-        String content = literal.substring(1, literal.length() - 1);
+        Interpolation in = splitInterpolation(literal.substring(1, literal.length() - 1), declared);
+        if (in == null) {
+            return false;
+        }
+        if (!in.expanded()) {
+            if (!in.escaped()) {
+                return false;
+            }
+            // 只有转义：{{ → {、}} → }，不产生拼接
+            sb.append('"').append(in.tail()).append('"');
+            return true;
+        }
+        appendInterpolationParts(sb, in.parts(), in.tail());
+        return true;
+    }
+
+    /** 插值拆分结果：parts 是带 L/E 前缀的片段，tail 是末尾字面量。 */
+    private record Interpolation(boolean expanded, boolean escaped, List<String> parts, String tail) {}
+
+    /** 拆分 `{表达式}`；返回 null 表示含不支持的表达式，`{{` / `}}` 视为转义。 */
+    private static Interpolation splitInterpolation(String content, Set<String> declared) {
         List<String> parts = new ArrayList<>();  // 前缀 L 表示字面量，E 表示表达式
         StringBuilder current = new StringBuilder();
         boolean expanded = false;
@@ -2955,11 +3033,11 @@ public class Cjc {
             if (c == '{') {
                 int end = content.indexOf('}', i + 1);
                 if (end < 0) {
-                    return false;
+                    return null;
                 }
                 String expr = content.substring(i + 1, end).trim();
                 if (!isInterpolationExpression(expr)) {
-                    return false;
+                    return null;
                 }
                 parts.add("L" + current);
                 current.setLength(0);
@@ -2970,17 +3048,15 @@ public class Cjc {
             }
             current.append(c);
         }
-        if (!expanded) {
-            if (!escaped) {
-                return false;
-            }
-            // 只有转义：{{ → {、}} → }，不产生拼接
-            sb.append('"').append(current).append('"');
-            return true;
-        }
-        parts.add("L" + current);
+        return new Interpolation(expanded, escaped, parts, current.toString());
+    }
+
+    /** 输出插值片段：表达式间用 ` + `；表达式开头补 `"" + ` 保证字符串拼接。 */
+    private static void appendInterpolationParts(StringBuilder sb, List<String> parts, String tail) {
+        List<String> all = new ArrayList<>(parts);
+        all.add("L" + tail);
         boolean first = true;
-        for (String part : parts) {
+        for (String part : all) {
             boolean isExpr = part.charAt(0) == 'E';
             String value = part.substring(1);
             if (!isExpr && value.isEmpty()) {
@@ -2998,7 +3074,6 @@ public class Cjc {
             }
             first = false;
         }
-        return true;
     }
 
     /** 插值表达式只接受「属性 / 方法调用」这类安全形式，其余保持原样。 */
@@ -3560,6 +3635,17 @@ public class Cjc {
 
     static String spaces(int count) {
         return " ".repeat(Math.max(0, count));
+    }
+
+    /** 诊断位置：行号（脚本模式已换算回正文）、列（0 起始）与该行原文。 */
+    private record SourcePos(int line, int col, String lineText) {}
+
+    /** 把源码偏移换算成诊断位置。 */
+    static SourcePos linePosition(SourceFile sf, int offset) {
+        int lineIndex = lineOf(sf.origLineStarts, offset);
+        int wrappedLine = lineIndex + 1;
+        return new SourcePos(wrappedLine - sf.lineOffset, offset - sf.origLineStarts[lineIndex],
+                lineText(sf.original, sf.origLineStarts, wrappedLine));
     }
 
     static void deleteRecursively(Path root) throws IOException {
