@@ -2177,13 +2177,11 @@ public class Cjc {
         for (int idx = 0; idx < tokens.size(); idx++) {
             Token t = tokens.get(idx);
             String text = textAt(sf, tokens, idx);
-            if (t.kind == KIND_KEYWORD) {
-                String english = KEYWORDS.get(t.text);
-                if (english != null && (english.equals("class") || english.equals("interface") || english.equals("enum"))) {
-                    pendingKind = english;
-                    if (idx + 1 < tokens.size() && tokens.get(idx + 1).kind == KIND_IDENTIFIER) {
-                        pendingType = tokens.get(idx + 1).text;
-                    }
+            String declKind = typeDeclarationKind(t);
+            if (declKind != null) {
+                pendingKind = declKind;
+                if (idx + 1 < tokens.size() && tokens.get(idx + 1).kind == KIND_IDENTIFIER) {
+                    pendingType = tokens.get(idx + 1).text;
                 }
             }
             typeAt[idx] = currentType;
@@ -2191,23 +2189,17 @@ public class Cjc {
             inTypeBody[idx] = !bodyStack.isEmpty() && bodyStack.get(bodyStack.size() - 1);
             if (text.equals("{")) {
                 boolean typeBody = pendingType != null;
-                String owner = typeBody ? pendingType : currentType;
-                String kind = typeBody ? pendingKind : currentKind;
-                ownerStack.add(owner);
-                kindStack.add(kind);
+                ownerStack.add(typeBody ? pendingType : currentType);
+                kindStack.add(typeBody ? pendingKind : currentKind);
                 bodyStack.add(typeBody);
-                currentType = owner;
-                currentKind = kind;
+                currentType = ownerStack.get(ownerStack.size() - 1);
+                currentKind = kindStack.get(kindStack.size() - 1);
                 pendingType = null;
                 pendingKind = null;
             } else if (text.equals("}")) {
-                if (!ownerStack.isEmpty()) {
-                    ownerStack.remove(ownerStack.size() - 1);
-                    kindStack.remove(kindStack.size() - 1);
-                    bodyStack.remove(bodyStack.size() - 1);
-                }
-                currentType = ownerStack.isEmpty() ? null : ownerStack.get(ownerStack.size() - 1);
-                currentKind = kindStack.isEmpty() ? null : kindStack.get(kindStack.size() - 1);
+                String[] state = popTypeScope(ownerStack, kindStack, bodyStack);
+                currentType = state[0];
+                currentKind = state[1];
             }
         }
         TypeScope scope = new TypeScope();
@@ -2215,6 +2207,32 @@ public class Cjc {
         scope.kindAt = kindAt;
         scope.inTypeBody = inTypeBody;
         return scope;
+    }
+
+    /** `类` / `接口` / `枚举` 返回对应英文种类；其他 token 返回 null。 */
+    private static String typeDeclarationKind(Token t) {
+        if (t.kind != KIND_KEYWORD) {
+            return null;
+        }
+        String english = KEYWORDS.get(t.text);
+        if (english == null) {
+            return null;
+        }
+        return english.equals("class") || english.equals("interface") || english.equals("enum")
+                ? english : null;
+    }
+
+    /** 退出一层花括号，返回 {当前类型名, 当前类型种类}。 */
+    private static String[] popTypeScope(List<String> ownerStack, List<String> kindStack,
+                                         List<Boolean> bodyStack) {
+        if (!ownerStack.isEmpty()) {
+            ownerStack.remove(ownerStack.size() - 1);
+            kindStack.remove(kindStack.size() - 1);
+            bodyStack.remove(bodyStack.size() - 1);
+        }
+        return new String[]{
+                ownerStack.isEmpty() ? null : ownerStack.get(ownerStack.size() - 1),
+                kindStack.isEmpty() ? null : kindStack.get(kindStack.size() - 1)};
     }
 
     // 省略返回类型：`公有 加一() {` 等价于 `公有 无 加一() {`，翻译时补上 `void`。
@@ -2783,53 +2801,9 @@ public class Cjc {
             if (plan.printParenOpen[idx]) {
                 sb.append('(');
             }
-            if (plan.printComma[idx]) {
-                sb.append('+');
-                cursor = t.end;
-                continue;
-            }
-            if (plan.repeatStart[idx]) {
-                cursor = renderRepeat(plan, sb, pending, idx);
-                continue;
-            }
-            if (plan.staticCall[idx] != null) {
-                emit(sb, pending, t.start, t.end - t.start, plan.staticCall[idx]);
-                cursor = t.end;
-                continue;
-            }
-            if (plan.callMember[idx]) {
-                cursor = emitToken(sb, pending, t, MEMBER_CALLS.get(t.text));
-                continue;
-            }
-            if (plan.declMember[idx]) {
-                cursor = emitToken(sb, pending, t, MEMBER_DECLS.get(t.text));
-                continue;
-            }
-            if (t.kind == KIND_IDENTIFIER && "入口".equals(t.text) && idx + 1 < tokens.size()) {
-                String nextText = textAt(sf, tokens, idx + 1);
-                if (nextText.equals("{")) {
-                    // 入口 { … } 语法糖：直接展开成 main 方法声明
-                    cursor = emitToken(sb, pending, t, "public static void main(String[] 参数)");
-                    continue;
-                }
-            }
-            if (plan.inferVar[idx] || plan.inferConst[idx]) {
-                // 类型推断：`令` → `var`、`常量` → `final var`，名称与初始化原样保留
-                cursor = emitToken(sb, pending, t, plan.inferConst[idx] ? "final var" : "var");
-                continue;
-            }
-            if (plan.renameArraycopy[idx] || plan.renameSystem[idx]
-                    || plan.renameLength[idx] || plan.renameElseIf[idx]) {
-                cursor = renderRenamed(plan, sb, pending, t, idx);
-                continue;
-            }
-            int inserted = renderInserted(plan, sb, pending, t, idx);
-            if (inserted >= 0) {
-                cursor = inserted;
-                continue;
-            }
-            if (plan.arrayListFromEnd[idx] >= 0) {
-                cursor = renderArrayListFrom(plan, sb, pending, idx);
+            int sugared = renderSugared(sf, plan, sb, pending, t, idx);
+            if (sugared >= 0) {
+                cursor = sugared;
                 continue;
             }
             if (t.kind == KIND_KEYWORD) {
@@ -2845,6 +2819,54 @@ public class Cjc {
         String translated = sb.toString();
         recordReplacements(sf, pending, translated);
         return translated;
+    }
+
+    /** 输出语法糖 token；命中返回新 cursor，未命中返回 -1。 */
+    private static int renderSugared(SourceFile sf, TranslatePlan plan, StringBuilder sb,
+                                     List<int[]> pending, Token t, int idx) {
+        if (plan.printComma[idx]) {
+            sb.append('+');
+            return t.end;
+        }
+        if (plan.repeatStart[idx]) {
+            return renderRepeat(plan, sb, pending, idx);
+        }
+        if (plan.staticCall[idx] != null) {
+            emit(sb, pending, t.start, t.end - t.start, plan.staticCall[idx]);
+            return t.end;
+        }
+        if (plan.callMember[idx]) {
+            return emitToken(sb, pending, t, MEMBER_CALLS.get(t.text));
+        }
+        if (plan.declMember[idx]) {
+            return emitToken(sb, pending, t, MEMBER_DECLS.get(t.text));
+        }
+        if (isEntrySugar(sf, plan.tokens, t, idx)) {
+            // 入口 { … } 语法糖：直接展开成 main 方法声明
+            return emitToken(sb, pending, t, "public static void main(String[] 参数)");
+        }
+        if (plan.inferVar[idx] || plan.inferConst[idx]) {
+            // 类型推断：`令` → `var`、`常量` → `final var`，名称与初始化原样保留
+            return emitToken(sb, pending, t, plan.inferConst[idx] ? "final var" : "var");
+        }
+        if (plan.renameArraycopy[idx] || plan.renameSystem[idx]
+                || plan.renameLength[idx] || plan.renameElseIf[idx]) {
+            return renderRenamed(plan, sb, pending, t, idx);
+        }
+        int inserted = renderInserted(plan, sb, pending, t, idx);
+        if (inserted >= 0) {
+            return inserted;
+        }
+        if (plan.arrayListFromEnd[idx] >= 0) {
+            return renderArrayListFrom(plan, sb, pending, idx);
+        }
+        return -1;
+    }
+
+    /** `入口 {` 展开成 main：入口后紧跟 `{`。 */
+    private static boolean isEntrySugar(SourceFile sf, List<Token> tokens, Token t, int idx) {
+        return t.kind == KIND_IDENTIFIER && "入口".equals(t.text)
+                && idx + 1 < tokens.size() && textAt(sf, tokens, idx + 1).equals("{");
     }
 
     /** 插入式语法糖：`打印行` / `打印` / 省略返回类型 / 增强 for 省略类型；不命中返回 -1。 */
@@ -3105,54 +3127,87 @@ public class Cjc {
             if (t.start > cursor) {
                 sb.append(expr, cursor, t.start);
             }
-            String aText = t.text != null ? t.text : expr.substring(t.start, t.end);
-            String replacement = null;
-            int consumeTo = i;
-            if (i + 2 < tokens.size() && textAt(expr, tokens, i + 1).equals(".")) {
-                String key = aText + "." + textAt(expr, tokens, i + 2);
-                if (STATIC_CALLS.containsKey(key)) {
-                    replacement = STATIC_CALLS.get(key);
-                    consumeTo = i + 2;
-                }
-            }
-            if (replacement != null) {
-                sb.append(replacement);
-                cursor = tokens.get(consumeTo).end;
-                i = consumeTo;
-                continue;
-            }
-            if ((t.kind == KIND_IDENTIFIER || t.kind == KIND_KEYWORD) && MEMBER_CALLS.containsKey(t.text)
-                    && i > 0 && textAt(expr, tokens, i - 1).equals(".")
-                    && i + 1 < tokens.size() && textAt(expr, tokens, i + 1).equals("(")
-                    && !isStdlibReceiver(tokens, expr, i - 2, declared)) {
-                sb.append(MEMBER_CALLS.get(t.text));
-            } else if (t.kind == KIND_KEYWORD) {
-                String english = KEYWORDS.get(t.text);
-                sb.append(english);
-                int pad = t.text.length() - english.length();
-                if (pad > 0) {
-                    sb.append(" ".repeat(pad));
-                }
-            } else if (t.kind == KIND_IDENTIFIER && "长度".equals(t.text) && i > 0
-                    && ".".equals(textAt(expr, tokens, i - 1))) {
-                // 插值表达式里的 `xxx.长度` 也要转成 `xxx.length`
-                sb.append("length");
-            } else if (t.kind == KIND_IDENTIFIER && "数组复制".equals(t.text) && i > 0
-                    && ".".equals(textAt(expr, tokens, i - 1))) {
-                sb.append("arraycopy");
-            } else if (t.kind == KIND_IDENTIFIER && "系统".equals(t.text) && i + 1 < tokens.size()
-                    && ".".equals(textAt(expr, tokens, i + 1))) {
-                // 插值表达式里的 `系统.xxx` 也要转成 `System.xxx`
-                sb.append("System");
+            FragmentCall call = fragmentStaticCall(expr, tokens, i);
+            if (call != null) {
+                sb.append(call.replacement());
+                cursor = tokens.get(call.consumeTo()).end;
+                i = call.consumeTo();
             } else {
-                sb.append(expr, t.start, t.end);
+                appendFragmentToken(sb, expr, tokens, i, declared);
+                cursor = t.end;
             }
-            cursor = t.end;
         }
         if (cursor < expr.length()) {
             sb.append(expr, cursor, expr.length());
         }
         return sb.toString();
+    }
+
+    /** 片段里的中文静态调用：替换文本与消费到的下标。 */
+    private record FragmentCall(String replacement, int consumeTo) {}
+
+    /** `算术.平方根` 这类两段式静态糖；不命中返回 null。 */
+    private static FragmentCall fragmentStaticCall(String expr, List<Token> tokens, int i) {
+        if (i + 2 >= tokens.size() || !textAt(expr, tokens, i + 1).equals(".")) {
+            return null;
+        }
+        String key = textAt(expr, tokens, i) + "." + textAt(expr, tokens, i + 2);
+        String replacement = STATIC_CALLS.get(key);
+        return replacement == null ? null : new FragmentCall(replacement, i + 2);
+    }
+
+    /** 追加单个片段 token：成员糖、关键字、`长度` / `数组复制` / `系统`，原样回退。 */
+    private static void appendFragmentToken(StringBuilder sb, String expr, List<Token> tokens,
+                                            int i, Set<String> declared) {
+        Token t = tokens.get(i);
+        if (isFragmentMemberCall(expr, tokens, i, declared)) {
+            sb.append(MEMBER_CALLS.get(t.text));
+        } else if (t.kind == KIND_KEYWORD) {
+            appendKeywordPad(sb, t);
+        } else if (t.kind == KIND_IDENTIFIER && "长度".equals(t.text) && isAfterDot(expr, tokens, i)) {
+            // 插值表达式里的 `xxx.长度` 也要转成 `xxx.length`
+            sb.append("length");
+        } else if (t.kind == KIND_IDENTIFIER && "数组复制".equals(t.text) && isAfterDot(expr, tokens, i)) {
+            sb.append("arraycopy");
+        } else if (t.kind == KIND_IDENTIFIER && "系统".equals(t.text) && isBeforeDot(expr, tokens, i)) {
+            // 插值表达式里的 `系统.xxx` 也要转成 `System.xxx`
+            sb.append("System");
+        } else {
+            sb.append(expr, t.start, t.end);
+        }
+    }
+
+    /** 片段里的成员糖：`.` 之后、`(` 之前，且接收者不是标准库类名。 */
+    private static boolean isFragmentMemberCall(String expr, List<Token> tokens, int i, Set<String> declared) {
+        Token t = tokens.get(i);
+        if ((t.kind != KIND_IDENTIFIER && t.kind != KIND_KEYWORD) || !MEMBER_CALLS.containsKey(t.text)) {
+            return false;
+        }
+        if (!isAfterDot(expr, tokens, i) || i + 1 >= tokens.size()) {
+            return false;
+        }
+        if (!textAt(expr, tokens, i + 1).equals("(")) {
+            return false;
+        }
+        return !isStdlibReceiver(tokens, expr, i - 2, declared);
+    }
+
+    private static boolean isAfterDot(String expr, List<Token> tokens, int i) {
+        return i > 0 && ".".equals(textAt(expr, tokens, i - 1));
+    }
+
+    private static boolean isBeforeDot(String expr, List<Token> tokens, int i) {
+        return i + 1 < tokens.size() && ".".equals(textAt(expr, tokens, i + 1));
+    }
+
+    /** 关键字替换并按原长度补空格，保证列号不变。 */
+    private static void appendKeywordPad(StringBuilder sb, Token t) {
+        String english = KEYWORDS.get(t.text);
+        sb.append(english);
+        int pad = t.text.length() - english.length();
+        if (pad > 0) {
+            sb.append(" ".repeat(pad));
+        }
     }
 
     /** 取 token 的文本；标点等 token 的 text 为 null，需回退到源串切片。 */
