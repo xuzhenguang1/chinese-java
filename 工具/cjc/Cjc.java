@@ -638,11 +638,11 @@ public class Cjc {
             if (t.kind != KIND_IDENTIFIER || t.text == null) {
                 continue;
             }
-            String next = prevText(source, tokens, i + 1);
+            String next = textAt(source, tokens, i + 1);
             if (!(next.equals("=") || next.equals(";") || next.equals(",") || next.equals(")") || next.equals(":"))) {
                 continue;
             }
-            String prev = prevText(source, tokens, i - 1);
+            String prev = textAt(source, tokens, i - 1);
             if (prev.equals(">") || prev.equals("]") || isTypeWord(prev)) {
                 names.add(t.text);
             }
@@ -656,7 +656,7 @@ public class Cjc {
             return false;
         }
         Token recv = tokens.get(idx);
-        String recvText = recv.text != null ? recv.text : source.substring(recv.start, recv.end);
+        String recvText = textAt(source, tokens, idx);
         return recv.kind == KIND_IDENTIFIER && STDLIB_CLASSES.contains(recvText) && !declared.contains(recvText);
     }
 
@@ -678,56 +678,7 @@ public class Cjc {
         List<String> problems = new ArrayList<>();
         loadDictionary(tablePath, problems);
         for (TableLine entry : readTableLines(tablePath)) {
-            int lineNo = entry.lineNo;
-            String line = entry.text.strip();
-            int eq = line.indexOf('=');
-            if (eq <= 0 || eq == line.length() - 1) {
-                problems.add("第" + lineNo + "行格式错误，应为「中文=英文」或「英文=[中文1，中文2]」：" + line);
-                continue;
-            }
-            String left = line.substring(0, eq).strip();
-            String right = line.substring(eq + 1).strip();
-            if (right.startsWith("[") && right.endsWith("]")) {
-                // 列表格式：英文=[中文1，中文2，…]，列表第一项为反译规范名
-                if (!isTranslatable(left)) {
-                    problems.add("第" + lineNo + "行英文关键字或类型不存在：" + left);
-                    continue;
-                }
-                String inner = right.substring(1, right.length() - 1);
-                boolean any = false;
-                for (String part : inner.split("[，,]")) {
-                    String chinese = part.strip();
-                    if (chinese.isEmpty()) {
-                        continue;
-                    }
-                    any = true;
-                    for (String word : expandChinese(chinese)) {
-                        if (KEYWORDS.containsKey(word)) {
-                            problems.add("第" + lineNo + "行中文关键字重复：" + word);
-                            continue;
-                        }
-                        KEYWORDS.put(word, left);
-                    }
-                }
-                if (!any) {
-                    problems.add("第" + lineNo + "行同义词列表为空：" + line);
-                }
-                continue;
-            }
-            String chinese = left;
-            String english = right;
-            if (!isTranslatable(english)) {
-                problems.add("第" + lineNo + "行英文关键字或类型不存在：" + english);
-                continue;
-            }
-            for (String word : expandChinese(chinese)) {
-                if (KEYWORDS.containsKey(word)) {
-                    problems.add("第" + lineNo + "行中文关键字重复：" + word);
-                    continue;
-                }
-                // 英文允许重复：多个中文同义词映射到同一个英文关键字
-                KEYWORDS.put(word, english);
-            }
+            parseKeywordLine(entry, problems);
         }
         if (KEYWORDS.isEmpty()) {
             problems.add("关键字表为空");
@@ -738,6 +689,69 @@ public class Cjc {
         if (!problems.isEmpty()) {
             failTable("关键字表", tablePath, problems);
         }
+        buildKeywordIndexes();
+    }
+
+    /** 解析一行关键字表：支持「中文=英文」与「英文=[中文1，中文2]」两种写法。 */
+    private static void parseKeywordLine(TableLine entry, List<String> problems) {
+        int lineNo = entry.lineNo;
+        String line = entry.text.strip();
+        int eq = line.indexOf('=');
+        if (eq <= 0 || eq == line.length() - 1) {
+            problems.add("第" + lineNo + "行格式错误，应为「中文=英文」或「英文=[中文1，中文2]」：" + line);
+            return;
+        }
+        String left = line.substring(0, eq).strip();
+        String right = line.substring(eq + 1).strip();
+        if (right.startsWith("[") && right.endsWith("]")) {
+            parseKeywordList(lineNo, line, left, right, problems);
+            return;
+        }
+        String chinese = left;
+        String english = right;
+        if (!isTranslatable(english)) {
+            problems.add("第" + lineNo + "行英文关键字或类型不存在：" + english);
+            return;
+        }
+        for (String word : expandChinese(chinese)) {
+            if (KEYWORDS.containsKey(word)) {
+                problems.add("第" + lineNo + "行中文关键字重复：" + word);
+                continue;
+            }
+            // 英文允许重复：多个中文同义词映射到同一个英文关键字
+            KEYWORDS.put(word, english);
+        }
+    }
+
+    /** 解析「英文=[中文1，中文2]」列表格式；列表第一项为反译规范名。 */
+    private static void parseKeywordList(int lineNo, String line, String english, String right, List<String> problems) {
+        if (!isTranslatable(english)) {
+            problems.add("第" + lineNo + "行英文关键字或类型不存在：" + english);
+            return;
+        }
+        String inner = right.substring(1, right.length() - 1);
+        boolean any = false;
+        for (String part : inner.split("[，,]")) {
+            String chinese = part.strip();
+            if (chinese.isEmpty()) {
+                continue;
+            }
+            any = true;
+            for (String word : expandChinese(chinese)) {
+                if (KEYWORDS.containsKey(word)) {
+                    problems.add("第" + lineNo + "行中文关键字重复：" + word);
+                    continue;
+                }
+                KEYWORDS.put(word, english);
+            }
+        }
+        if (!any) {
+            problems.add("第" + lineNo + "行同义词列表为空：" + line);
+        }
+    }
+
+    /** 重建派生索引：最长优先中文表与英文反查表。 */
+    private static void buildKeywordIndexes() {
         SORTED_KEYWORDS.clear();
         SORTED_KEYWORDS.addAll(KEYWORDS.keySet());
         // 最长优先，用于 CJK001 粘连启发式：优先按更长的关键字定位缺空格的位置
@@ -762,84 +776,97 @@ public class Cjc {
         if (!Files.exists(sugarPath)) {
             fail("方法糖表缺失：" + sugarPath + "（与关键字表必须放在同一目录）");
         }
-        LinkedHashMap<String, String> members = new LinkedHashMap<>();
-        LinkedHashMap<String, String> decls = new LinkedHashMap<>();
-        LinkedHashMap<String, String> statics = new LinkedHashMap<>();
-        Set<String> whitelist = new LinkedHashSet<>();
-        boolean[] seen = new boolean[4];
-        List<String> problems = new ArrayList<>();
-        String section = null;
+        SugarTables tables = new SugarTables();
         for (TableLine entry : readTableLines(sugarPath)) {
-            int lineNo = entry.lineNo;
-            String line = entry.text.strip();
-            if (line.startsWith("[") && line.endsWith("]")) {
-                section = line.substring(1, line.length() - 1).strip();
-                int index = methodSugarSectionIndex(section);
-                if (index < 0) {
-                    problems.add("第" + lineNo + "行未知分区：[" + section + "]（只支持 [成员] / [声明] / [静态] / [白名单]）");
-                    section = null;
-                } else {
-                    seen[index] = true;
-                }
-                continue;
-            }
-            if (section == null) {
-                problems.add("第" + lineNo + "行不属于任何分区：" + line);
-                continue;
-            }
-            if (section.equals("白名单")) {
-                for (String part : line.split("/")) {
-                    String name = part.strip();
-                    if (!name.isEmpty()) {
-                        whitelist.add(name);
-                    }
-                }
-                continue;
-            }
-            int eq = line.indexOf('=');
-            if (eq <= 0 || eq == line.length() - 1) {
-                problems.add("第" + lineNo + "行格式错误，应为「中文=英文」：" + line);
-                continue;
-            }
-            String chinese = line.substring(0, eq).strip();
-            String english = line.substring(eq + 1).strip();
-            LinkedHashMap<String, String> target;
-            if (section.equals("成员")) {
-                target = members;
-            } else if (section.equals("声明")) {
-                target = decls;
-            } else {
-                target = statics;
-            }
-            if (target.containsKey(chinese)) {
-                problems.add("第" + lineNo + "行中文重复：" + chinese);
-                continue;
-            }
-            if (!isMethodSugarEnglish(english, section.equals("静态"))) {
-                problems.add("第" + lineNo + "行英文格式不正确：" + english);
-                continue;
-            }
-            target.put(chinese, english);
+            parseSugarLine(entry, tables);
         }
         for (int i = 0; i < 4; i++) {
-            if (!seen[i]) {
-                problems.add("缺少分区 [" + methodSugarSectionName(i) + "]");
+            if (!tables.seen[i]) {
+                tables.problems.add("缺少分区 [" + methodSugarSectionName(i) + "]");
             }
         }
-        if (members.isEmpty() || decls.isEmpty() || statics.isEmpty() || whitelist.isEmpty()) {
-            problems.add("方法糖表存在空分区");
+        if (tables.sections.get("成员").isEmpty() || tables.sections.get("声明").isEmpty()
+                || tables.sections.get("静态").isEmpty() || tables.whitelist.isEmpty()) {
+            tables.problems.add("方法糖表存在空分区");
         }
-        if (!problems.isEmpty()) {
-            failTable("方法糖表", sugarPath, problems);
+        if (!tables.problems.isEmpty()) {
+            failTable("方法糖表", sugarPath, tables.problems);
         }
         MEMBER_CALLS.clear();
-        MEMBER_CALLS.putAll(members);
+        MEMBER_CALLS.putAll(tables.sections.get("成员"));
         MEMBER_DECLS.clear();
-        MEMBER_DECLS.putAll(decls);
+        MEMBER_DECLS.putAll(tables.sections.get("声明"));
         STATIC_CALLS.clear();
-        STATIC_CALLS.putAll(statics);
+        STATIC_CALLS.putAll(tables.sections.get("静态"));
         STDLIB_CLASSES.clear();
-        STDLIB_CLASSES.addAll(whitelist);
+        STDLIB_CLASSES.addAll(tables.whitelist);
+    }
+
+    /** 方法糖表解析状态：四个分区、白名单、已见分区标记、错误列表与当前分区。 */
+    private static final class SugarTables {
+        final Map<String, LinkedHashMap<String, String>> sections = new LinkedHashMap<>();
+        final Set<String> whitelist = new LinkedHashSet<>();
+        final boolean[] seen = new boolean[4];
+        final List<String> problems = new ArrayList<>();
+        String section;
+
+        SugarTables() {
+            sections.put("成员", new LinkedHashMap<>());
+            sections.put("声明", new LinkedHashMap<>());
+            sections.put("静态", new LinkedHashMap<>());
+        }
+
+        LinkedHashMap<String, String> current() {
+            return sections.get(section);
+        }
+    }
+
+    /** 解析一行方法糖表：分区头、白名单或「中文=英文」条目。 */
+    private static void parseSugarLine(TableLine entry, SugarTables tables) {
+        int lineNo = entry.lineNo;
+        String line = entry.text.strip();
+        if (line.startsWith("[") && line.endsWith("]")) {
+            String name = line.substring(1, line.length() - 1).strip();
+            int index = methodSugarSectionIndex(name);
+            if (index < 0) {
+                tables.problems.add("第" + lineNo + "行未知分区：" + line + "（只支持 [成员] / [声明] / [静态] / [白名单]）");
+                tables.section = null;
+            } else {
+                tables.section = name;
+                tables.seen[index] = true;
+            }
+            return;
+        }
+        if (tables.section == null) {
+            tables.problems.add("第" + lineNo + "行不属于任何分区：" + line);
+            return;
+        }
+        if (tables.section.equals("白名单")) {
+            for (String part : line.split("/")) {
+                String name = part.strip();
+                if (!name.isEmpty()) {
+                    tables.whitelist.add(name);
+                }
+            }
+            return;
+        }
+        int eq = line.indexOf('=');
+        if (eq <= 0 || eq == line.length() - 1) {
+            tables.problems.add("第" + lineNo + "行格式错误，应为「中文=英文」：" + line);
+            return;
+        }
+        String chinese = line.substring(0, eq).strip();
+        String english = line.substring(eq + 1).strip();
+        LinkedHashMap<String, String> target = tables.current();
+        if (target.containsKey(chinese)) {
+            tables.problems.add("第" + lineNo + "行中文重复：" + chinese);
+            return;
+        }
+        if (!isMethodSugarEnglish(english, "静态".equals(tables.section))) {
+            tables.problems.add("第" + lineNo + "行英文格式不正确：" + english);
+            return;
+        }
+        target.put(chinese, english);
     }
 
     static int methodSugarSectionIndex(String section) {
@@ -1030,7 +1057,7 @@ public class Cjc {
             StringBuilder name = new StringBuilder();
             for (int j = i + 1; j < tokens.size(); j++) {
                 Token next = tokens.get(j);
-                String text = next.text != null ? next.text : source.substring(next.start, next.end);
+                String text = textAt(source, tokens, j);
                 if (text.equals(";") || text.equals("{")) {
                     break;
                 }
@@ -1535,13 +1562,13 @@ public class Cjc {
         if (t.kind != KIND_IDENTIFIER || !"否则若".equals(t.text)) {
             return false;
         }
-        if (idx + 1 >= tokens.size() || !prevText(sf.original, tokens, idx + 1).equals("(")) {
+        if (idx + 1 >= tokens.size() || !textAt(sf.original, tokens, idx + 1).equals("(")) {
             return false;
         }
         if (idx == 0) {
             return true;
         }
-        String prev = prevText(sf.original, tokens, idx - 1);
+        String prev = textAt(sf.original, tokens, idx - 1);
         return prev.equals("}") || prev.equals(";") || prev.equals("{");
     }
 
@@ -1735,8 +1762,8 @@ public class Cjc {
                 continue;
             }
             int j = i + 1;
-            while (j + 1 < tokens.size() && prevText(sf.original, tokens, j).equals("[")
-                    && prevText(sf.original, tokens, j + 1).equals("]")) {
+            while (j + 1 < tokens.size() && textAt(sf.original, tokens, j).equals("[")
+                    && textAt(sf.original, tokens, j + 1).equals("]")) {
                 j += 2;
             }
             if (j < tokens.size() && tokens.get(j).kind == KIND_IDENTIFIER) {
@@ -1800,12 +1827,12 @@ public class Cjc {
             if (t.kind != KIND_IDENTIFIER || !"整理".equals(t.text)) {
                 continue;
             }
-            if (!prevText(sf.original, tokens, i - 1).equals(".")
-                    || !prevText(sf.original, tokens, i + 1).equals("(")
-                    || !prevText(sf.original, tokens, i + 2).equals(")")) {
+            if (!textAt(sf.original, tokens, i - 1).equals(".")
+                    || !textAt(sf.original, tokens, i + 1).equals("(")
+                    || !textAt(sf.original, tokens, i + 2).equals(")")) {
                 continue;
             }
-            String receiver = i >= 2 ? prevText(sf.original, tokens, i - 2) : "名单";
+            String receiver = i >= 2 ? textAt(sf.original, tokens, i - 2) : "名单";
             if (reportTrap(sf, t, "CJK102",
                     "「" + receiver + ".整理()」没有参数，List.sort 必须有比较器，这样写编译会失败。",
                     "改写为「集合助手.排序(" + receiver + ")」（按自然顺序），或「" + receiver + ".整理(比较器)」。")) {
@@ -1824,7 +1851,7 @@ public class Cjc {
         for (int i = 1; i + 1 < tokens.size(); i++) {
             Token t = tokens.get(i);
             if (t.kind != KIND_IDENTIFIER || t.text == null
-                    || !prevText(sf.original, tokens, i + 1).equals("(")) {
+                    || !textAt(sf.original, tokens, i + 1).equals("(")) {
                 continue;
             }
             boolean isInt = intReaders.contains(t.text);
@@ -1832,8 +1859,8 @@ public class Cjc {
             if (!isInt && !isLine) {
                 continue;
             }
-            String receiver = prevText(sf.original, tokens, i - 1).equals(".") && i >= 2
-                    ? prevText(sf.original, tokens, i - 2) : "";
+            String receiver = textAt(sf.original, tokens, i - 1).equals(".") && i >= 2
+                    ? textAt(sf.original, tokens, i - 2) : "";
             if (isInt) {
                 lastIntRead.put(receiver, t.text);
                 continue;
@@ -1873,26 +1900,11 @@ public class Cjc {
             if (!isFor && !isWhile) {
                 continue;
             }
-            if (!prevText(sf.original, tokens, i + 1).equals("(")) {
+            if (!textAt(sf, tokens, i + 1).equals("(")) {
                 continue;
             }
             List<Integer> semicolons = new ArrayList<>();
-            int depth = 1;
-            int close = -1;
-            for (int j = i + 2; j < tokens.size(); j++) {
-                String s = prevText(sf.original, tokens, j);
-                if (s.equals("(") || s.equals("[") || s.equals("{")) {
-                    depth++;
-                } else if (s.equals(")") || s.equals("]") || s.equals("}")) {
-                    depth--;
-                    if (depth == 0) {
-                        close = j;
-                        break;
-                    }
-                } else if (depth == 1 && s.equals(";") && isFor) {
-                    semicolons.add(j);
-                }
-            }
+            int close = findLoopClose(sf, tokens, i + 2, isFor, semicolons);
             if (close < 0) {
                 continue;
             }
@@ -1905,26 +1917,58 @@ public class Cjc {
                 start = semicolons.get(0) + 1;
                 end = semicolons.get(1);
             }
-            for (int j = start; j + 2 < end; j++) {
-                Token lt = tokens.get(j);
-                if (!prevText(sf.original, tokens, j).equals("<")
-                        || !sf.original.startsWith("<=", lt.start)) {
-                    continue;
-                }
-                String expr = sf.original.substring(tokens.get(j + 2).start,
-                        tokens.get(end - 1).end).trim();
-                if (!expr.matches("^\\S+(\\.长度|\\.元素数\\(\\))$")) {
-                    continue;
-                }
-                if (reportTrap(sf, lt, "CJK104",
-                        "循环条件「… <= " + expr + "」会多走一轮，取下标时最后一次越界。",
-                        "把「<=」改成「<」（0 起始取下标）；确实要包含末尾时写「<= " + expr + " - 1」。")) {
-                    count++;
-                }
-                break;
+            int hit = nextComparisonEnd(sf, tokens, start, end);
+            if (hit < 0) {
+                continue;
+            }
+            String expr = describeBound(sf, tokens, hit, end);
+            if (reportTrap(sf, tokens.get(hit), "CJK104",
+                    "循环条件「… <= " + expr + "」会多走一轮，取下标时最后一次越界。",
+                    "把「<=」改成「<」（0 起始取下标）；确实要包含末尾时写「<= " + expr + " - 1」。")) {
+                count++;
             }
         }
         return count;
+    }
+
+    /** 找到循环条件右括号的位置，同时收集 for 头部的分号；找不到返回 -1。 */
+    private static int findLoopClose(SourceFile sf, List<Token> tokens, int from, boolean isFor,
+                                     List<Integer> semicolons) {
+        int depth = 1;
+        for (int j = from; j < tokens.size(); j++) {
+            String s = textAt(sf, tokens, j);
+            if (s.equals("(") || s.equals("[") || s.equals("{")) {
+                depth++;
+            } else if (s.equals(")") || s.equals("]") || s.equals("}")) {
+                depth--;
+                if (depth == 0) {
+                    return j;
+                }
+            } else if (depth == 1 && s.equals(";") && isFor) {
+                semicolons.add(j);
+            }
+        }
+        return -1;
+    }
+
+    /** 条件区间内第一处 `<= …长度/元素数` 的位置；没有则返回 -1。 */
+    private static int nextComparisonEnd(SourceFile sf, List<Token> tokens, int start, int end) {
+        for (int j = start; j + 2 < end; j++) {
+            Token lt = tokens.get(j);
+            if (textAt(sf, tokens, j).equals("<")
+                    && sf.original.startsWith("<=", lt.start)
+                    && describeBound(sf, tokens, j, end) != null) {
+                return j;
+            }
+        }
+        return -1;
+    }
+
+    /** 把 `<` 之后的表达式描述成 `.长度` / `.元素数()` 形式；不是边界表达式则返回 null。 */
+    private static String describeBound(SourceFile sf, List<Token> tokens, int ltIndex, int end) {
+        String expr = sf.original.substring(tokens.get(ltIndex + 2).start,
+                tokens.get(end - 1).end).trim();
+        return expr.matches("^\\S+(\\.长度|\\.元素数\\(\\))$") ? expr : null;
     }
 
     /** 声明为整数 / 长整数的变量名（跳过数组声明）。 */
@@ -1940,7 +1984,7 @@ public class Cjc {
                 continue;
             }
             int j = i + 1;
-            if (prevText(sf.original, tokens, j).equals("[")) {
+            if (textAt(sf.original, tokens, j).equals("[")) {
                 continue;
             }
             if (tokens.get(j).kind == KIND_IDENTIFIER) {
@@ -1981,19 +2025,19 @@ public class Cjc {
 
     /** 操作数前紧跟 `(双浮点)` / `(float)` 之类的强制转换。 */
     static boolean isFloatCastBefore(SourceFile sf, List<Token> tokens, int idx) {
-        if (idx < 2 || !prevText(sf.original, tokens, idx - 1).equals(")")) {
+        if (idx < 2 || !textAt(sf.original, tokens, idx - 1).equals(")")) {
             return false;
         }
         int depth = 1;
         for (int j = idx - 2; j >= 0; j--) {
-            String s = prevText(sf.original, tokens, j);
+            String s = textAt(sf.original, tokens, j);
             if (s.equals(")")) {
                 depth++;
             } else if (s.equals("(")) {
                 depth--;
                 if (depth == 0) {
                     for (int k = j + 1; k <= idx - 2; k++) {
-                        String text = prevText(sf.original, tokens, k);
+                        String text = textAt(sf.original, tokens, k);
                         String english = tokens.get(k).kind == KIND_KEYWORD ? KEYWORDS.get(text) : null;
                         if ("双浮点".equals(text) || "浮点".equals(text)
                                 || "double".equals(english) || "float".equals(english)
@@ -2126,7 +2170,7 @@ public class Cjc {
         String currentKind = null;
         for (int idx = 0; idx < tokens.size(); idx++) {
             Token t = tokens.get(idx);
-            String text = t.text != null ? t.text : sf.original.substring(t.start, t.end);
+            String text = textAt(sf, tokens, idx);
             if (t.kind == KIND_KEYWORD) {
                 String english = KEYWORDS.get(t.text);
                 if (english != null && (english.equals("class") || english.equals("interface") || english.equals("enum"))) {
@@ -2180,8 +2224,7 @@ public class Cjc {
             if (t.kind != KIND_IDENTIFIER) {
                 continue;
             }
-            Token next = tokens.get(idx + 1);
-            String nextText = next.text != null ? next.text : sf.original.substring(next.start, next.end);
+            String nextText = textAt(sf, tokens, idx + 1);
             if (!nextText.equals("(")) {
                 continue;
             }
@@ -2191,7 +2234,7 @@ public class Cjc {
                 declaration = prevEnglish != null && isModifier(prevEnglish);
             }
             if (!declaration && scope.inTypeBody[idx]) {
-                String prevText = prev.text != null ? prev.text : sf.original.substring(prev.start, prev.end);
+                String prevText = textAt(sf, tokens, idx - 1);
                 declaration = prevText.equals("{") || prevText.equals("}") || prevText.equals(";");
                 // 枚举体以常量开头，`红();` 是枚举常量而不是方法
                 if (declaration && "enum".equals(scope.kindAt[idx]) && prevText.equals("{")) {
@@ -2220,20 +2263,16 @@ public class Cjc {
             if (t.kind != KIND_IDENTIFIER || (!isLine && !isPrint)) {
                 continue;
             }
-            Token next = tokens.get(idx + 1);
-            String nextText = next.text != null ? next.text : sf.original.substring(next.start, next.end);
+            String nextText = textAt(sf, tokens, idx + 1);
             if (!nextText.equals("(")) {
                 continue;
             }
             String prevText = "";
             boolean afterArrow = false;
             if (idx > 0) {
-                Token prev = tokens.get(idx - 1);
-                prevText = prev.text != null ? prev.text : sf.original.substring(prev.start, prev.end);
+                prevText = textAt(sf, tokens, idx - 1);
                 if (idx > 1 && ">".equals(prevText)) {
-                    Token prev2 = tokens.get(idx - 2);
-                    String prev2Text = prev2.text != null ? prev2.text
-                            : sf.original.substring(prev2.start, prev2.end);
+                    String prev2Text = textAt(sf, tokens, idx - 2);
                     afterArrow = "-".equals(prev2Text);
                 }
             }
@@ -2296,7 +2335,7 @@ public class Cjc {
                 continue;
             }
             if (idx > 0) {
-                String prev = prevText(sf.original, tokens, idx - 1);
+                String prev = textAt(sf.original, tokens, idx - 1);
                 if (!(prev.equals("{") || prev.equals("}") || prev.equals(";")
                         || prev.equals("(") || prev.equals(":"))) {
                     continue;
@@ -2305,7 +2344,7 @@ public class Cjc {
             if (tokens.get(idx + 1).kind != KIND_IDENTIFIER) {
                 continue;
             }
-            if (!prevText(sf.original, tokens, idx + 2).equals("=")) {
+            if (!textAt(sf.original, tokens, idx + 2).equals("=")) {
                 continue;
             }
             flag[idx] = true;
@@ -2321,13 +2360,13 @@ public class Cjc {
             if (f.kind != KIND_KEYWORD || !"for".equals(KEYWORDS.get(f.text))) {
                 continue;
             }
-            if (!prevText(sf.original, tokens, idx + 1).equals("(")) {
+            if (!textAt(sf.original, tokens, idx + 1).equals("(")) {
                 continue;
             }
             if (tokens.get(idx + 2).kind != KIND_IDENTIFIER) {
                 continue;
             }
-            if (prevText(sf.original, tokens, idx + 3).equals(":")) {
+            if (textAt(sf.original, tokens, idx + 3).equals(":")) {
                 insertForVar[idx + 2] = true;
             }
         }
@@ -2360,7 +2399,7 @@ public class Cjc {
                 continue;
             }
             if (idx > 0) {
-                String prev = prevText(sf.original, tokens, idx - 1);
+                String prev = textAt(sf.original, tokens, idx - 1);
                 if (!(prev.equals("{") || prev.equals("}") || prev.equals(";") || prev.equals(":"))) {
                     continue;
                 }
@@ -2369,7 +2408,7 @@ public class Cjc {
             int depth = 0;
             int ci = -1;
             for (int j = idx + 1; j < tokens.size(); j++) {
-                String s = prevText(sf.original, tokens, j);
+                String s = textAt(sf.original, tokens, j);
                 if (s.equals("{")) {
                     break;
                 }
@@ -2394,14 +2433,14 @@ public class Cjc {
             }
             String name = "序号";
             int headerEnd = ci;
-            if (ci + 1 < tokens.size() && prevText(sf.original, tokens, ci + 1).equals("(")
+            if (ci + 1 < tokens.size() && textAt(sf.original, tokens, ci + 1).equals("(")
                     && ci + 3 < tokens.size() && tokens.get(ci + 2).kind == KIND_IDENTIFIER
-                    && prevText(sf.original, tokens, ci + 3).equals(")")) {
+                    && textAt(sf.original, tokens, ci + 3).equals(")")) {
                 name = tokens.get(ci + 2).text;
                 headerEnd = ci + 3;
             }
             if (headerEnd + 1 >= tokens.size()
-                    || !prevText(sf.original, tokens, headerEnd + 1).equals("{")) {
+                    || !textAt(sf.original, tokens, headerEnd + 1).equals("{")) {
                 continue;
             }
             repeat.start[idx] = true;
@@ -2420,7 +2459,7 @@ public class Cjc {
             if (t.kind != KIND_IDENTIFIER || !"长度".equals(t.text)) {
                 continue;
             }
-            if (prevText(sf.original, tokens, idx - 1).equals(".")) {
+            if (textAt(sf.original, tokens, idx - 1).equals(".")) {
                 renameLength[idx] = true;
             }
         }
@@ -2446,7 +2485,7 @@ public class Cjc {
             if (t.kind != KIND_IDENTIFIER || !"系统".equals(t.text)) {
                 continue;
             }
-            if (prevText(sf.original, tokens, idx + 1).equals(".")) {
+            if (textAt(sf.original, tokens, idx + 1).equals(".")) {
                 renameSystem[idx] = true;
             }
         }
@@ -2461,8 +2500,8 @@ public class Cjc {
             if (t.kind != KIND_IDENTIFIER || !"数组复制".equals(t.text)) {
                 continue;
             }
-            String prev1 = prevText(sf.original, tokens, idx - 1);
-            String prev2 = prevText(sf.original, tokens, idx - 2);
+            String prev1 = textAt(sf.original, tokens, idx - 1);
+            String prev2 = textAt(sf.original, tokens, idx - 2);
             if (prev1.equals(".") && "系统".equals(prev2)) {
                 renameArraycopy[idx] = true;
             }
@@ -2478,9 +2517,9 @@ public class Cjc {
         String[] staticCall = new String[tokens.size()];
         for (int idx = 0; idx + 2 < tokens.size(); idx++) {
             Token a = tokens.get(idx);
-            String aText = a.text != null ? a.text : sf.original.substring(a.start, a.end);
-            String dot = prevText(sf.original, tokens, idx + 1);
-            String bText = prevText(sf.original, tokens, idx + 2);
+            String aText = textAt(sf, tokens, idx);
+            String dot = textAt(sf.original, tokens, idx + 1);
+            String bText = textAt(sf.original, tokens, idx + 2);
             String replacement = dot.equals(".") ? STATIC_CALLS.get(aText + "." + bText) : null;
             if (replacement != null) {
                 staticCall[idx] = replacement;
@@ -2498,10 +2537,10 @@ public class Cjc {
             if ((t.kind != KIND_IDENTIFIER && t.kind != KIND_KEYWORD) || !MEMBER_CALLS.containsKey(t.text)) {
                 continue;
             }
-            if (!prevText(sf.original, tokens, idx - 1).equals(".")) {
+            if (!textAt(sf.original, tokens, idx - 1).equals(".")) {
                 continue;
             }
-            if (!prevText(sf.original, tokens, idx + 1).equals("(")) {
+            if (!textAt(sf.original, tokens, idx + 1).equals("(")) {
                 continue;
             }
             // 中文标准库类名上的调用保持原样：`文本.去空白` / `并发.关闭` / `集合工具.填充`
@@ -2521,10 +2560,10 @@ public class Cjc {
             if (t.kind != KIND_IDENTIFIER || !MEMBER_DECLS.containsKey(t.text)) {
                 continue;
             }
-            if (!prevText(sf.original, tokens, idx + 1).equals("(")) {
+            if (!textAt(sf.original, tokens, idx + 1).equals("(")) {
                 continue;
             }
-            if (idx > 0 && prevText(sf.original, tokens, idx - 1).equals(".")) {
+            if (idx > 0 && textAt(sf.original, tokens, idx - 1).equals(".")) {
                 continue;
             }
             declMember[idx] = true;
@@ -2550,8 +2589,8 @@ public class Cjc {
             if (english == null || !PRIMITIVE_WRAPPERS.containsKey(english)) {
                 continue;
             }
-            String prev = idx > 0 ? prevText(sf.original, tokens, idx - 1) : "";
-            String next = idx + 1 < tokens.size() ? prevText(sf.original, tokens, idx + 1) : "";
+            String prev = idx > 0 ? textAt(sf.original, tokens, idx - 1) : "";
+            String next = idx + 1 < tokens.size() ? textAt(sf.original, tokens, idx + 1) : "";
             if ((prev.equals("<") || prev.equals(",")) && (next.equals(">") || next.equals(","))) {
                 wrapGeneric[idx] = true;
             }
@@ -2569,15 +2608,15 @@ public class Cjc {
             if (!"数组清单".equals(t.text)) {
                 continue;
             }
-            if (!prevText(sf.original, tokens, idx + 1).equals(".")
-                    || !prevText(sf.original, tokens, idx + 2).equals("从")
-                    || !prevText(sf.original, tokens, idx + 3).equals("(")) {
+            if (!textAt(sf.original, tokens, idx + 1).equals(".")
+                    || !textAt(sf.original, tokens, idx + 2).equals("从")
+                    || !textAt(sf.original, tokens, idx + 3).equals("(")) {
                 continue;
             }
             int depth = 0;
             int close = -1;
             for (int j = idx + 3; j < tokens.size(); j++) {
-                String txt = prevText(sf.original, tokens, j);
+                String txt = textAt(sf.original, tokens, j);
                 if (txt.equals("(")) {
                     depth++;
                 } else if (txt.equals(")")) {
@@ -2613,14 +2652,14 @@ public class Cjc {
             if (!insertOut[idx] && !insertPrint[idx]) {
                 continue;
             }
-            if (!prevText(sf.original, tokens, idx + 1).equals("(")) {
+            if (!textAt(sf.original, tokens, idx + 1).equals("(")) {
                 continue;
             }
             int depth = 0;
             int close = -1;
             List<Integer> commas = new ArrayList<>();
             for (int j = idx + 1; j < tokens.size(); j++) {
-                String txt = prevText(sf.original, tokens, j);
+                String txt = textAt(sf.original, tokens, j);
                 if (txt.equals("(")) {
                     depth++;
                 } else if (txt.equals(")")) {
@@ -2709,8 +2748,7 @@ public class Cjc {
                 continue;
             }
             if (t.kind == KIND_IDENTIFIER && "入口".equals(t.text) && idx + 1 < tokens.size()) {
-                Token next = tokens.get(idx + 1);
-                String nextText = next.text != null ? next.text : sf.original.substring(next.start, next.end);
+                String nextText = textAt(sf, tokens, idx + 1);
                 if (nextText.equals("{")) {
                     // 入口 { … } 语法糖：直接展开成 main 方法声明
                     cursor = emitToken(sb, pending, t, "public static void main(String[] 参数)");
@@ -2995,8 +3033,8 @@ public class Cjc {
             String aText = t.text != null ? t.text : expr.substring(t.start, t.end);
             String replacement = null;
             int consumeTo = i;
-            if (i + 2 < tokens.size() && prevText(expr, tokens, i + 1).equals(".")) {
-                String key = aText + "." + prevText(expr, tokens, i + 2);
+            if (i + 2 < tokens.size() && textAt(expr, tokens, i + 1).equals(".")) {
+                String key = aText + "." + textAt(expr, tokens, i + 2);
                 if (STATIC_CALLS.containsKey(key)) {
                     replacement = STATIC_CALLS.get(key);
                     consumeTo = i + 2;
@@ -3009,8 +3047,8 @@ public class Cjc {
                 continue;
             }
             if ((t.kind == KIND_IDENTIFIER || t.kind == KIND_KEYWORD) && MEMBER_CALLS.containsKey(t.text)
-                    && i > 0 && prevText(expr, tokens, i - 1).equals(".")
-                    && i + 1 < tokens.size() && prevText(expr, tokens, i + 1).equals("(")
+                    && i > 0 && textAt(expr, tokens, i - 1).equals(".")
+                    && i + 1 < tokens.size() && textAt(expr, tokens, i + 1).equals("(")
                     && !isStdlibReceiver(tokens, expr, i - 2, declared)) {
                 sb.append(MEMBER_CALLS.get(t.text));
             } else if (t.kind == KIND_KEYWORD) {
@@ -3021,14 +3059,14 @@ public class Cjc {
                     sb.append(" ".repeat(pad));
                 }
             } else if (t.kind == KIND_IDENTIFIER && "长度".equals(t.text) && i > 0
-                    && ".".equals(prevText(expr, tokens, i - 1))) {
+                    && ".".equals(textAt(expr, tokens, i - 1))) {
                 // 插值表达式里的 `xxx.长度` 也要转成 `xxx.length`
                 sb.append("length");
             } else if (t.kind == KIND_IDENTIFIER && "数组复制".equals(t.text) && i > 0
-                    && ".".equals(prevText(expr, tokens, i - 1))) {
+                    && ".".equals(textAt(expr, tokens, i - 1))) {
                 sb.append("arraycopy");
             } else if (t.kind == KIND_IDENTIFIER && "系统".equals(t.text) && i + 1 < tokens.size()
-                    && ".".equals(prevText(expr, tokens, i + 1))) {
+                    && ".".equals(textAt(expr, tokens, i + 1))) {
                 // 插值表达式里的 `系统.xxx` 也要转成 `System.xxx`
                 sb.append("System");
             } else {
@@ -3043,9 +3081,17 @@ public class Cjc {
     }
 
     /** 取 token 的文本；标点等 token 的 text 为 null，需回退到源串切片。 */
-    static String prevText(String source, List<Token> tokens, int idx) {
+    static String textAt(String source, List<Token> tokens, int idx) {
         Token t = tokens.get(idx);
         return t.text != null ? t.text : source.substring(t.start, t.end);
+    }
+
+    /** 同上，直接传 SourceFile；越界时返回空串，供条件判断使用。 */
+    static String textAt(SourceFile sf, List<Token> tokens, int idx) {
+        if (idx < 0 || idx >= tokens.size()) {
+            return "";
+        }
+        return textAt(sf.original, tokens, idx);
     }
 
     /** 可作为方法声明前缀的修饰符（用于识别省略返回类型的写法）。 */

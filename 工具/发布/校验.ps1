@@ -34,6 +34,34 @@ function 运行([string]$说明, [scriptblock]$动作) {
     }
 }
 
+function 失败项([string]$名称, [string]$说明, [string]$详情 = "") {
+    $script:失败 += $名称
+    Write-Host "$名称：$说明" -ForegroundColor Red
+    if ($详情) {
+        Write-Host $详情
+    }
+}
+
+function 新建临时目录([string]$名称) {
+    $目录 = Join-Path $root "构建\$名称"
+    if (Test-Path $目录) {
+        Remove-Item -Recurse -Force $目录
+    }
+    New-Item -ItemType Directory -Force $目录 | Out-Null
+    return $目录
+}
+
+function 捕获输出([scriptblock]$动作) {
+    # 原生命令会把 JVM 警告写到 stderr，不应被当作失败；输出合并成文本供断言
+    $偏好 = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        return (& $动作 2>&1 | Out-String)
+    } finally {
+        $ErrorActionPreference = $偏好
+    }
+}
+
 # 0) 版本单一源：工具\版本.json 与各文件中的版本号必须一致
 运行 "版本一致性检查" {
     & "$root\工具\发布\同步版本.ps1"
@@ -183,11 +211,7 @@ if ($糖表['白名单'].Count -ne 10) {
 Write-Host "方法糖表：成员 $($糖表['成员'].Count) / 声明 $($糖表['声明'].Count) / 静态 $($糖表['静态'].Count) / 白名单 $($糖表['白名单'].Count)" -ForegroundColor Green
 
 # 2.6) 标准库类名白名单：`数值.转文本` / `文本.去空白` 不得被成员糖改写成英文方法名
-$白名单目录 = Join-Path $root "构建\白名单检查"
-if (Test-Path $白名单目录) {
-    Remove-Item -Recurse -Force $白名单目录
-}
-New-Item -ItemType Directory -Force $白名单目录 | Out-Null
+$白名单目录 = 新建临时目录 "白名单检查"
 $白名单源码 = Join-Path $白名单目录 "白名单检查.java"
 @'
 导入 中文.标准库.*;
@@ -206,8 +230,7 @@ $译后 = Get-Content (Join-Path $白名单目录 "输出\白名单检查.java")
 if ($译后 -match '数值\.转文本' -and $译后 -match '文本\.去空白') {
     Write-Host "标准库类名白名单：通过" -ForegroundColor Green
 } else {
-    $失败 += "标准库类名白名单"
-    Write-Host "标准库类名白名单：标准库类名后的中文方法被成员糖改写" -ForegroundColor Red
+    失败项 "标准库类名白名单" "标准库类名后的中文方法被成员糖改写"
 }
 
 # 2.7) 简化糖：增强 for 省类型、集合工厂（清单.从/集.从/键值表.从）、Stream 成员糖与收集器
@@ -215,9 +238,7 @@ $简化输出 = & "$root\工具\对话\运行.ps1" "$root\教程\第32课集合�
 if ($LASTEXITCODE -eq 0 -and $简化输出.Contains("姓张的有 2 人") -and $简化输出.Contains("大写：张三、李四、张小明")) {
     Write-Host "简化糖（增强 for / 集合工厂 / Stream）：通过" -ForegroundColor Green
 } else {
-    $失败 += "简化糖"
-    Write-Host "简化糖：示例输出不符合预期" -ForegroundColor Red
-    Write-Host $简化输出
+    失败项 "简化糖" "示例输出不符合预期" $简化输出
 }
 
 # 2.8) 计数循环糖：`重复 N 次 { … }` 与 `重复 N 次 (名) { … }`
@@ -225,17 +246,11 @@ $重复输出 = & "$root\工具\对话\运行.ps1" "$root\教程\第31课重复�
 if ($LASTEXITCODE -eq 0 -and $重复输出.Contains("第3次") -and $重复输出.Contains("处理第3份")) {
     Write-Host "计数循环（重复 N 次）：通过" -ForegroundColor Green
 } else {
-    $失败 += "计数循环"
-    Write-Host "计数循环：示例输出不符合预期" -ForegroundColor Red
-    Write-Host $重复输出
+    失败项 "计数循环" "示例输出不符合预期" $重复输出
 }
 
 # 2.9) 新手易错提示：CJK101–CJK105
-$提示目录 = Join-Path $root "构建\新手提示检查"
-if (Test-Path $提示目录) {
-    Remove-Item -Recurse -Force $提示目录
-}
-New-Item -ItemType Directory -Force $提示目录 | Out-Null
+$提示目录 = 新建临时目录 "新手提示检查"
 @'
 字符串 甲 = "甲";
 字符串 乙 = "甲";
@@ -248,27 +263,15 @@ New-Item -ItemType Directory -Force $提示目录 | Out-Null
 对于 (整数 序号 = 0; 序号 <= 名单.元素数(); 序号++) { 打印行(名单.取出(序号)); }
 整数 平均 = 5 / 2;
 '@ | Set-Content -Path (Join-Path $提示目录 "新手提示.java") -Encoding UTF8
-$偏好 = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-try {
-    $提示输出 = (& "$root\cjc.ps1" 检查 $提示目录 2>&1 | Out-String)
-} finally {
-    $ErrorActionPreference = $偏好
-}
+$提示输出 = 捕获输出 { & "$root\cjc.ps1" 检查 $提示目录 }
 if ($提示输出 -match 'CJK101' -and $提示输出 -match 'CJK102' -and $提示输出 -match 'CJK103' -and $提示输出 -match 'CJK104' -and $提示输出 -match 'CJK105') {
     Write-Host "新手易错提示（CJK101–105）：通过" -ForegroundColor Green
 } else {
-    $失败 += "新手易错提示"
-    Write-Host "新手易错提示：缺少 CJK101–CJK105 之一" -ForegroundColor Red
-    Write-Host $提示输出
+    失败项 "新手易错提示" "缺少 CJK101–CJK105 之一" $提示输出
 }
 
 # 2.10) 语法糖 `否则若 (` → `else if (`
-$否则若目录 = Join-Path $root "构建\否则若检查"
-if (Test-Path $否则若目录) {
-    Remove-Item -Recurse -Force $否则若目录
-}
-New-Item -ItemType Directory -Force $否则若目录 | Out-Null
+$否则若目录 = 新建临时目录 "否则若检查"
 @'
 整数 分数 = 75;
 若 (分数 >= 90) {
@@ -283,9 +286,7 @@ $否则若输出 = & "$root\工具\对话\运行.ps1" (Join-Path $否则若目�
 if ($LASTEXITCODE -eq 0 -and $否则若输出.Contains("中等")) {
     Write-Host "语法糖（否则若）：通过" -ForegroundColor Green
 } else {
-    $失败 += "语法糖否则若"
-    Write-Host "语法糖否则若：运行失败或输出不符合预期" -ForegroundColor Red
-    Write-Host $否则若输出
+    失败项 "语法糖否则若" "运行失败或输出不符合预期" $否则若输出
 }
 
 # 2.11) 泛型实参自动包装：清单<整数> / 键值表<字符串, 双浮点> / 嵌套泛型
@@ -293,9 +294,7 @@ $泛型输出 = & "$root\工具\对话\运行.ps1" "$root\示例\泛型基本类
 if ($LASTEXITCODE -eq 0 -and $泛型输出.Contains("矩阵首行首列：1") -and $泛型输出.Contains("苹果单价：5.5")) {
     Write-Host "泛型实参自动包装：通过" -ForegroundColor Green
 } else {
-    $失败 += "泛型实参自动包装"
-    Write-Host "泛型实参自动包装：运行失败或输出不符合预期" -ForegroundColor Red
-    Write-Host $泛型输出
+    失败项 "泛型实参自动包装" "运行失败或输出不符合预期" $泛型输出
 }
 
 # 2.12) `记录`（record）：自动 转文本 与访问器
@@ -303,9 +302,7 @@ $记录输出 = & "$root\工具\对话\运行.ps1" "$root\教程\第33课记录.
 if ($LASTEXITCODE -eq 0 -and $记录输出.Contains("学生[姓名=小明, 年龄=18]") -and $记录输出.Contains("小明，18 岁")) {
     Write-Host "记录（record）：通过" -ForegroundColor Green
 } else {
-    $失败 += "记录 record"
-    Write-Host "记录（record）：运行失败或输出不符合预期" -ForegroundColor Red
-    Write-Host $记录输出
+    失败项 "记录（record）" "运行失败或输出不符合预期" $记录输出
 }
 
 # 2.12b) `密封` / `许可` / `非密封` 与 `产出` / 切换表达式
@@ -313,28 +310,20 @@ $密封输出 = & "$root\工具\对话\运行.ps1" "$root\教程\第34课密封�
 if ($LASTEXITCODE -eq 0 -and $密封输出.Contains("三角形面积：10.0")) {
     Write-Host "密封类与许可：通过" -ForegroundColor Green
 } else {
-    $失败 += "密封类与许可"
-    Write-Host "密封类与许可：运行失败或输出不符合预期" -ForegroundColor Red
-    Write-Host $密封输出
+    失败项 "密封类与许可" "运行失败或输出不符合预期" $密封输出
 }
 $产出输出 = & "$root\工具\对话\运行.ps1" "$root\教程\第35课产出.java" 2>&1 | Out-String
 if ($LASTEXITCODE -eq 0 -and $产出输出.Contains("普通会员无折扣") -and $产出输出.Contains("金 会员折扣：0.8")) {
     Write-Host "切换表达式与产出：通过" -ForegroundColor Green
 } else {
-    $失败 += "切换表达式与产出"
-    Write-Host "切换表达式与产出：运行失败或输出不符合预期" -ForegroundColor Red
-    Write-Host $产出输出
+    失败项 "切换表达式与产出" "运行失败或输出不符合预期" $产出输出
 }
 
 # 2.13) `检查 --含编译`：正例通过；反例（类型错误）必须退出码 1
 运行 "cjc 检查 --含编译（教程）" {
     & "$root\cjc.ps1" 检查 --含编译 "$root\教程"
 }
-$编译反例目录 = Join-Path $root "构建\含编译反例"
-if (Test-Path $编译反例目录) {
-    Remove-Item -Recurse -Force $编译反例目录
-}
-New-Item -ItemType Directory -Force $编译反例目录 | Out-Null
+$编译反例目录 = 新建临时目录 "含编译反例"
 @'
 类 含编译反例 {
     入口 {
@@ -343,20 +332,12 @@ New-Item -ItemType Directory -Force $编译反例目录 | Out-Null
     }
 }
 '@ | Set-Content -Path (Join-Path $编译反例目录 "含编译反例.java") -Encoding UTF8
-$偏好 = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-try {
-    $编译反例输出 = (& "$root\cjc.ps1" 检查 --含编译 $编译反例目录 2>&1 | Out-String)
-    $编译反例码 = $LASTEXITCODE
-} finally {
-    $ErrorActionPreference = $偏好
-}
+$编译反例输出 = 捕获输出 { & "$root\cjc.ps1" 检查 --含编译 $编译反例目录 }
+$编译反例码 = $LASTEXITCODE
 if ($编译反例码 -eq 1 -and $编译反例输出 -match '类型不匹配' -and $编译反例输出 -match '第3行') {
     Write-Host "检查 --含编译 反例：通过" -ForegroundColor Green
 } else {
-    $失败 += "检查 --含编译 反例"
-    Write-Host "检查 --含编译 反例：退出码或诊断不符合预期（期望 1 / 类型不匹配）" -ForegroundColor Red
-    Write-Host $编译反例输出
+    失败项 "检查 --含编译 反例" "退出码或诊断不符合预期（期望 1 / 类型不匹配）" $编译反例输出
 }
 
 # 2.14) `数组清单.从(...)`：一行建可变清单
@@ -364,9 +345,7 @@ $可变清单输出 = & "$root\工具\对话\运行.ps1" "$root\示例\可变清
 if ($LASTEXITCODE -eq 0 -and $可变清单输出.Contains("元素数 3：[甲, 乙, 丙]") -and $可变清单输出.Contains("嵌套 2 个：[甲, 戊]")) {
     Write-Host "数组清单.从（可变清单）：通过" -ForegroundColor Green
 } else {
-    $失败 += "数组清单.从"
-    Write-Host "数组清单.从：运行失败或输出不符合预期" -ForegroundColor Red
-    Write-Host $可变清单输出
+    失败项 "数组清单.从" "运行失败或输出不符合预期" $可变清单输出
 }
 
 # 2.15) CJK106：`。` / `、` 自动纠正（退出码 0）；`--严格标点` 与弯引号仍按 CJK002 阻断
@@ -374,44 +353,28 @@ $标点折叠输出 = & "$root\工具\对话\运行.ps1" "$root\示例\标点折
 if ($LASTEXITCODE -eq 0 -and $标点折叠输出.Contains("他说。好") -and $标点折叠输出.Contains("CJK106")) {
     Write-Host "标点折叠（CJK106）：通过" -ForegroundColor Green
 } else {
-    $失败 += "标点折叠"
-    Write-Host "标点折叠：运行失败、输出缺失或未提示 CJK106" -ForegroundColor Red
-    Write-Host $标点折叠输出
+    失败项 "标点折叠" "运行失败、输出缺失或未提示 CJK106" $标点折叠输出
 }
-$标点反例目录 = Join-Path $root "构建\标点折叠反例"
-if (Test-Path $标点反例目录) {
-    Remove-Item -Recurse -Force $标点反例目录
-}
-New-Item -ItemType Directory -Force $标点反例目录 | Out-Null
+$标点反例目录 = 新建临时目录 "标点折叠反例"
 @'
 打印行("你好")。
 '@ | Set-Content -Path (Join-Path $标点反例目录 "严格标点.java") -Encoding UTF8
 @'
 打印行(“引号”)。
 '@ | Set-Content -Path (Join-Path $标点反例目录 "弯引号.java") -Encoding UTF8
-$偏好 = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-try {
-    $严格输出 = (& "$root\cjc.ps1" 检查 --严格标点 (Join-Path $标点反例目录 "严格标点.java") 2>&1 | Out-String)
-    $严格码 = $LASTEXITCODE
-    $引号输出 = (& "$root\cjc.ps1" 检查 (Join-Path $标点反例目录 "弯引号.java") 2>&1 | Out-String)
-    $引号码 = $LASTEXITCODE
-} finally {
-    $ErrorActionPreference = $偏好
-}
+$严格输出 = 捕获输出 { & "$root\cjc.ps1" 检查 --严格标点 (Join-Path $标点反例目录 "严格标点.java") }
+$严格码 = $LASTEXITCODE
+$引号输出 = 捕获输出 { & "$root\cjc.ps1" 检查 (Join-Path $标点反例目录 "弯引号.java") }
+$引号码 = $LASTEXITCODE
 if ($严格码 -eq 1 -and $严格输出 -match 'CJK002') {
     Write-Host "严格标点反例（CJK002）：通过" -ForegroundColor Green
 } else {
-    $失败 += "严格标点反例"
-    Write-Host "严格标点反例：退出码或诊断不符合预期（期望 1 / CJK002）" -ForegroundColor Red
-    Write-Host $严格输出
+    失败项 "严格标点反例" "退出码或诊断不符合预期（期望 1 / CJK002）" $严格输出
 }
 if ($引号码 -eq 1 -and $引号输出 -match 'CJK002') {
     Write-Host "弯引号反例（CJK002）：通过" -ForegroundColor Green
 } else {
-    $失败 += "弯引号反例"
-    Write-Host "弯引号反例：退出码或诊断不符合预期（期望 1 / CJK002）" -ForegroundColor Red
-    Write-Host $引号输出
+    失败项 "弯引号反例" "退出码或诊断不符合预期（期望 1 / CJK002）" $引号输出
 }
 
 # 2.16) `打印行` / `打印` 多参数自动拼接
@@ -419,17 +382,11 @@ $打印输出 = & "$root\工具\对话\运行.ps1" "$root\示例\打印多参数
 if ($LASTEXITCODE -eq 0 -and $打印输出.Contains("姓名：小明，年龄：18") -and $打印输出.Contains("7 -> 4") -and $打印输出.Contains("同一行拼接")) {
     Write-Host "打印多参数：通过" -ForegroundColor Green
 } else {
-    $失败 += "打印多参数"
-    Write-Host "打印多参数：运行失败或输出不符合预期" -ForegroundColor Red
-    Write-Host $打印输出
+    失败项 "打印多参数" "运行失败或输出不符合预期" $打印输出
 }
 
 # 2.13) 诊断中文化固定反例：12 条覆盖常见编译错误，逐条断言中文输出
-$诊断目录 = Join-Path $root "构建\诊断反例检查"
-if (Test-Path $诊断目录) {
-    Remove-Item -Recurse -Force $诊断目录
-}
-New-Item -ItemType Directory -Force $诊断目录 | Out-Null
+$诊断目录 = 新建临时目录 "诊断反例检查"
 $诊断反例 = @(
     @{ 名 = '01未定义变量'; 期望 = '找不到符号：变量'; 源码 = @'
 类 测试 {
@@ -584,10 +541,7 @@ $模板目录 = Join-Path $root "工具\对话\模板"
 $标准库jar = Get-ChildItem (Join-Path $root "标准库\target") -Filter "cjc-stdlib-*.jar" -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if ($标准库jar) {
-    $模板输出 = Join-Path $root "构建\模板编译"
-    if (Test-Path $模板输出) {
-        Remove-Item -Recurse -Force $模板输出
-    }
+    $模板输出 = 新建临时目录 "模板编译"
     运行 "模板库：编译" {
         & "$root\cjc.ps1" 编译 $模板目录 -d $模板输出 -cp $标准库jar.FullName
     }
@@ -606,51 +560,31 @@ if (Get-Command node -ErrorAction SilentlyContinue) {
 
 # 7) 诊断建议字段：两个反例必须报 CJK001/CJK002 且带「建议：」
 $反例 = @((Join-Path $root "测试\粘连案例.java"), (Join-Path $root "测试\不支持标点.java"))
-$偏好 = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-try {
-    $反例输出 = (& "$root\cjc.ps1" 检查 @反例 2>&1 | Out-String)
-} finally {
-    $ErrorActionPreference = $偏好
-}
+$反例输出 = 捕获输出 { & "$root\cjc.ps1" 检查 @反例 }
 if ($反例输出 -match 'CJK001' -and $反例输出 -match 'CJK002' -and $反例输出 -match '建议：') {
     Write-Host "诊断建议字段：通过" -ForegroundColor Green
 } else {
-    $失败 += "诊断建议字段"
-    Write-Host "诊断建议字段：缺少错误码或「建议：」" -ForegroundColor Red
+    失败项 "诊断建议字段" "缺少错误码或「建议：」"
 }
 
 # 7.5) 运行时异常中文化：故意越界，输出必须含中文异常名与「建议：」
-$异常目录 = Join-Path $root "构建\异常校验"
-if (Test-Path $异常目录) {
-    Remove-Item -Recurse -Force $异常目录
-}
-New-Item -ItemType Directory -Force $异常目录 | Out-Null
+$异常目录 = 新建临时目录 "异常校验"
 $异常源码 = Join-Path $异常目录 "异常校验.java"
 @'
 打印行("越界演示");
 整数[] 数组 = {1, 2, 3};
 打印行("值：" + 数组[5]);
 '@ | Set-Content -Path $异常源码 -Encoding UTF8
-$偏好 = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-try {
-    $异常输出 = (& "$root\工具\对话\运行.ps1" $异常源码 2>&1 | Out-String)
-} finally {
-    $ErrorActionPreference = $偏好
-}
+$异常输出 = 捕获输出 { & "$root\工具\对话\运行.ps1" $异常源码 }
 if ($异常输出 -match '程序运行出错' -and $异常输出 -match '数组越界异常' -and $异常输出 -match '建议：') {
     Write-Host "运行时异常中文化：通过" -ForegroundColor Green
 } else {
-    $失败 += "运行时异常中文化"
-    Write-Host "运行时异常中文化：输出未中文化" -ForegroundColor Red
+    失败项 "运行时异常中文化" "输出未中文化"
 }
 
 # 7.6) 新建项目脚手架：只校验生成的骨架文件（不跑 mvn，避免依赖本地仓库）
 $脚手架 = Join-Path $root "构建\脚手架校验\示例工具"
-if (Test-Path (Split-Path $脚手架)) {
-    Remove-Item -Recurse -Force (Split-Path $脚手架)
-}
+if (Test-Path $脚手架) { Remove-Item -Recurse -Force $脚手架 }
 运行 "新建项目脚手架：生成" {
     Push-Location $root
     try {
@@ -662,8 +596,7 @@ if (Test-Path (Split-Path $脚手架)) {
 if ((Test-Path (Join-Path $脚手架 "pom.xml")) -and (Test-Path (Join-Path $脚手架 "src\main\中文\演示\应用\主程序.java"))) {
     Write-Host "新建项目脚手架：通过" -ForegroundColor Green
 } else {
-    $失败 += "新建项目脚手架"
-    Write-Host "新建项目脚手架：缺少 pom.xml 或主程序.java" -ForegroundColor Red
+    失败项 "新建项目脚手架" "缺少 pom.xml 或主程序.java"
 }
 
 # 8) 可选：原生补丁回归（基于 JDK 25 的 Tokens.java）
@@ -671,11 +604,7 @@ if ($含原生) {
     运行 "原生补丁编译" {
         & "$root\工具\原生补丁\编译.ps1"
     }
-    $原生输出 = Join-Path $root "构建\M7校验\原生教程"
-    if (Test-Path $原生输出) {
-        Remove-Item -Recurse -Force $原生输出
-    }
-    New-Item -ItemType Directory -Force $原生输出 | Out-Null
+    $原生输出 = 新建临时目录 "M7校验\原生教程"
     运行 "中文javac 编译教程" {
         & "$root\工具\原生补丁\中文javac.ps1" -encoding UTF-8 -d $原生输出 (Get-ChildItem "$root\教程\*.java" | ForEach-Object { $_.FullName })
     }
