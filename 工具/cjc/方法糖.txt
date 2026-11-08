@@ -83,6 +83,11 @@
 长整数.解析=Long.parseLong
 双浮点.解析=Double.parseDouble
 布尔.解析=Boolean.parseBoolean
+整数.值=Integer.valueOf
+长整数.值=Long.valueOf
+双浮点.值=Double.valueOf
+布尔.值=Boolean.valueOf
+字符.值=Character.valueOf
 文件路径.取=Path.of
 文件助手.建目录=Files.createDirectories
 文件助手.写文本=Files.writeString
