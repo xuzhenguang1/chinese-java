@@ -79,6 +79,10 @@
 比较器.按整数=Comparator.comparingInt
 字符串.拼接=String.join
 整数包装.解析=Integer.parseInt
+整数.解析=Integer.parseInt
+长整数.解析=Long.parseLong
+双浮点.解析=Double.parseDouble
+布尔.解析=Boolean.parseBoolean
 文件路径.取=Path.of
 文件助手.建目录=Files.createDirectories
 文件助手.写文本=Files.writeString

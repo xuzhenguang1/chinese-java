@@ -1392,7 +1392,7 @@ public class Cjc {
                 return "检查下标范围：0 <= 下标 < 数组.长度（集合用 元素数）。";
             case "StringIndexOutOfBoundsException": return "检查字符串下标范围：0 <= 下标 < 文本.长度()。";
             case "ArithmeticException": return "检查除数是否为 0。";
-            case "NumberFormatException": return "输入的文本不是数字，先用「尝试 { 整数包装.解析(…) } 捕获 (数字格式异常 出错) { … }」。";
+            case "NumberFormatException": return "输入的文本不是数字，先用「尝试 { 整数.解析(…) } 捕获 (数字格式异常 出错) { … }」。";
             case "NoSuchElementException": return "输入已经读完，先判断「输入.有下一行()」再读行。";
             case "InputMismatchException": return "本次输入类型与读取方法不匹配，检查是否该用 读整数 / 读双浮点。";
             case "FileNotFoundException": return "检查文件路径是否存在、是否有读取权限。";
@@ -1947,7 +1947,7 @@ public class Cjc {
                 String owner = receiver.isEmpty() ? "输入" : receiver;
                 if (reportTrap(sf, t, "CJK103",
                         "「" + previous + "()」不会消耗行尾换行，紧随的「读行()」会先读到空行，看起来像跳过了一行输入。",
-                        "在「" + previous + "()」之后补一句「" + owner + ".读行();」，或统一用「读行() + 整数包装.解析(...)」。")) {
+                        "在「" + previous + "()」之后补一句「" + owner + ".读行();」，或统一用「读行() + 整数.解析(...)」。")) {
                     count++;
                 }
             }
