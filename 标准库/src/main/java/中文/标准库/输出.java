@@ -39,6 +39,11 @@ public final class 输出 {
         System.err.println(值);
     }
 
+    /** 多实参依次拼接后写入标准错误 */
+    public static void 错误(Object... 部分) {
+        System.err.println(拼接(部分));
+    }
+
     /** 等价于 System.out.println(String.format(模板, 参数)) */
     public static void 格式(String 模板, Object... 参数) {
         System.out.println(String.format(模板, 参数));

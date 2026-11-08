@@ -231,4 +231,19 @@ class 标准库测试 {
         String 换行 = System.lineSeparator();
         assertEquals("姓名：小明，年龄：18 / 甲乙" + 换行 + 换行, 缓冲.toString(StandardCharsets.UTF_8));
     }
+
+    @Test
+    void 输出错误多实参依次拼接() {
+        PrintStream 原错误 = System.err;
+        ByteArrayOutputStream 缓冲 = new ByteArrayOutputStream();
+        System.setErr(new PrintStream(缓冲, true, StandardCharsets.UTF_8));
+        try {
+            输出.错误("错误：", "文件不存在");
+            输出.错误();
+        } finally {
+            System.setErr(原错误);
+        }
+        String 换行 = System.lineSeparator();
+        assertEquals("错误：文件不存在" + 换行 + 换行, 缓冲.toString(StandardCharsets.UTF_8));
+    }
 }
