@@ -42,7 +42,7 @@
 | 建集合 | `数组清单.从("甲", "乙")` / `键值表.从("甲", 1)` | 可变清单 / 不可变映射 |
 | 集合操作 | `加入` `取出` `设定` `移除` `清空` `元素数` `是空` `整理` | `add` `get` `set` `remove` `clear` `size` `isEmpty` `sort` |
 | 映射操作 | `放入` `取出或` `含键` `含值` `键集合` `值集合` | `put` `getOrDefault` `containsKey` `containsValue` `keySet` `values` |
-| 字符串 | `修剪` `转大写` `含有` `以开头` `替换` `拆分` `复读` | `trim` `toUpperCase` `contains` `startsWith` `replace` `split` `repeat` |
+| 字符串 | `修剪` `转大写` `转小写` `含有` `以开头` `替换` `取字符` `拆分` `复读` `是空白` | `trim` `toUpperCase` `toLowerCase` `contains` `startsWith` `replace` `charAt` `split` `repeat` `isBlank` |
 | 数学 | `算术.绝对值(x)` `算术.最大值(a, b)` `算术.平方根(x)` | `Math.abs` / `max` / `sqrt` |
 | 计数循环 | `重复 3 次 { … }`（变量 `序号`） | `for (int 序号 = 1; 序号 <= 3; 序号++)` |
 | 遍历 | `对于 (名 : 名单) { … }` | `for (var 名 : 名单)` |
