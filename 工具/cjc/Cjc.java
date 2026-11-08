@@ -3176,12 +3176,33 @@ public class Cjc {
                 sb.append("\"\" + ");
             }
             if (isExpr) {
-                sb.append(value);
+                String text = needsParens(value) ? "(" + value + ")" : value;
+                sb.append(text);
             } else {
                 sb.append('"').append(value).append('"');
             }
             first = false;
         }
+    }
+
+    /**
+     * 表达式含顶层运算符时补括号。
+     * `"和：" + 甲 + 乙` 会先拼字符串再加乙，必须写成 `"和：" + (甲 + 乙)`。
+     */
+    static boolean needsParens(String expr) {
+        int depth = 0;
+        for (int i = 0; i < expr.length(); i++) {
+            char c = expr.charAt(i);
+            if (c == '(' || c == '[') {
+                depth++;
+            } else if (c == ')' || c == ']') {
+                depth--;
+            } else if (depth == 0 && (c == '+' || c == '-' || c == '*' || c == '/' || c == '%'
+                    || c == '&' || c == '|' || c == '^' || c == '!' || c == '<' || c == '>' || c == '=')) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 插值表达式只接受「属性 / 方法调用」这类安全形式，其余保持原样。 */
