@@ -11,10 +11,12 @@
 [成员]
 修剪=trim
 转大写=toUpperCase
+转小写=toLowerCase
 含有=contains
 以开头=startsWith
 替换=replace
 取子串=substring
+取字符=charAt
 拆分=split
 复读=repeat
 加入=add
@@ -24,6 +26,7 @@
 清空=clear
 元素数=size
 是空=isEmpty
+是空白=isBlank
 整理=sort
 放入=put
 取出或=getOrDefault
