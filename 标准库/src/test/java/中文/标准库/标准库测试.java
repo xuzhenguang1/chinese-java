@@ -4,7 +4,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -212,5 +214,21 @@ class 标准库测试 {
         String 美化 = 数据.转JSON(配置, true);
         assertTrue(美化.contains("\n"));
         assertTrue(美化.contains("  \"名字\": \"小明\""));
+    }
+
+    @Test
+    void 输出多实参依次拼接() {
+        PrintStream 原输出 = System.out;
+        ByteArrayOutputStream 缓冲 = new ByteArrayOutputStream();
+        System.setOut(new PrintStream(缓冲, true, StandardCharsets.UTF_8));
+        try {
+            输出.打印("姓名：", "小明", "，年龄：", 18);
+            输出.打印行(" / ", "甲", "乙");
+            输出.打印行();
+        } finally {
+            System.setOut(原输出);
+        }
+        String 换行 = System.lineSeparator();
+        assertEquals("姓名：小明，年龄：18 / 甲乙" + 换行 + 换行, 缓冲.toString(StandardCharsets.UTF_8));
     }
 }
