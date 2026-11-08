@@ -21,6 +21,7 @@
 复读=repeat
 加入=add
 取出=get
+找下标=indexOf
 设定=set
 移除=remove
 清空=clear
@@ -31,6 +32,7 @@
 放入=put
 取出或=getOrDefault
 值集合=values
+全部值=values
 键集合=keySet
 含键=containsKey
 含值=containsValue
