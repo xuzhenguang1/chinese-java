@@ -19,9 +19,9 @@
 - [x] T8 `.\cjc.ps1 检查 教程 示例`：47 个文件通过，4 处 CJK106，`EXIT=0`。
 - [x] T9 `.\工具\发布\校验.ps1 -含原生`：方法糖表成员 52，`全部校验通过。`，`EXIT=0`。
 - [x] T10 删除 `构建\第17批`（`Test-Path` 返回 `False`）。
-- [ ] T11 提交代码。
-- [ ] T12 提交文档与规格。
-- [ ] T13 汇报，不自动推送。
+- [x] T11 提交代码：`5e254ea`（4 files changed, 7 insertions, 4 deletions）。
+- [x] T12 提交文档与规格：`93f132a`（6 files changed, 158 insertions, 4 deletions）。
+- [x] T13 汇报，不自动推送。
 
 ---
 
