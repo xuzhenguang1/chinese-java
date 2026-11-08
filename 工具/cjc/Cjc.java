@@ -3091,8 +3091,8 @@ public class Cjc {
 
     /**
      * 字符串插值：把 "前缀{表达式}后缀" 展开成 "前缀" + 表达式 + "后缀"。
-     * 只处理单行双引号字面量；`{{` / `}}` 是转义；表达式含引号、冒号、逗号、换行、
-     * 花括号或为空时不展开，保持原样（避免误伤 JSON 之类的文本）。
+     * 只处理单行双引号字面量；`{{` / `}}` 是转义；表达式含引号、冒号、换行、
+     * 花括号或括号外逗号时不展开，保持原样（避免误伤 JSON 之类的文本）。
      */
     static boolean appendInterpolated(StringBuilder sb, String literal, Set<String> declared) {
         if (literal.length() < 2 || !literal.startsWith("\"") || literal.startsWith("\"\"\"")
@@ -3190,17 +3190,28 @@ public class Cjc {
             return false;
         }
         boolean hasName = false;
+        int depth = 0;
         for (int i = 0; i < expr.length(); i++) {
             char c = expr.charAt(i);
-            if (c == '"' || c == '\'' || c == '\n' || c == '\r' || c == ':' || c == ','
-                    || c == '{' || c == '}' || c == '\\') {
+            if (c == '"' || c == '\'' || c == '\n' || c == '\r' || c == ':' || c == '{' || c == '}' || c == '\\') {
+                return false;
+            }
+            if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                if (depth == 0) {
+                    return false;
+                }
+                depth--;
+            } else if (c == ',' && depth == 0) {
+                // 括号外的逗号仍不展开，避免把 JSON / 枚举列表误当插值
                 return false;
             }
             if (Character.isLetter(c) || c == '_') {
                 hasName = true;
             }
         }
-        return hasName;
+        return hasName && depth == 0;
     }
 
     /** 片段转译：做关键字、类型别名与中文 API 糖替换（插值表达式内部使用）。 */
