@@ -39,9 +39,9 @@
 
 - [x] T15 删除 `构建\第16批`（`Test-Path` 返回 `False`）。
 - [x] T16 填写下方「实测记录」。
-- [ ] T17 第一次提交（代码 + 教程/示例）。
-- [ ] T18 第二次提交（文档 + 本批 spec/tasks）。
-- [ ] T19 汇报结果；是否推送 GitHub 由用户决定。
+- [x] T17 第一次提交（代码 + 教程/示例）：`071646a`（6 files changed, 10 insertions, 8 deletions）。
+- [x] T18 第二次提交（文档 + 本批 spec/tasks）：`c893e4a`（6 files changed, 252 insertions, 4 deletions）。
+- [x] T19 汇报结果；未推送 GitHub，是否推送由用户决定。
 
 ---
 
