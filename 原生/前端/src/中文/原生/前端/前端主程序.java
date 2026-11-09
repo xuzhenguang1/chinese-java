@@ -2,6 +2,11 @@ package 中文.原生.前端;
 
 import 中文.原生.前端.标记.标记类别;
 import 中文.原生.前端.语法树.编译单元;
+import 中文.原生.中间.中间代码;
+import 中文.原生.中间.中间打印器;
+import 中文.原生.中间.解释器;
+import 中文.原生.中间.解释器异常;
+import 中文.原生.中间.语义分析器;
 
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
@@ -18,7 +23,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Stream;
 
-/** 原生前端命令行：词表 / 检查 / 语法树 / 快照。 */
+/** 原生前端命令行：词表 / 检查 / 语法树 / 快照 / 中间 / 运行 / 编译。 */
 public final class 前端主程序 {
 
     private record 分析结果(标记.源文件 文件, 诊断 诊断) {}
@@ -46,6 +51,15 @@ public final class 前端主程序 {
                     }
                     Path 输出目录 = Paths.get(参数[2]).toAbsolutePath().normalize();
                     System.exit(打印语法树(词表数据, 取文件参数(参数, 3), 输出目录));
+                }
+                case "中间" -> System.exit(打印中间代码(根目录, 词表数据, 取文件参数(参数, 2)));
+                case "运行" -> System.exit(运行(根目录, 词表数据, 取文件参数(参数, 2)));
+                case "编译" -> {
+                    if (参数.length < 4) {
+                        显示用法();
+                        System.exit(2);
+                    }
+                    System.exit(编译C(根目录, 词表数据, 参数[2], 参数[3]));
                 }
                 default -> {
                     System.out.println("未知前端命令：" + 命令);
@@ -171,6 +185,118 @@ public final class 前端主程序 {
         return 成功 == 文件们.size() ? 0 : 1;
     }
 
+    private static int 打印中间代码(Path 根目录, 词表 词表, List<String> 文件参数) throws IOException {
+        List<Path> 文件们 = 收集文件(Paths.get(".").toAbsolutePath().normalize(), 文件参数);
+        int 成功 = 0;
+        for (Path 路径 : 文件们) {
+            诊断 诊断 = new 诊断();
+            中间代码.程序 程序 = 分析程序(根目录, 路径, 词表, 诊断);
+            if (程序 == null) {
+                continue;
+            }
+            if (文件们.size() > 1) {
+                System.out.println("// " + 路径.getFileName());
+            }
+            System.out.print(中间打印器.打印(程序));
+            System.out.println();
+            成功++;
+        }
+        return 成功 == 文件们.size() ? 0 : 1;
+    }
+
+    private static int 运行(Path 根目录, 词表 词表, List<String> 文件参数) throws IOException {
+        List<Path> 文件们 = 收集文件(Paths.get(".").toAbsolutePath().normalize(), 文件参数);
+        int 成功 = 0;
+        for (Path 路径 : 文件们) {
+            诊断 诊断 = new 诊断();
+            中间代码.程序 程序 = 分析程序(根目录, 路径, 词表, 诊断);
+            if (程序 == null) {
+                continue;
+            }
+            try {
+                int 退出码 = new 解释器(程序, System.out).运行();
+                if (退出码 != 0) {
+                    System.err.println("错误 运行：" + 路径.getFileName() + " 退出码 " + 退出码);
+                    continue;
+                }
+            } catch (解释器异常 异常) {
+                System.err.println("错误 运行：" + 异常.getMessage());
+                continue;
+            }
+            成功++;
+        }
+        if (文件们.size() > 1) {
+            System.out.println("运行：" + 成功 + "/" + 文件们.size() + " 成功");
+        }
+        return 成功 == 文件们.size() ? 0 : 1;
+    }
+
+    private static int 编译C(Path 根目录, 词表 词表, String 源文件, String 输出C) {
+        Path 路径 = Paths.get(源文件);
+        if (!路径.isAbsolute()) {
+            路径 = Paths.get(".").toAbsolutePath().normalize().resolve(源文件).normalize();
+        }
+        诊断 诊断 = new 诊断();
+        中间代码.程序 程序;
+        try {
+            程序 = 分析程序(根目录, 路径, 词表, 诊断);
+        } catch (IOException 异常) {
+            System.err.println("错误：读取源文件失败 " + 异常.getMessage());
+            return 2;
+        }
+        if (程序 == null) {
+            return 1;
+        }
+        try {
+            String 源码 = 中文.原生.后端C.C生成器.生成(程序);
+            Path 输出 = Paths.get(输出C).toAbsolutePath().normalize();
+            if (输出.getParent() != null) {
+                Files.createDirectories(输出.getParent());
+            }
+            Files.writeString(输出, 源码, StandardCharsets.UTF_8);
+            System.out.println("已生成 C：" + 输出);
+            return 0;
+        } catch (中文.原生.后端C.C生成器.生成异常 异常) {
+            System.err.println(异常.getMessage());
+            return 1;
+        } catch (IOException 异常) {
+            System.err.println("错误：写入 C 文件失败 " + 异常.getMessage());
+            return 2;
+        }
+    }
+
+    private static 中间代码.程序 分析程序(Path 根目录, Path 路径, 词表 词表, 诊断 诊断) throws IOException {
+        标记.源文件 文件 = 读取(路径, 词表, 诊断);
+        if (诊断.有错误()) {
+            诊断.打印(System.out, System.err);
+            return null;
+        }
+        语法分析器 分析器 = new 语法分析器(文件.标记());
+        编译单元 单元;
+        try {
+            单元 = 分析器.解析();
+        } catch (语法分析器.语法异常 异常) {
+            诊断.错误("语法", 异常.行, 异常.列, 异常.消息, 异常.建议);
+            诊断.打印(System.out, System.err);
+            return null;
+        }
+        String 相对路径 = 路径.toAbsolutePath().normalize().toString();
+        try {
+            相对路径 = 根目录.toAbsolutePath().normalize()
+                    .relativize(路径.toAbsolutePath().normalize()).toString();
+        } catch (IllegalArgumentException 忽略) {
+            // 源文件不在根目录下时保留绝对路径。
+        }
+        相对路径 = 相对路径.replace('\\', '/');
+        中间代码.程序 程序 = new 语义分析器(词表, 诊断, 分析器.语句行号(), 相对路径)
+                .分析(单元, 文件.名称());
+        if (诊断.有错误()) {
+            诊断.打印(System.out, System.err);
+            return null;
+        }
+        return 程序;
+    }
+
     private static 标记.源文件 读取(Path 路径, 词表 词表, 诊断 诊断) throws IOException {
         String 源码 = Files.readString(路径, StandardCharsets.UTF_8);
         if (!源码.isEmpty() && 源码.charAt(0) == '\uFEFF') {
@@ -207,5 +333,8 @@ public final class 前端主程序 {
         System.out.println("  前端主程序 检查 <根目录> <文件或目录...>");
         System.out.println("  前端主程序 语法树 <根目录> <文件或目录...>");
         System.out.println("  前端主程序 快照 <根目录> <输出目录> <文件或目录...>");
+        System.out.println("  前端主程序 中间 <根目录> <文件或目录...>");
+        System.out.println("  前端主程序 运行 <根目录> <文件或目录...>");
+        System.out.println("  前端主程序 编译 <根目录> <源文件> <输出 C 文件>");
     }
 }

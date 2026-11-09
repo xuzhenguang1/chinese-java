@@ -1,9 +1,12 @@
-﻿# 原生实现驱动（M1：词法与语法）
-# 对外入口：.\cjc.ps1 原生 <检查|语法树|快照|词表> [参数...]
-# M1 只做前端：词表桥接、源码统计、Token/AST 与诊断，不产出可执行文件。
+﻿# 原生实现驱动（M3：C 后端 MVP）
+# 对外入口：.\cjc.ps1 原生 <检查|语法树|快照|词表|中间|运行|对拍|编译|对拍原生> [参数...]
+# M3 把教程 01–08 的 MIR 降级为 C，用 clang 链接成 Windows exe。
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]]$参数
+    [string[]]$参数,
+    # 编译输出路径；显式声明避免 PowerShell 把 -o 当成 -OutVariable 的缩写。
+    [string]$o
 )
 
 $ErrorActionPreference = "Continue"
@@ -12,7 +15,11 @@ chcp 65001 | Out-Null
 
 $根目录 = (Resolve-Path "$PSScriptRoot\..").Path
 $桥接 = Join-Path $PSScriptRoot "工具\词表桥接.ps1"
-$源码目录 = Join-Path $PSScriptRoot "前端\src"
+$源码目录们 = @(
+    (Join-Path $PSScriptRoot "前端\src"),
+    (Join-Path $PSScriptRoot "中间表示\src"),
+    (Join-Path $PSScriptRoot "后端C\src")
+)
 $类目录 = Join-Path $根目录 "构建\原生\前端\classes"
 $编译标记 = Join-Path $类目录 ".已编译"
 $主类 = "中文.原生.前端.前端主程序"
@@ -22,12 +29,33 @@ function 显示用法 {
     Write-Output "  .\cjc.ps1 原生 检查   [路径...]"
     Write-Output "  .\cjc.ps1 原生 语法树 [路径...]"
     Write-Output "  .\cjc.ps1 原生 快照   <输出目录> [路径...]"
+    Write-Output "  .\cjc.ps1 原生 中间   [路径...]"
+    Write-Output "  .\cjc.ps1 原生 运行   [路径...]"
+    Write-Output "  .\cjc.ps1 原生 对拍   [路径...]"
+    Write-Output "  .\cjc.ps1 原生 编译   <源文件> [-o <输出 exe>]"
+    Write-Output "  .\cjc.ps1 原生 对拍原生 [路径...]"
     Write-Output "  .\cjc.ps1 原生 词表"
-    Write-Output "  M1 阶段只做词法与语法，不产出可执行文件。"
+    Write-Output "  M1 词法语法，M2 语义/MIR/解释器，M3 C 后端（教程 01–08）。"
+}
+
+function 查找clang {
+    foreach ($候选 in @("C:\msys64\mingw64\bin\clang.exe")) {
+        if (Test-Path $候选) {
+            return $候选
+        }
+    }
+    $命令 = Get-Command clang -ErrorAction SilentlyContinue
+    if ($命令) {
+        return $命令.Source
+    }
+    return $null
 }
 
 function 确保前端已编译 {
-    $源码 = @(Get-ChildItem $源码目录 -Recurse -Filter *.java -File)
+    $源码 = @()
+    foreach ($目录 in $源码目录们) {
+        $源码 += @(Get-ChildItem $目录 -Recurse -Filter *.java -File)
+    }
     $需要编译 = -not (Test-Path $编译标记)
     if (-not $需要编译) {
         $最新 = ($源码 | Measure-Object -Property LastWriteTime -Maximum).Maximum
@@ -62,7 +90,7 @@ function 转绝对路径 {
 
 function 运行前端 {
     param([string[]]$前端参数)
-    & java -cp $类目录 $主类 @前端参数
+    & java "-Dstdout.encoding=UTF-8" "-Dstderr.encoding=UTF-8" -cp $类目录 $主类 @前端参数
 }
 
 function 输出源码统计 {
@@ -97,19 +125,7 @@ function 输出源码统计 {
 }
 
 function 输出工具链 {
-    $clang = $null
-    foreach ($候选 in @("C:\msys64\mingw64\bin\clang.exe")) {
-        if (Test-Path $候选) {
-            $clang = $候选
-            break
-        }
-    }
-    if (-not $clang) {
-        $命令 = Get-Command clang -ErrorAction SilentlyContinue
-        if ($命令) {
-            $clang = $命令.Source
-        }
-    }
+    $clang = 查找clang
 
     Write-Output "工具链："
     if ($clang) {
@@ -130,7 +146,7 @@ if ($子命令 -in @('-h', '--帮助', '帮助')) {
     显示用法
     exit 0
 }
-if ($子命令 -notin @('检查', '语法树', '快照', '词表')) {
+if ($子命令 -notin @('检查', '语法树', '快照', '词表', '中间', '运行', '对拍', '编译', '对拍原生')) {
     Write-Output "未知原生子命令：$子命令"
     显示用法
     exit 2
@@ -184,5 +200,85 @@ switch ($子命令) {
         确保前端已编译
         运行前端 (@('快照', $根目录, $输出目录) + $文件路径)
         exit $LASTEXITCODE
+    }
+    '中间' {
+        $绝对路径 = 转绝对路径 $路径列表
+        if ($绝对路径.Count -eq 0) {
+            $绝对路径 = @((Join-Path $根目录 "教程"))
+        }
+        确保前端已编译
+        运行前端 (@('中间', $根目录) + $绝对路径)
+        exit $LASTEXITCODE
+    }
+    '运行' {
+        $绝对路径 = 转绝对路径 $路径列表
+        if ($绝对路径.Count -eq 0) {
+            $绝对路径 = @((Join-Path $根目录 "教程"))
+        }
+        确保前端已编译
+        运行前端 (@('运行', $根目录) + $绝对路径)
+        exit $LASTEXITCODE
+    }
+    '对拍' {
+        确保前端已编译
+        & (Join-Path $PSScriptRoot "测试\对拍.ps1") -根目录 $根目录 -类目录 $类目录 -路径 $路径列表
+        exit $LASTEXITCODE
+    }
+    '对拍原生' {
+        确保前端已编译
+        & (Join-Path $PSScriptRoot "测试\对拍原生.ps1") -根目录 $根目录 -类目录 $类目录 -路径 $路径列表
+        exit $LASTEXITCODE
+    }
+    '编译' {
+        if ($参数.Count -lt 2) {
+            显示用法
+            exit 2
+        }
+        $源文件 = @(转绝对路径 @($参数[1]))[0]
+        $输出exe = $null
+        if ($o) {
+            $输出exe = @(转绝对路径 @($o))[0]
+        }
+        for ($i = 2; $i -lt $参数.Count; $i++) {
+            Write-Output "未知编译参数：$($参数[$i])"
+            显示用法
+            exit 2
+        }
+        if (-not (Test-Path $源文件)) {
+            Write-Output "源文件不存在：$源文件"
+            exit 2
+        }
+        $模块 = [System.IO.Path]::GetFileNameWithoutExtension($源文件)
+        $C目录 = Join-Path $根目录 "构建\原生"
+        New-Item -ItemType Directory -Force $C目录 | Out-Null
+        $C文件 = Join-Path $C目录 ($模块 + ".c")
+        if (-not $输出exe) {
+            $输出exe = Join-Path $C目录 ($模块 + ".exe")
+        }
+        New-Item -ItemType Directory -Force ([System.IO.Path]::GetDirectoryName($输出exe)) | Out-Null
+
+        $clang = 查找clang
+        if (-not $clang) {
+            Write-Output "未找到 clang，无法生成原生可执行文件。"
+            Write-Output "  请安装 MSYS2 的 mingw-w64-x86_64-clang，并把 C:\msys64\mingw64\bin 加入 PATH；"
+            Write-Output "  或把 clang 放到 C:\msys64\mingw64\bin\clang.exe。"
+            exit 2
+        }
+
+        确保前端已编译
+        运行前端 @('编译', $根目录, $源文件, $C文件)
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
+
+        $运行时 = Join-Path $PSScriptRoot "运行时"
+        & $clang -O2 -std=c11 -fwrapv -fno-strict-aliasing -static -I $运行时 $C文件 (Join-Path $运行时 "cjkrt.c") -lm -o $输出exe
+        if ($LASTEXITCODE -ne 0) {
+            Write-Output "clang 编译失败（退出码 $LASTEXITCODE）。"
+            exit 1
+        }
+        Write-Output ("已生成 C：{0}" -f $C文件)
+        Write-Output ("已生成可执行文件：{0}" -f $输出exe)
+        exit 0
     }
 }

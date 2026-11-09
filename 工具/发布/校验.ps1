@@ -709,6 +709,128 @@ if ($含原生) {
         失败项 "原生 M1 反例" "$m1反例失败 条未命中"
     }
 
+    # 8.2) 原生 M2：01–10 对拍、MIR 快照可重复、11–35 不崩溃
+    $m2对拍输出 = 捕获输出 { & "$root\cjc.ps1" 原生 对拍 "$root\教程" }
+    $m2对拍码 = $LASTEXITCODE
+    if ($m2对拍码 -eq 0 -and $m2对拍输出 -match '对拍结果：通过 10 / 共 10') {
+        Write-Host "原生 M2：01–10 对拍 10/10，stdout 与退出码一致" -ForegroundColor Green
+    } else {
+        失败项 "原生 M2 对拍" "退出码或汇总不符合预期" $m2对拍输出
+    }
+
+    $mir基准 = Join-Path $root "原生\测试\MIR快照"
+    $mir临时 = 新建临时目录 "M2快照校验"
+    $mir生成输出 = 捕获输出 { & "$root\原生\测试\生成MIR快照.ps1" -输出目录 $mir临时 "$root\教程" }
+    $mir码 = $LASTEXITCODE
+    $mir基准文件 = @(Get-ChildItem $mir基准 -Filter *.mir.txt -File -ErrorAction SilentlyContinue)
+    $mir临时文件 = @(Get-ChildItem $mir临时 -Filter *.mir.txt -File -ErrorAction SilentlyContinue)
+    $mir差异 = @()
+    foreach ($基准 in $mir基准文件) {
+        $重生成 = Join-Path $mir临时 $基准.Name
+        if (-not (Test-Path $重生成)) {
+            $mir差异 += $基准.Name
+            continue
+        }
+        if ((Get-FileHash $基准.FullName).Hash -ne (Get-FileHash $重生成).Hash) {
+            $mir差异 += $基准.Name
+        }
+    }
+    if ($mir码 -eq 0 -and $mir基准文件.Count -eq 10 -and $mir临时文件.Count -eq 10 -and $mir差异.Count -eq 0) {
+        Write-Host "原生 M2：MIR 黄金快照 10 份可重复" -ForegroundColor Green
+    } else {
+        失败项 "原生 M2 快照" "基准 $($mir基准文件.Count) 份 / 重生成 $($mir临时文件.Count) 份 / 差异 $($mir差异.Count) 条" $mir生成输出
+    }
+
+    $m2运行输出 = 捕获输出 { & "$root\cjc.ps1" 原生 运行 "$root\教程\第01课你好世界.java" }
+    $m2运行码 = $LASTEXITCODE
+    if ($m2运行码 -eq 0 -and $m2运行输出 -match '你好，中文编程！') {
+        Write-Host "原生 M2：第 01 课解释执行退出码 0" -ForegroundColor Green
+    } else {
+        失败项 "原生 M2 运行" "退出码或输出不符合预期" $m2运行输出
+    }
+
+    $m2全量输出 = 捕获输出 { & "$root\cjc.ps1" 原生 中间 "$root\教程" }
+    if ($m2全量输出 -match 'M2 暂不支持' -and
+        $m2全量输出 -notmatch 'java\.lang\.' -and
+        $m2全量输出 -notmatch 'Caused by' -and
+        $m2全量输出 -notmatch 'at 中文\.') {
+        Write-Host "原生 M2：11–35 输出中文诊断，未崩溃" -ForegroundColor Green
+    } else {
+        失败项 "原生 M2 未支持课程" "缺少「M2 暂不支持」或出现 Java 异常栈" $m2全量输出
+    }
+
+    # 8.3) 原生 M3：01–08 C 后端对拍、#line 还原、09 起中文「暂不支持」
+    $clang路径 = $null
+    foreach ($候选 in @("C:\msys64\mingw64\bin\clang.exe")) {
+        if (Test-Path $候选) {
+            $clang路径 = $候选
+            break
+        }
+    }
+    if (-not $clang路径) {
+        $clang命令 = Get-Command clang -ErrorAction SilentlyContinue
+        if ($clang命令) {
+            $clang路径 = $clang命令.Source
+        }
+    }
+    if (-not $clang路径) {
+        Write-Host "原生 M3：未找到 clang，跳过 C 后端断言（请安装 mingw-w64-x86_64-clang）" -ForegroundColor Yellow
+    } else {
+        $m3对拍输出 = 捕获输出 { & "$root\cjc.ps1" 原生 对拍原生 "$root\教程" }
+        $m3对拍码 = $LASTEXITCODE
+        if ($m3对拍码 -eq 0 -and $m3对拍输出 -match '对拍结果：通过 8 / 共 8') {
+            Write-Host "原生 M3：01–08 原生对拍 8/8，stdout 与退出码一致" -ForegroundColor Green
+        } else {
+            失败项 "原生 M3 对拍" "退出码或汇总不符合预期" $m3对拍输出
+        }
+
+        $m3输出目录 = 新建临时目录 "M3校验"
+        $m3exe = Join-Path $m3输出目录 "第01课.exe"
+        $m3编译输出 = 捕获输出 {
+            & "$root\cjc.ps1" 原生 编译 "$root\教程\第01课你好世界.java" -o $m3exe
+        }
+        $m3编译码 = $LASTEXITCODE
+        if ($m3编译码 -eq 0 -and (Test-Path $m3exe)) {
+            $m3标准输出 = Join-Path $m3输出目录 "第01课.out"
+            $m3标准错误 = Join-Path $m3输出目录 "第01课.err"
+            $m3进程 = Start-Process -FilePath $m3exe -NoNewWindow -Wait -PassThru `
+                -RedirectStandardOutput $m3标准输出 -RedirectStandardError $m3标准错误
+            $m3文本 = [System.IO.File]::ReadAllText($m3标准输出, [System.Text.Encoding]::UTF8)
+            if ($m3进程.ExitCode -eq 0 -and $m3文本 -match '你好，中文编程！') {
+                Write-Host "原生 M3：第 01 课 exe 输出「你好，中文编程！」，退出码 0" -ForegroundColor Green
+            } else {
+                失败项 "原生 M3 运行" "第 01 课 exe 输出或退出码不符合预期" $m3文本
+            }
+        } else {
+            失败项 "原生 M3 编译" "退出码或 exe 路径不符合预期" $m3编译输出
+        }
+
+        $m3C文件 = Join-Path $root "构建\原生\第01课你好世界.c"
+        $m3C文本 = ""
+        if (Test-Path $m3C文件) {
+            $m3C文本 = [System.IO.File]::ReadAllText($m3C文件, [System.Text.Encoding]::UTF8)
+        }
+        if ($m3C文本 -match '(?m)^#line \d+ "教程/第01课你好世界\.java"') {
+            Write-Host "原生 M3：生成的 C 带 #line 中文源行号" -ForegroundColor Green
+        } else {
+            失败项 "原生 M3 行号" "生成的 C 缺少 #line 或相对路径不正确"
+        }
+
+        $m3未支持输出 = 捕获输出 {
+            & "$root\cjc.ps1" 原生 编译 "$root\教程\第09课类与对象.java" -o (Join-Path $m3输出目录 "第09课.exe")
+        }
+        $m3未支持码 = $LASTEXITCODE
+        if ($m3未支持码 -eq 1 -and
+            $m3未支持输出 -match 'M3 暂不支持' -and
+            $m3未支持输出 -notmatch 'java\.lang\.' -and
+            $m3未支持输出 -notmatch 'Caused by' -and
+            $m3未支持输出 -notmatch 'at 中文\.') {
+            Write-Host "原生 M3：09 起输出中文「M3 暂不支持」，退出码 1" -ForegroundColor Green
+        } else {
+            失败项 "原生 M3 未支持课程" "缺少「M3 暂不支持」、退出码非 1 或出现 Java 异常栈" $m3未支持输出
+        }
+    }
+
     运行 "原生补丁编译" {
         & "$root\工具\原生补丁\编译.ps1"
     }

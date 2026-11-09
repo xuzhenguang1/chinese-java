@@ -4,7 +4,9 @@ import 中文.原生.前端.标记.标记类别;
 import 中文.原生.前端.语法树.*;
 
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /** 手写递归下降语法分析器，覆盖 35 课语法。 */
@@ -33,11 +35,17 @@ public final class 语法分析器 {
             "non-sealed", "default", "native", "synchronized", "volatile", "transient", "strictfp");
 
     private final List<标记> 标记;
+    private final Map<语法树.节点, Integer> 语句行号 = new IdentityHashMap<>();
     private int 位置;
 
     public 语法分析器(List<标记> 标记) {
         this.标记 = 标记;
         this.位置 = 0;
+    }
+
+    /** M3 行号旁路表：语句节点 → 起始行；不参与 AST 文本打印。 */
+    public Map<语法树.节点, Integer> 语句行号() {
+        return 语句行号;
     }
 
     public 编译单元 解析() {
@@ -54,6 +62,11 @@ public final class 语法分析器 {
             }
         }
         return new 编译单元(导入, 类型, 语句);
+    }
+
+    /** 解析单个表达式：供字符串插值等内部复用，不消费文件级结构。 */
+    public 表达式 解析单个表达式() {
+        return 解析表达式();
     }
 
     // ---------- 顶层与成员 ----------
@@ -309,6 +322,15 @@ public final class 语法分析器 {
     // ---------- 语句 ----------
 
     private 语句 解析语句() {
+        int 行 = 看().行;
+        语句 结果 = 解析语句核心();
+        if (结果 != null && 行 > 0) {
+            语句行号.put(结果, 行);
+        }
+        return 结果;
+    }
+
+    private 语句 解析语句核心() {
         if (是符号("{")) {
             return 解析块();
         }
