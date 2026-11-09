@@ -624,8 +624,35 @@ if ((Test-Path (Join-Path $脚手架 "pom.xml")) -and (Test-Path (Join-Path $脚
     失败项 "新建项目脚手架" "缺少 pom.xml 或主程序.java"
 }
 
-# 8) 可选：原生补丁回归（基于 JDK 25 的 Tokens.java）
+# 8) 可选：原生实现 M0 检查 + 原生补丁回归（基于 JDK 25 的 Tokens.java）
 if ($含原生) {
+    # 8.0) 原生实现 M0：驱动可调用、与 cjc 共用同一份词表、ADR 齐备
+    $原生检查输出 = 捕获输出 { & "$root\cjc.ps1" 原生 检查 "$root\教程" }
+    $原生检查码 = $LASTEXITCODE
+    if ($原生检查码 -eq 0 -and
+        $原生检查输出 -match '关键字表：英文 56 / 中文 121 / 类型别名 34' -and
+        $原生检查输出 -match '近义词典：50 组' -and
+        $原生检查输出 -match '方法糖：成员 52 / 声明 3 / 静态 56 / 白名单 10' -and
+        $原生检查输出 -match '诊断中文表：\d+ 条' -and
+        $原生检查输出 -match '教程：35 个 \.java 文件') {
+        Write-Host "原生 M0：驱动可调用，词表计数一致" -ForegroundColor Green
+    } else {
+        失败项 "原生 M0 驱动" "退出码、词表计数或教程统计不符合预期" $原生检查输出
+    }
+    $词表副本 = @(Get-ChildItem (Join-Path $root "原生") -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { @('关键字表.txt', '近义词典.txt', '方法糖.txt', '诊断中文表.txt') -contains $_.Name })
+    if ($词表副本.Count -eq 0) {
+        Write-Host "原生 M0：未发现词表副本（单一数据源）" -ForegroundColor Green
+    } else {
+        失败项 "原生 M0 词表副本" "原生目录下存在词表副本：$($词表副本.FullName -join '；')"
+    }
+    $adr文件 = @(Get-ChildItem (Join-Path $root "文档\原生\ADR") -Filter "ADR-*.md" -File -ErrorAction SilentlyContinue)
+    if ($adr文件.Count -eq 8) {
+        Write-Host "原生 M0：ADR 8 份齐备" -ForegroundColor Green
+    } else {
+        失败项 "原生 M0 ADR" "ADR 数量应为 8，实际 $($adr文件.Count)"
+    }
+
     运行 "原生补丁编译" {
         & "$root\工具\原生补丁\编译.ps1"
     }
