@@ -3639,6 +3639,10 @@ public class Cjc {
 
     /** 「找不到符号」的细分建议；中英文消息共用。 */
     static String[] symbolRule(String kind, String name) {
+        String stdlib = stdlibImportHint(name);
+        if (stdlib != null) {
+            return rule("找不到符号：标准库类「" + name + "」", stdlib);
+        }
         return switch (kind) {
             case "variable", "变量" -> rule("找不到符号：变量「" + name + "」",
                     "确认变量已声明或已赋值；若来自其他类，检查是否用「导入」引入。");
@@ -3650,6 +3654,15 @@ public class Cjc {
             case "constructor", "构造器" -> rule("找不到符号：构造器「" + name + "」", "检查类名拼写与参数个数。");
             default -> rule("找不到符号：" + name, "检查拼写、声明与导入。");
         };
+    }
+
+    /** 标准库类名漏写导入时，给出可直接照做的补导入建议；不是标准库类返回 null。 */
+    static String stdlibImportHint(String name) {
+        if (STDLIB_CLASSES.contains(name)) {
+            return "在文件开头加一行「导入 中文.标准库.*;」；只用一个类时可写「导入 中文.标准库."
+                    + name + ";」。用 运行.ps1 会自动带上标准库 jar。";
+        }
+        return null;
     }
 
     /** 把 javac 消息里的英文类型名换成中文别名，便于初学者阅读。 */

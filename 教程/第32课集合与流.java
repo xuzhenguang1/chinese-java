@@ -1,5 +1,5 @@
 // 第 32 课：清单、键值表与流
-// 清单 = ArrayList，键值表 = LinkedHashMap（按插入顺序）。
+// 清单 = List，数组清单 = ArrayList，键值表 = Map，链式键值表 = LinkedHashMap（按插入顺序）。
 
 清单<字符串> 名字 = 数组清单.从("张三", "李四", "张小明");
 
