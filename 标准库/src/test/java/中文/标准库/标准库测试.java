@@ -2,6 +2,7 @@ package 中文.标准库;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
@@ -88,6 +89,20 @@ class 标准库测试 {
         assertEquals("42", 数值.转文本(42));
         assertTrue(数值.是整数("42"));
         assertFalse(数值.是整数("4.2"));
+    }
+
+    @Test
+    void 数值随机整数范围与非法入参() {
+        for (int 序号 = 1; 序号 <= 100; 序号++) {
+            int 甲 = 数值.随机整数(6);
+            assertTrue(甲 >= 1 && 甲 <= 6);
+            int 乙 = 数值.随机整数(10, 20);
+            assertTrue(乙 >= 10 && 乙 <= 20);
+        }
+        assertEquals(1, 数值.随机整数(1, 1));
+
+        assertThrows(IllegalArgumentException.class, () -> 数值.随机整数(0));
+        assertThrows(IllegalArgumentException.class, () -> 数值.随机整数(20, 10));
     }
 
     @Test
