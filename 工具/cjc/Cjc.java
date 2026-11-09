@@ -3566,8 +3566,8 @@ public class Cjc {
 
     /**
      * javac 自带的报错文本是英文（JDK 没有中文语言包），这里把常见错误翻成中文。
-     * 规则主体在 诊断中文表.txt；这里只保留 4 条无法表驱动的特例：
-     * 找不到符号（需要解析 symbol:/符号: 多行细节）、缺标点（分号/花括号/圆括号各给建议）。
+     * 规则主体在 诊断中文表.txt；这里只保留 5 条无法表驱动的特例：
+     * 找不到符号（需要解析 symbol:/符号: 多行细节）、标准库包不在类路径、缺标点（分号/花括号/圆括号各给建议）。
      * 命中返回 {中文消息, 建议}；未命中返回 null，保留 javac 原文，避免 JDK 升级后误报。
      */
     static String[] localizeJavacMessage(String message) {
@@ -3577,6 +3577,14 @@ public class Cjc {
         String[] symbol = symbolDiagnostic(first, raw);
         if (symbol != null) {
             return symbol;
+        }
+        // 特例：导入了标准库包却不在类路径（jar 没构建，或手动编译没加 -cp）
+        Matcher pkg = findPattern("^package (\\S+) does not exist$", first);
+        if (pkg == null) {
+            pkg = findPattern("^程序包(\\S+)不存在$", first);
+        }
+        if (pkg != null && pkg.group(1).startsWith("中文.标准库")) {
+            return stdlibPackageRule(pkg.group(1));
         }
         // 特例 3/4：缺标点（分号 / 花括号 / 圆括号给出不同建议）
         Matcher m = findPattern("^'(.+)' expected$", first);
@@ -3656,11 +3664,19 @@ public class Cjc {
         };
     }
 
+    /** 标准库包不在类路径：直接给出构建 jar 与加 -cp 的两条做法。 */
+    static String[] stdlibPackageRule(String pkg) {
+        return rule("包「" + pkg + "」不存在：标准库 jar 不在类路径",
+                "先在仓库根目录执行「mvn -f 标准库\\pom.xml package」；手动编译时用「-cp」"
+                        + "指向 标准库\\target 下的 cjc-stdlib-*.jar，或用 运行.ps1 自动带上 jar。");
+    }
+
     /** 标准库类名漏写导入时，给出可直接照做的补导入建议；不是标准库类返回 null。 */
     static String stdlibImportHint(String name) {
         if (STDLIB_CLASSES.contains(name)) {
             return "在文件开头加一行「导入 中文.标准库.*;」；只用一个类时可写「导入 中文.标准库."
-                    + name + ";」。用 运行.ps1 会自动带上标准库 jar。";
+                    + name + ";」。已经写了导入仍报错时，说明标准库 jar 不在类路径："
+                    + "执行「mvn -f 标准库\\pom.xml package」，或改用 运行.ps1。";
         }
         return null;
     }

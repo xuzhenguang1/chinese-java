@@ -507,11 +507,29 @@ if (-not $重复输出.Contains('类重复')) {
     Write-Host "诊断反例未命中：08重复类（期望包含「类重复」）" -ForegroundColor Red
     $诊断失败++
 }
+# 14 缺标准库 jar：`编译` 不带 -cp 时必须直接提示 jar 与构建命令
+$缺jar目录 = 新建临时目录 "缺标准库jar"
+$缺jar文件 = Join-Path $缺jar目录 '显示.java'
+Set-Content -Path $缺jar文件 -Value @'
+导入 中文.标准库.*;
+
+类 显示 {
+    入口 {
+        输出.打印行("你好");
+    }
+}
+'@ -Encoding UTF8
+$缺jar输出 = 捕获输出 { & "$root\cjc.ps1" 编译 $缺jar文件 -d (Join-Path $缺jar目录 'out') }
+$缺jar码 = $LASTEXITCODE
+if ($缺jar码 -ne 1 -or -not $缺jar输出.Contains('标准库 jar 不在类路径') -or -not $缺jar输出.Contains('标准库\pom.xml')) {
+    Write-Host "诊断反例未命中：14缺标准库jar（期望退出码 1、提示 jar 与 pom.xml 构建命令）" -ForegroundColor Red
+    $诊断失败++
+}
 $ErrorActionPreference = $诊断偏好
 if ($诊断失败 -gt 0) {
     $失败 += "诊断中文化反例（$诊断失败 条未命中）"
 } else {
-    Write-Host "诊断反例：13 条全部命中中文输出" -ForegroundColor Green
+    Write-Host "诊断反例：13 条 + 缺标准库 jar 提示全部命中中文输出" -ForegroundColor Green
 }
 
 # 3) 标准库单元测试（surefire 匹配 *测试.java）

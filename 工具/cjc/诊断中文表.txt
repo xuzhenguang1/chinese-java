@@ -5,7 +5,7 @@
 #   {1:类型}       捕获组按 中文类型别名 转换
 #   {1:去引号}     捕获组去掉单引号
 # 行序即匹配优先级，新增规则请加在对应位置并跑 工具\发布\校验.ps1。
-# 无法表驱动的特例留在 Cjc.localizeJavacMessage：找不到符号、缺标点（expected / 需要）。
+# 无法表驱动的特例留在 Cjc.localizeJavacMessage：找不到符号、标准库包不在类路径、缺标点（expected / 需要）。
 
 possible lossy conversion from (\S+) to (\S+)	类型不匹配：从「{1:类型}」转「{2:类型}」会丢失精度	需要时写强制转换，例如「(整数) 值」。
 ^incompatible types: (.+) cannot be converted to (.+)	类型不匹配：「{1:类型}」不能赋给「{2:类型}」	检查变量与参数的类型，必要时显式转换。
