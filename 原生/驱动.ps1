@@ -272,7 +272,12 @@ switch ($子命令) {
         }
 
         $运行时 = Join-Path $PSScriptRoot "运行时"
-        & $clang -O2 -std=c11 -fwrapv -fno-strict-aliasing -static -I $运行时 $C文件 (Join-Path $运行时 "cjkrt.c") -lm -o $输出exe
+        $运行时源 = @(Get-ChildItem $运行时 -Filter *.c -File | Sort-Object Name | ForEach-Object FullName)
+        if ($运行时源.Count -eq 0) {
+            Write-Output "运行时源码缺失：$运行时"
+            exit 2
+        }
+        & $clang -O2 -std=c11 -fwrapv -fno-strict-aliasing -static -I $运行时 $C文件 @运行时源 -lm -lwinhttp -lws2_32 -o $输出exe
         if ($LASTEXITCODE -ne 0) {
             Write-Output "clang 编译失败（退出码 $LASTEXITCODE）。"
             exit 1

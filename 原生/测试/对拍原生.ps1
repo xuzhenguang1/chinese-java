@@ -1,4 +1,5 @@
-﻿# M3 对拍：教程 01–08 的原生 exe stdout、退出码，必须与 JVM 后端逐字节一致。
+﻿# M5 对拍：教程 01–35 的原生 exe stdout、退出码，必须与 JVM 后端逐字节一致。
+# 白名单仅过滤「差异白名单.txt」登记的不可确定行（如随机整数）。
 # 用法：.\原生\测试\对拍原生.ps1 [-根目录 <目录>] [-类目录 <目录>] [-路径 <文件或目录...>]
 param(
     [string]$根目录 = (Resolve-Path "$PSScriptRoot\..\..").Path,
@@ -25,9 +26,9 @@ $文件们 = @()
 if ($路径 -and $路径.Count -gt 0) {
     foreach ($项 in $路径) {
         if (Test-Path $项 -PathType Container) {
-            # M3 只对教程 01–08 负责，目录输入自动收敛到这一段。
+            # M5 覆盖教程 01–35。
             $文件们 += @(Get-ChildItem $项 -Filter *.java -File |
-                Where-Object { $_.Name -match '^第0[1-8]课' } | Sort-Object Name)
+                Where-Object { $_.Name -match '^第\d{2}课' } | Sort-Object Name)
         } elseif (Test-Path $项) {
             $文件们 += @(Get-Item $项)
         } else {
@@ -37,7 +38,7 @@ if ($路径 -and $路径.Count -gt 0) {
     }
 } else {
     $文件们 = @(Get-ChildItem (Join-Path $根目录 "教程") -Filter *.java -File |
-        Where-Object { $_.Name -match '^第0[1-8]课' } | Sort-Object Name)
+        Where-Object { $_.Name -match '^第\d{2}课' } | Sort-Object Name)
 }
 
 if ($文件们.Count -eq 0) {
@@ -52,21 +53,24 @@ function 读取文本([string]$文件) {
     return [System.IO.File]::ReadAllText($文件, [System.Text.Encoding]::UTF8)
 }
 
-function 文件相同([string]$甲路径, [string]$乙路径) {
-    if (-not (Test-Path $甲路径) -or -not (Test-Path $乙路径)) {
-        return $false
-    }
-    $甲 = [System.IO.File]::ReadAllBytes($甲路径)
-    $乙 = [System.IO.File]::ReadAllBytes($乙路径)
-    if ($甲.Length -ne $乙.Length) {
-        return $false
-    }
-    for ($i = 0; $i -lt $甲.Length; $i++) {
-        if ($甲[$i] -ne $乙[$i]) {
-            return $false
+$白名单 = @()
+$白名单文件 = Join-Path $PSScriptRoot "差异白名单.txt"
+if (Test-Path $白名单文件) {
+    $白名单 = @(Get-Content $白名单文件 -Encoding UTF8 |
+        Where-Object { $_.Trim() -ne "" -and -not $_.TrimStart().StartsWith("#") })
+}
+
+function 归一化文本([string]$文件) {
+    $行们 = @((读取文本 $文件) -split "\r?\n")
+    for ($i = 0; $i -lt $行们.Count; $i++) {
+        foreach ($式 in $白名单) {
+            if ($行们[$i] -match $式) {
+                $行们[$i] = "__白名单__"
+                break
+            }
         }
     }
-    return $true
+    return ($行们 -join "`n")
 }
 
 $通过 = 0
@@ -102,10 +106,35 @@ foreach ($文件 in $文件们) {
         -RedirectStandardOutput $ExeOut -RedirectStandardError $ExeErr
     $exe码 = $进程.ExitCode
 
-    if ((文件相同 $JvmOut $ExeOut) -and $jvm码 -eq $exe码) {
+    $同输出 = $false
+    $白名单命中 = $false
+    if ((Test-Path $JvmOut) -and (Test-Path $ExeOut)) {
+        $甲 = [System.IO.File]::ReadAllBytes($JvmOut)
+        $乙 = [System.IO.File]::ReadAllBytes($ExeOut)
+        $同输出 = ($甲.Length -eq $乙.Length)
+        if ($同输出) {
+            for ($i = 0; $i -lt $甲.Length; $i++) {
+                if ($甲[$i] -ne $乙[$i]) {
+                    $同输出 = $false
+                    break
+                }
+            }
+        }
+        if (-not $同输出 -and $白名单.Count -gt 0) {
+            $归一甲 = 归一化文本 $JvmOut
+            $归一乙 = 归一化文本 $ExeOut
+            if ($归一甲 -ceq $归一乙) {
+                $同输出 = $true
+                $白名单命中 = $true
+            }
+        }
+    }
+
+    if ($同输出 -and $jvm码 -eq $exe码) {
         $通过++
-        Write-Output ("通过  {0}  stdout {1} 字节，退出码 {2}" -f $名,
-            ([System.IO.File]::ReadAllBytes($ExeOut)).Length, $exe码)
+        $标记 = if ($白名单命中) { "（白名单）" } else { "" }
+        Write-Output ("通过  {0}  stdout {1} 字节，退出码 {2}{3}" -f $名,
+            ([System.IO.File]::ReadAllBytes($ExeOut)).Length, $exe码, $标记)
         continue
     }
 

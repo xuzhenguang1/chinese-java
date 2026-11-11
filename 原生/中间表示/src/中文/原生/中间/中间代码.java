@@ -51,16 +51,27 @@ public final class 中间代码 {
         }
     }
 
-    public record 类定义(String 名, List<字段定义> 字段, List<方法> 构造器, List<方法> 方法) {}
+    public record 类定义(String 名, List<字段定义> 字段, List<方法> 构造器, List<方法> 方法,
+                         String 父类, List<String> 接口, boolean 抽象, boolean 枚举,
+                         List<静态字段定义> 静态字段, List<枚举常量定义> 枚举常量) {
+        /** 兼容 M2/M3：没有继承、接口、静态成员与枚举时使用。 */
+        public 类定义(String 名, List<字段定义> 字段, List<方法> 构造器, List<方法> 方法) {
+            this(名, 字段, 构造器, 方法, null, List.of(), false, false, List.of(), List.of());
+        }
+    }
 
     public record 字段定义(类型 类型, String 名) {}
+
+    public record 静态字段定义(类型 类型, String 名, 表达式 初值) {}
+
+    public record 枚举常量定义(String 名, List<表达式> 实参) {}
 
     public record 方法(String 名, boolean 静态, 类型 返回类型, List<参数> 参数, 语句 体) {}
 
     public record 参数(类型 类型, String 名) {}
 
     public sealed interface 语句 permits 块, 局部变量语句, 表达式语句, 返回语句,
-            若语句, 对于语句, 当语句, 做当语句, 跳出语句, 继续语句 {
+            若语句, 对于语句, 当语句, 做当语句, 跳出语句, 继续语句, 尝试语句, 抛出语句 {
     }
 
     public record 块(List<语句> 语句) implements 语句 {}
@@ -83,12 +94,19 @@ public final class 中间代码 {
 
     public record 继续语句() implements 语句 {}
 
+    public record 尝试语句(语句 体, List<捕获子句> 捕获, 语句 兜底) implements 语句 {}
+
+    public record 捕获子句(String 类名, String 变量名, 语句 体) {}
+
+    public record 抛出语句(表达式 值) implements 语句 {}
+
     public enum 分派 {
-        内建, 静态, 实例, 构造器
+        内建, 静态, 实例, 构造器, 父方法
     }
 
     public sealed interface 表达式 permits 常量, 变量读, 字段读, 数组读, 数组长度,
-            二元, 一元, 三目, 强制转换, 赋值, 调用, 新建对象, 新建数组 {
+            二元, 一元, 三目, 强制转换, 赋值, 调用, 新建对象, 新建数组,
+            实例判断, 静态字段读, 枚举常量读, 枚举全部值, 枚举按名取值, 顺序表达式 {
     }
 
     public record 常量(类型 类型, String 原文) implements 表达式 {}
@@ -117,4 +135,17 @@ public final class 中间代码 {
     public record 新建对象(类型 类型, String 类名, List<表达式> 实参) implements 表达式 {}
 
     public record 新建数组(类型 类型, 类型 元素类型, 表达式 长度, List<表达式> 初值) implements 表达式 {}
+
+    public record 实例判断(类型 类型, 表达式 值, String 目标类, String 绑定名) implements 表达式 {}
+
+    public record 静态字段读(类型 类型, String 类名, String 名) implements 表达式 {}
+
+    public record 枚举常量读(类型 类型, String 枚举类, String 常量名) implements 表达式 {}
+
+    public record 枚举全部值(类型 类型, String 枚举类) implements 表达式 {}
+
+    public record 枚举按名取值(类型 类型, String 枚举类, 表达式 名) implements 表达式 {}
+
+    /** M5：顺序表达式 `(前奏语句..., 结果)`，用于切换表达式块分支的 `产出`。 */
+    public record 顺序表达式(类型 类型, List<语句> 前奏, 表达式 结果) implements 表达式 {}
 }

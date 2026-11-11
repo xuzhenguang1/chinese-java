@@ -1,6 +1,8 @@
 package 中文.原生.中间;
 
-/** M2 类型表示：基本类型、数组、类、空与错误占位。 */
+import java.util.List;
+
+/** M2 类型表示：基本类型、数组、类、空与错误占位；M5 增加泛型实参。 */
 public final class 类型 {
 
     public enum 基本 {
@@ -15,12 +17,14 @@ public final class 类型 {
     public final 基本 基本值;
     public final 类型 元素;
     public final String 类名;
+    public final List<类型> 实参;
 
-    private 类型(类别 种类, 基本 基本值, 类型 元素, String 类名) {
+    private 类型(类别 种类, 基本 基本值, 类型 元素, String 类名, List<类型> 实参) {
         this.种类 = 种类;
         this.基本值 = 基本值;
         this.元素 = 元素;
         this.类名 = 类名;
+        this.实参 = 实参;
     }
 
     public static final 类型 整数 = 基本类型(基本.整数);
@@ -33,19 +37,23 @@ public final class 类型 {
     public static final 类型 布尔 = 基本类型(基本.布尔);
     public static final 类型 无 = 基本类型(基本.无);
     public static final 类型 文本 = 基本类型(基本.文本);
-    public static final 类型 空 = new 类型(类别.空, null, null, null);
-    public static final 类型 错误 = new 类型(类别.错误, null, null, null);
+    public static final 类型 空 = new 类型(类别.空, null, null, null, List.of());
+    public static final 类型 错误 = new 类型(类别.错误, null, null, null, List.of());
 
     public static 类型 基本类型(基本 值) {
-        return new 类型(类别.基本, 值, null, null);
+        return new 类型(类别.基本, 值, null, null, List.of());
     }
 
     public static 类型 数组(类型 元素) {
-        return new 类型(类别.数组, null, 元素, null);
+        return new 类型(类别.数组, null, 元素, null, List.of());
     }
 
     public static 类型 类类型(String 名) {
-        return new 类型(类别.类, null, null, 名);
+        return 类类型(名, List.of());
+    }
+
+    public static 类型 类类型(String 名, List<类型> 实参) {
+        return new 类型(类别.类, null, null, 名, 实参 == null ? List.of() : List.copyOf(实参));
     }
 
     public boolean 是基本() {
@@ -96,7 +104,8 @@ public final class 类型 {
                 case 文本 -> "文本";
             };
             case 数组 -> 元素.文本() + "[]";
-            case 类 -> 类名;
+            case 类 -> 实参.isEmpty() ? 类名
+                    : 类名 + "<" + String.join(",", 实参.stream().map(类型::文本).toList()) + ">";
             case 空 -> "空";
             case 错误 -> "?";
         };
@@ -109,9 +118,27 @@ public final class 类型 {
         return switch (种类) {
             case 基本 -> 基本值 == 另一.基本值;
             case 数组 -> 元素.同型(另一.元素);
-            case 类 -> 类名.equals(另一.类名);
+            case 类 -> 类名.equals(另一.类名) && 实参同型(另一.实参);
             case 空, 错误 -> true;
         };
+    }
+
+    private boolean 实参同型(List<类型> 另一) {
+        if (实参.size() != 另一.size()) {
+            return false;
+        }
+        for (int i = 0; i < 实参.size(); i++) {
+            if (!实参.get(i).同型(另一.get(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** 原始类名相同（泛型擦除后视为同一类）。 */
+    public boolean 原始同类(类型 另一) {
+        return 种类 == 类别.类 && 另一 != null && 另一.种类 == 类别.类
+                && 类名.equals(另一.类名);
     }
 
     private int 秩() {
@@ -160,7 +187,7 @@ public final class 类型 {
         if (种类 == 类别.数组 && 源.种类 == 类别.数组) {
             return 元素.可赋值自(源.元素);
         }
-        return false;
+        return 原始同类(源);
     }
 
     public 类型 提升(类型 另一) {

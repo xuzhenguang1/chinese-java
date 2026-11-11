@@ -1,5 +1,5 @@
 /*
- * 中文 Java 原生运行时（M3 最小集）
+ * 中文 Java 原生运行时（M4）
  */
 #include "cjkrt.h"
 
@@ -13,6 +13,22 @@
 #include <windows.h>
 #endif
 
+/* ---------------- 内置类描述符 ---------------- */
+
+cjk_class CJK_CLS_对象 = {0, "对象", NULL, 0, NULL, NULL, 0};
+cjk_class CJK_CLS_异常 = {1, "异常", &CJK_CLS_对象, 0, NULL, NULL, 0};
+cjk_class CJK_CLS_运行时异常 = {2, "运行时异常", &CJK_CLS_异常, 0, NULL, NULL, 0};
+cjk_class CJK_CLS_算术异常 = {3, "算术异常", &CJK_CLS_运行时异常, 0, NULL, NULL, 0};
+cjk_class CJK_CLS_空指针异常 = {4, "空指针异常", &CJK_CLS_运行时异常, 0, NULL, NULL, 0};
+cjk_class CJK_CLS_数组越界异常 = {5, "数组越界异常", &CJK_CLS_运行时异常, 0, NULL, NULL, 0};
+cjk_class CJK_CLS_非法参数异常 = {6, "非法参数异常", &CJK_CLS_运行时异常, 0, NULL, NULL, 0};
+cjk_class CJK_CLS_数字格式异常 = {7, "数字格式异常", &CJK_CLS_运行时异常, 0, NULL, NULL, 0};
+cjk_class CJK_CLS_类转换异常 = {8, "类转换异常", &CJK_CLS_运行时异常, 0, NULL, NULL, 0};
+
+cjk_handler *cjk_handler_top = NULL;
+
+static const char *源路径 = "";
+
 static uint16_t 空字面量[] = {'n', 'u', 'l', 'l'};
 static cjk_string 空字面量串 = {4, 空字面量};
 
@@ -21,24 +37,173 @@ void cjk_rt_init(void) {
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
 #endif
+    cjk_gc_init();
 }
 
-void cjk_fatal(int32_t line, const char *message) {
+void cjk_set_source(const char *path) {
+    源路径 = path == NULL ? "" : path;
+}
+
+/* ---------------- 异常 ---------------- */
+
+cjk_exception *cjk_new_exception(cjk_class *cls, cjk_string *message) {
+    cjk_exception *e = (cjk_exception *)cjk_gc_alloc(sizeof(cjk_exception));
+    e->cls = cls;
+    e->message = message;
+    return e;
+}
+
+cjk_exception *cjk_new_exception_utf8(cjk_class *cls, const char *message) {
+    return cjk_new_exception(cls, message == NULL ? NULL : cjk_str_from_utf8(message));
+}
+
+static void 未捕获(cjk_exception *e, int32_t line) {
     fflush(stdout);
-    if (line > 0) {
-        fprintf(stderr, "第 %d 行：%s\n", (int)line, message);
-    } else {
-        fprintf(stderr, "%s\n", message);
+    if (源路径 != NULL && 源路径[0] != '\0') {
+        fprintf(stderr, "%s", 源路径);
+        if (line > 0) {
+            fprintf(stderr, ":%d", (int)line);
+        }
+        fprintf(stderr, "：");
+    } else if (line > 0) {
+        fprintf(stderr, "第 %d 行：", (int)line);
     }
+    fprintf(stderr, "%s", e != NULL && e->cls != NULL ? e->cls->name : "异常");
+    if (e != NULL && e->message != NULL) {
+        fputs("：", stderr);
+        /* 消息以 UTF-16 保存，转成 UTF-8 写到 stderr。 */
+        for (int32_t i = 0; i < e->message->len; i++) {
+            uint32_t 单元 = e->message->data[i];
+            if (单元 >= 0xD800 && 单元 <= 0xDBFF && i + 1 < e->message->len) {
+                uint32_t 低 = e->message->data[i + 1];
+                if (低 >= 0xDC00 && 低 <= 0xDFFF) {
+                    单元 = 0x10000 + ((单元 - 0xD800) << 10) + (低 - 0xDC00);
+                    i++;
+                }
+            }
+            unsigned char 缓冲[4];
+            size_t n;
+            if (单元 < 0x80) {
+                缓冲[0] = (unsigned char)单元;
+                n = 1;
+            } else if (单元 < 0x800) {
+                缓冲[0] = (unsigned char)(0xC0 | (单元 >> 6));
+                缓冲[1] = (unsigned char)(0x80 | (单元 & 0x3F));
+                n = 2;
+            } else if (单元 < 0x10000) {
+                缓冲[0] = (unsigned char)(0xE0 | (单元 >> 12));
+                缓冲[1] = (unsigned char)(0x80 | ((单元 >> 6) & 0x3F));
+                缓冲[2] = (unsigned char)(0x80 | (单元 & 0x3F));
+                n = 3;
+            } else {
+                缓冲[0] = (unsigned char)(0xF0 | (单元 >> 18));
+                缓冲[1] = (unsigned char)(0x80 | ((单元 >> 12) & 0x3F));
+                缓冲[2] = (unsigned char)(0x80 | ((单元 >> 6) & 0x3F));
+                缓冲[3] = (unsigned char)(0x80 | (单元 & 0x3F));
+                n = 4;
+            }
+            fwrite(缓冲, 1, n, stderr);
+        }
+    }
+    fputc('\n', stderr);
     exit(1);
+}
+
+void cjk_throw(cjk_exception *e, int32_t line) {
+    if (cjk_handler_top != NULL) {
+        cjk_handler *h = cjk_handler_top;
+        h->exception = e;
+        longjmp(h->buf, 1);
+    }
+    未捕获(e, line);
+}
+
+void cjk_throw_message(cjk_class *cls, const char *message, int32_t line) {
+    cjk_throw(cjk_new_exception_utf8(cls, message), line);
+}
+
+/* ---------------- 对象 ---------------- */
+
+cjk_object *cjk_new_object(cjk_class *cls, size_t size) {
+    cjk_object *o = (cjk_object *)cjk_gc_alloc(size);
+    o->cls = cls;
+    return o;
+}
+
+static int32_t 类匹配(cjk_class *当前, cjk_class *目标) {
+    if (当前 == NULL) {
+        return 0;
+    }
+    if (当前 == 目标) {
+        return 1;
+    }
+    if (类匹配(当前->parent, 目标)) {
+        return 1;
+    }
+    for (int32_t i = 0; i < 当前->interface_count; i++) {
+        if (类匹配(当前->interfaces[i], 目标)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int32_t cjk_is_instance(cjk_object *obj, cjk_class *target) {
+    if (obj == NULL) {
+        return 0;
+    }
+    return 类匹配(obj->cls, target);
+}
+
+cjk_object *cjk_null_check(cjk_object *obj, int32_t line) {
+    if (obj == NULL) {
+        cjk_throw(cjk_new_exception(&CJK_CLS_空指针异常, NULL), line);
+    }
+    return obj;
+}
+
+cjk_string *cjk_object_to_string(cjk_object *obj) {
+    if (obj == NULL) {
+        return &空字面量串;
+    }
+    if (obj->cls != NULL && obj->cls->to_string != NULL) {
+        cjk_string *文本 = obj->cls->to_string(obj);
+        return 文本 == NULL ? &空字面量串 : 文本;
+    }
+    for (cjk_class *当前 = obj->cls == NULL ? NULL : obj->cls->parent;
+         当前 != NULL; 当前 = 当前->parent) {
+        if (当前->to_string != NULL) {
+            cjk_string *文本 = 当前->to_string(obj);
+            return 文本 == NULL ? &空字面量串 : 文本;
+        }
+    }
+    char 缓冲[128];
+    snprintf(缓冲, sizeof(缓冲), "%s@%llx",
+             obj->cls == NULL ? "对象" : obj->cls->name,
+             (unsigned long long)(uintptr_t)obj);
+    return cjk_str_from_utf8(缓冲);
+}
+
+cjk_string *cjk_virtual_to_string(cjk_object *obj, int32_t slot) {
+    if (obj == NULL) {
+        return &空字面量串;
+    }
+    if (obj->cls == NULL || slot < 0 || slot >= obj->cls->slot_count) {
+        return cjk_object_to_string(obj);
+    }
+    void *函数 = obj->cls->methods[slot];
+    if (函数 == NULL) {
+        return cjk_object_to_string(obj);
+    }
+    return ((cjk_string *(*)(cjk_object *))函数)(obj);
 }
 
 /* ---------------- UTF-8 / UTF-16 ---------------- */
 
 static cjk_string *新字符串(int32_t len) {
-    cjk_string *s = (cjk_string *)malloc(sizeof(cjk_string));
+    cjk_string *s = (cjk_string *)cjk_gc_alloc(sizeof(cjk_string));
     s->len = len;
-    s->data = (uint16_t *)malloc(sizeof(uint16_t) * (size_t)(len > 0 ? len : 1));
+    s->data = (uint16_t *)cjk_gc_alloc(sizeof(uint16_t) * (size_t)(len > 0 ? len : 1));
     return s;
 }
 
@@ -300,7 +465,7 @@ cjk_string *cjk_str_concat(cjk_string *a, cjk_string *b) {
 
 cjk_string *cjk_str_trim(cjk_string *s) {
     if (s == NULL) {
-        return &空字面量串;
+        cjk_throw(cjk_new_exception(&CJK_CLS_空指针异常, NULL), 0);
     }
     int32_t 起 = 0;
     int32_t 止 = s->len;
@@ -317,9 +482,16 @@ cjk_string *cjk_str_trim(cjk_string *s) {
 
 int32_t cjk_str_len(cjk_string *s, int32_t line) {
     if (s == NULL) {
-        cjk_fatal(line, "空指针异常：字符串为 null");
+        cjk_throw(cjk_new_exception(&CJK_CLS_空指针异常, NULL), line);
     }
     return s->len;
+}
+
+int32_t cjk_str_is_empty(cjk_string *s, int32_t line) {
+    if (s == NULL) {
+        cjk_throw(cjk_new_exception(&CJK_CLS_空指针异常, NULL), line);
+    }
+    return s->len == 0;
 }
 
 int32_t cjk_str_equal(cjk_string *a, cjk_string *b) {
@@ -330,6 +502,27 @@ int32_t cjk_str_equal(cjk_string *a, cjk_string *b) {
         return 0;
     }
     return memcmp(a->data, b->data, sizeof(uint16_t) * (size_t)a->len) == 0;
+}
+
+int32_t cjk_parse_int(cjk_string *s, int32_t line) {
+    if (s == NULL) {
+        cjk_throw(cjk_new_exception(&CJK_CLS_空指针异常, NULL), line);
+    }
+    char 缓冲[64];
+    int32_t n = s->len < 63 ? s->len : 63;
+    for (int32_t i = 0; i < n; i++) {
+        uint16_t 单元 = s->data[i];
+        缓冲[i] = 单元 < 0x80 ? (char)单元 : '?';
+    }
+    缓冲[n] = '\0';
+    char *止 = NULL;
+    long 值 = strtol(缓冲, &止, 10);
+    if (止 == 缓冲 || *止 != '\0') {
+        char 消息[128];
+        snprintf(消息, sizeof(消息), "For input string: \"%s\"", 缓冲);
+        cjk_throw_message(&CJK_CLS_数字格式异常, 消息, line);
+    }
+    return (int32_t)值;
 }
 
 /* ---------------- 打印 ---------------- */
@@ -382,7 +575,7 @@ void cjk_newline(void) {
 
 int32_t cjk_div_i32(int32_t a, int32_t b, int32_t line) {
     if (b == 0) {
-        cjk_fatal(line, "算术异常：整数除以零");
+        cjk_throw_message(&CJK_CLS_算术异常, "/ by zero", line);
     }
     if (a == INT32_MIN && b == -1) {
         return INT32_MIN;
@@ -392,7 +585,7 @@ int32_t cjk_div_i32(int32_t a, int32_t b, int32_t line) {
 
 int32_t cjk_rem_i32(int32_t a, int32_t b, int32_t line) {
     if (b == 0) {
-        cjk_fatal(line, "算术异常：整数取余除以零");
+        cjk_throw_message(&CJK_CLS_算术异常, "/ by zero", line);
     }
     if (a == INT32_MIN && b == -1) {
         return 0;
@@ -402,7 +595,7 @@ int32_t cjk_rem_i32(int32_t a, int32_t b, int32_t line) {
 
 int64_t cjk_div_i64(int64_t a, int64_t b, int32_t line) {
     if (b == 0) {
-        cjk_fatal(line, "算术异常：长整数除以零");
+        cjk_throw_message(&CJK_CLS_算术异常, "/ by zero", line);
     }
     if (a == INT64_MIN && b == -1) {
         return INT64_MIN;
@@ -412,7 +605,7 @@ int64_t cjk_div_i64(int64_t a, int64_t b, int32_t line) {
 
 int64_t cjk_rem_i64(int64_t a, int64_t b, int32_t line) {
     if (b == 0) {
-        cjk_fatal(line, "算术异常：长整数取余除以零");
+        cjk_throw_message(&CJK_CLS_算术异常, "/ by zero", line);
     }
     if (a == INT64_MIN && b == -1) {
         return 0;
@@ -424,15 +617,15 @@ int64_t cjk_rem_i64(int64_t a, int64_t b, int32_t line) {
 
 cjk_array *cjk_array_new(int32_t len, int32_t kind, int32_t elem_size, int32_t line) {
     if (len < 0) {
-        cjk_fatal(line, "数组长度为负数");
+        cjk_throw_message(&CJK_CLS_数组越界异常, "数组长度为负数", line);
     }
     if (elem_size <= 0) {
         elem_size = 1;
     }
-    cjk_array *a = (cjk_array *)malloc(sizeof(cjk_array));
+    cjk_array *a = (cjk_array *)cjk_gc_alloc(sizeof(cjk_array));
     a->len = len;
     a->kind = kind;
-    a->data = calloc((size_t)(len > 0 ? len : 1), (size_t)elem_size);
+    a->data = cjk_gc_alloc((size_t)(len > 0 ? len : 1) * (size_t)elem_size);
     return a;
 }
 
@@ -446,17 +639,20 @@ cjk_array *cjk_array_from(int32_t kind, int32_t elem_size, int32_t len, const vo
 
 int32_t cjk_array_len(cjk_array *a, int32_t line) {
     if (a == NULL) {
-        cjk_fatal(line, "空指针异常：数组为 null");
+        cjk_throw(cjk_new_exception(&CJK_CLS_空指针异常, NULL), line);
     }
     return a->len;
 }
 
 void *cjk_array_at(cjk_array *a, int32_t index, int32_t elem_size, int32_t line) {
     if (a == NULL) {
-        cjk_fatal(line, "空指针异常：数组为 null");
+        cjk_throw(cjk_new_exception(&CJK_CLS_空指针异常, NULL), line);
     }
     if (index < 0 || index >= a->len) {
-        cjk_fatal(line, "数组越界异常：下标超出范围");
+        char 消息[96];
+        snprintf(消息, sizeof(消息), "Index %d out of bounds for length %d",
+                 (int)index, (int)a->len);
+        cjk_throw_message(&CJK_CLS_数组越界异常, 消息, line);
     }
     return (unsigned char *)a->data + (size_t)index * (size_t)elem_size;
 }
@@ -464,11 +660,11 @@ void *cjk_array_at(cjk_array *a, int32_t index, int32_t elem_size, int32_t line)
 void cjk_array_copy(cjk_array *src, int32_t src_pos, cjk_array *dst, int32_t dst_pos,
                     int32_t len, int32_t elem_size, int32_t line) {
     if (src == NULL || dst == NULL) {
-        cjk_fatal(line, "空指针异常：数组复制遇到 null");
+        cjk_throw(cjk_new_exception(&CJK_CLS_空指针异常, NULL), line);
     }
     if (src_pos < 0 || dst_pos < 0 || len < 0
             || src_pos + len > src->len || dst_pos + len > dst->len) {
-        cjk_fatal(line, "数组越界异常：数组复制范围超出");
+        cjk_throw_message(&CJK_CLS_数组越界异常, "数组复制范围超出", line);
     }
     if (len > 0) {
         memmove((unsigned char *)dst->data + (size_t)dst_pos * (size_t)elem_size,

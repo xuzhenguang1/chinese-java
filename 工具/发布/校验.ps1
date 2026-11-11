@@ -709,13 +709,13 @@ if ($含原生) {
         失败项 "原生 M1 反例" "$m1反例失败 条未命中"
     }
 
-    # 8.2) 原生 M2：01–10 对拍、MIR 快照可重复、11–35 不崩溃
-    $m2对拍输出 = 捕获输出 { & "$root\cjc.ps1" 原生 对拍 "$root\教程" }
-    $m2对拍码 = $LASTEXITCODE
-    if ($m2对拍码 -eq 0 -and $m2对拍输出 -match '对拍结果：通过 10 / 共 10') {
-        Write-Host "原生 M2：01–10 对拍 10/10，stdout 与退出码一致" -ForegroundColor Green
+    # 8.2) 原生 M5：01–35 解释器对拍、MIR 快照可重复
+    $m4解释对拍输出 = 捕获输出 { & "$root\cjc.ps1" 原生 对拍 "$root\教程" }
+    $m4解释对拍码 = $LASTEXITCODE
+    if ($m4解释对拍码 -eq 0 -and $m4解释对拍输出 -match '对拍结果：通过 35 / 共 35') {
+        Write-Host "原生 M5：01–35 解释器对拍 35/35，stdout 与退出码一致" -ForegroundColor Green
     } else {
-        失败项 "原生 M2 对拍" "退出码或汇总不符合预期" $m2对拍输出
+        失败项 "原生 M5 解释器对拍" "退出码或汇总不符合预期" $m4解释对拍输出
     }
 
     $mir基准 = Join-Path $root "原生\测试\MIR快照"
@@ -749,17 +749,18 @@ if ($含原生) {
         失败项 "原生 M2 运行" "退出码或输出不符合预期" $m2运行输出
     }
 
-    $m2全量输出 = 捕获输出 { & "$root\cjc.ps1" 原生 中间 "$root\教程" }
-    if ($m2全量输出 -match 'M2 暂不支持' -and
-        $m2全量输出 -notmatch 'java\.lang\.' -and
-        $m2全量输出 -notmatch 'Caused by' -and
-        $m2全量输出 -notmatch 'at 中文\.') {
-        Write-Host "原生 M2：11–35 输出中文诊断，未崩溃" -ForegroundColor Green
+    $m4全量输出 = 捕获输出 { & "$root\cjc.ps1" 原生 中间 "$root\教程" }
+    if ($LASTEXITCODE -eq 0 -and
+        $m4全量输出 -notmatch '暂不支持' -and
+        $m4全量输出 -notmatch 'java\.lang\.' -and
+        $m4全量输出 -notmatch 'Caused by' -and
+        $m4全量输出 -notmatch 'at 中文\.') {
+        Write-Host "原生 M5：01–35 全部生成 MIR，无未支持诊断" -ForegroundColor Green
     } else {
-        失败项 "原生 M2 未支持课程" "缺少「M2 暂不支持」或出现 Java 异常栈" $m2全量输出
+        失败项 "原生 M5 全量中间表示" "存在「暂不支持」或 Java 异常栈" $m4全量输出
     }
 
-    # 8.3) 原生 M3：01–08 C 后端对拍、#line 还原、09 起中文「暂不支持」
+    # 8.3) 原生 M5：01–35 C 后端对拍、#line、异常捕获与 GC 压力
     $clang路径 = $null
     foreach ($候选 in @("C:\msys64\mingw64\bin\clang.exe")) {
         if (Test-Path $候选) {
@@ -776,58 +777,389 @@ if ($含原生) {
     if (-not $clang路径) {
         Write-Host "原生 M3：未找到 clang，跳过 C 后端断言（请安装 mingw-w64-x86_64-clang）" -ForegroundColor Yellow
     } else {
-        $m3对拍输出 = 捕获输出 { & "$root\cjc.ps1" 原生 对拍原生 "$root\教程" }
-        $m3对拍码 = $LASTEXITCODE
-        if ($m3对拍码 -eq 0 -and $m3对拍输出 -match '对拍结果：通过 8 / 共 8') {
-            Write-Host "原生 M3：01–08 原生对拍 8/8，stdout 与退出码一致" -ForegroundColor Green
+        $m4对拍输出 = 捕获输出 { & "$root\cjc.ps1" 原生 对拍原生 "$root\教程" }
+        $m4对拍码 = $LASTEXITCODE
+        if ($m4对拍码 -eq 0 -and $m4对拍输出 -match '对拍结果：通过 35 / 共 35') {
+            Write-Host "原生 M5：01–35 原生对拍 35/35，stdout 与退出码一致" -ForegroundColor Green
         } else {
-            失败项 "原生 M3 对拍" "退出码或汇总不符合预期" $m3对拍输出
+            失败项 "原生 M5 对拍" "退出码或汇总不符合预期" $m4对拍输出
         }
 
-        $m3输出目录 = 新建临时目录 "M3校验"
-        $m3exe = Join-Path $m3输出目录 "第01课.exe"
-        $m3编译输出 = 捕获输出 {
-            & "$root\cjc.ps1" 原生 编译 "$root\教程\第01课你好世界.java" -o $m3exe
+        $m4输出目录 = 新建临时目录 "M4校验"
+        $m4exe = Join-Path $m4输出目录 "第01课.exe"
+        $m4编译输出 = 捕获输出 {
+            & "$root\cjc.ps1" 原生 编译 "$root\教程\第01课你好世界.java" -o $m4exe
         }
-        $m3编译码 = $LASTEXITCODE
-        if ($m3编译码 -eq 0 -and (Test-Path $m3exe)) {
-            $m3标准输出 = Join-Path $m3输出目录 "第01课.out"
-            $m3标准错误 = Join-Path $m3输出目录 "第01课.err"
-            $m3进程 = Start-Process -FilePath $m3exe -NoNewWindow -Wait -PassThru `
-                -RedirectStandardOutput $m3标准输出 -RedirectStandardError $m3标准错误
-            $m3文本 = [System.IO.File]::ReadAllText($m3标准输出, [System.Text.Encoding]::UTF8)
-            if ($m3进程.ExitCode -eq 0 -and $m3文本 -match '你好，中文编程！') {
-                Write-Host "原生 M3：第 01 课 exe 输出「你好，中文编程！」，退出码 0" -ForegroundColor Green
+        $m4编译码 = $LASTEXITCODE
+        if ($m4编译码 -eq 0 -and (Test-Path $m4exe)) {
+            $m4标准输出 = Join-Path $m4输出目录 "第01课.out"
+            $m4标准错误 = Join-Path $m4输出目录 "第01课.err"
+            $m4进程 = Start-Process -FilePath $m4exe -NoNewWindow -Wait -PassThru `
+                -RedirectStandardOutput $m4标准输出 -RedirectStandardError $m4标准错误
+            $m4文本 = [System.IO.File]::ReadAllText($m4标准输出, [System.Text.Encoding]::UTF8)
+            if ($m4进程.ExitCode -eq 0 -and $m4文本 -match '你好，中文编程！') {
+                Write-Host "原生 M4：第 01 课 exe 输出「你好，中文编程！」，退出码 0" -ForegroundColor Green
             } else {
-                失败项 "原生 M3 运行" "第 01 课 exe 输出或退出码不符合预期" $m3文本
+                失败项 "原生 M4 运行" "第 01 课 exe 输出或退出码不符合预期" $m4文本
             }
         } else {
-            失败项 "原生 M3 编译" "退出码或 exe 路径不符合预期" $m3编译输出
+            失败项 "原生 M4 编译" "退出码或 exe 路径不符合预期" $m4编译输出
         }
 
-        $m3C文件 = Join-Path $root "构建\原生\第01课你好世界.c"
-        $m3C文本 = ""
-        if (Test-Path $m3C文件) {
-            $m3C文本 = [System.IO.File]::ReadAllText($m3C文件, [System.Text.Encoding]::UTF8)
+        $m4C文件 = Join-Path $root "构建\原生\第01课你好世界.c"
+        $m4C文本 = ""
+        if (Test-Path $m4C文件) {
+            $m4C文本 = [System.IO.File]::ReadAllText($m4C文件, [System.Text.Encoding]::UTF8)
         }
-        if ($m3C文本 -match '(?m)^#line \d+ "教程/第01课你好世界\.java"') {
-            Write-Host "原生 M3：生成的 C 带 #line 中文源行号" -ForegroundColor Green
+        if ($m4C文本 -match '(?m)^#line \d+ "教程/第01课你好世界\.java"') {
+            Write-Host "原生 M4：生成的 C 带 #line 中文源行号" -ForegroundColor Green
         } else {
-            失败项 "原生 M3 行号" "生成的 C 缺少 #line 或相对路径不正确"
+            失败项 "原生 M4 行号" "生成的 C 缺少 #line 或相对路径不正确"
         }
 
-        $m3未支持输出 = 捕获输出 {
-            & "$root\cjc.ps1" 原生 编译 "$root\教程\第09课类与对象.java" -o (Join-Path $m3输出目录 "第09课.exe")
+        # 第 20 课：三类运行时异常捕获，消息与 JVM 一致
+        $m20exe = Join-Path $m4输出目录 "第20课.exe"
+        $m20编译 = 捕获输出 {
+            & "$root\cjc.ps1" 原生 编译 "$root\教程\第20课捕获异常.java" -o $m20exe
         }
-        $m3未支持码 = $LASTEXITCODE
-        if ($m3未支持码 -eq 1 -and
-            $m3未支持输出 -match 'M3 暂不支持' -and
-            $m3未支持输出 -notmatch 'java\.lang\.' -and
-            $m3未支持输出 -notmatch 'Caused by' -and
-            $m3未支持输出 -notmatch 'at 中文\.') {
-            Write-Host "原生 M3：09 起输出中文「M3 暂不支持」，退出码 1" -ForegroundColor Green
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $m20exe)) {
+            $m20输出 = Join-Path $m4输出目录 "第20课.out"
+            $m20错误 = Join-Path $m4输出目录 "第20课.err"
+            $m20进程 = Start-Process -FilePath $m20exe -NoNewWindow -Wait -PassThru `
+                -RedirectStandardOutput $m20输出 -RedirectStandardError $m20错误
+            $m20文本 = [System.IO.File]::ReadAllText($m20输出, [System.Text.Encoding]::UTF8)
+            if ($m20进程.ExitCode -eq 0 -and
+                $m20文本.Contains('捕获到运算异常：/ by zero') -and
+                $m20文本.Contains('捕获到空指针异常') -and
+                $m20文本.Contains('捕获到数组越界：Index 5 out of bounds for length 3')) {
+                Write-Host "原生 M4：第 20 课三类运行时异常消息与 JVM 一致" -ForegroundColor Green
+            } else {
+                失败项 "原生 M4 异常捕获" "第 20 课捕获消息不符合预期" $m20文本
+            }
         } else {
-            失败项 "原生 M3 未支持课程" "缺少「M3 暂不支持」、退出码非 1 或出现 Java 异常栈" $m3未支持输出
+            失败项 "原生 M4 异常捕获编译" "第 20 课编译失败" $m20编译
+        }
+
+        # 未捕获异常：中文类名、消息、中文源行号，退出码 1，无英文栈
+        $未捕获目录 = 新建临时目录 "M4未捕获"
+        $未捕获源码 = Join-Path $未捕获目录 "未捕获异常.java"
+        @'
+类 未捕获异常 {
+    入口 {
+        整数[] 数组 = {1, 2, 3};
+        打印行("前");
+        打印行(数组[5]);
+        打印行("后");
+    }
+}
+'@ | Set-Content -Path $未捕获源码 -Encoding UTF8
+        $未捕获exe = Join-Path $未捕获目录 "未捕获异常.exe"
+        $未捕获编译 = 捕获输出 {
+            & "$root\cjc.ps1" 原生 编译 $未捕获源码 -o $未捕获exe
+        }
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $未捕获exe)) {
+            $未捕获输出 = Join-Path $未捕获目录 "未捕获异常.out"
+            $未捕获错误 = Join-Path $未捕获目录 "未捕获异常.err"
+            $未捕获进程 = Start-Process -FilePath $未捕获exe -NoNewWindow -Wait -PassThru `
+                -RedirectStandardOutput $未捕获输出 -RedirectStandardError $未捕获错误
+            $未捕获文本 = [System.IO.File]::ReadAllText($未捕获错误, [System.Text.Encoding]::UTF8)
+            if ($未捕获进程.ExitCode -eq 1 -and
+                $未捕获文本.Contains('数组越界异常') -and
+                $未捕获文本.Contains('Index 5 out of bounds for length 3') -and
+                $未捕获文本 -match '未捕获异常\.java:5' -and
+                $未捕获文本 -notmatch 'java\.lang\.') {
+                Write-Host "原生 M4：未捕获异常输出中文类名、消息与源行号，退出码 1" -ForegroundColor Green
+            } else {
+                失败项 "原生 M4 未捕获异常" "退出码或诊断文本不符合预期" $未捕获文本
+            }
+        } else {
+            失败项 "原生 M4 未捕获异常编译" "编译失败" $未捕获编译
+        }
+
+        # GC 压力：30 万次对象与字符串分配不崩溃
+        $压力目录 = 新建临时目录 "M4压力"
+        $压力源码 = Join-Path $压力目录 "压力.java"
+        @'
+类 压力 {
+    静态 类 点 {
+        整数 横;
+        整数 纵;
+
+        点(整数 横, 整数 纵) {
+            这.横 = 横;
+            这.纵 = 纵;
+        }
+    }
+
+    入口 {
+        长整数 合计 = 0;
+        对于 (整数 序号 = 0; 序号 < 300000; 序号++) {
+            点 实例 = 新建 点(序号, 序号 + 1);
+            字符串 文本 = "第" + 序号 + "个";
+            合计 += 实例.横 + 文本.长度();
+        }
+        打印行("合计：", 合计);
+    }
+}
+'@ | Set-Content -Path $压力源码 -Encoding UTF8
+        $压力exe = Join-Path $压力目录 "压力.exe"
+        $压力编译 = 捕获输出 {
+            & "$root\cjc.ps1" 原生 编译 $压力源码 -o $压力exe
+        }
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $压力exe)) {
+            $压力输出 = Join-Path $压力目录 "压力.out"
+            $压力错误 = Join-Path $压力目录 "压力.err"
+            $压力进程 = Start-Process -FilePath $压力exe -NoNewWindow -Wait -PassThru `
+                -RedirectStandardOutput $压力输出 -RedirectStandardError $压力错误
+            $压力文本 = [System.IO.File]::ReadAllText($压力输出, [System.Text.Encoding]::UTF8)
+            if ($压力进程.ExitCode -eq 0 -and $压力文本.Contains('合计：45002138890')) {
+                Write-Host "原生 M4：GC 压力用例（30 万次分配）通过" -ForegroundColor Green
+            } else {
+                失败项 "原生 M4 GC 压力" "退出码或合计不符合预期" $压力文本
+            }
+        } else {
+            失败项 "原生 M4 GC 压力编译" "编译失败" $压力编译
+        }
+
+        # M5 标准库 10 类冒烟：输出/文本/数值/集合工具/时间/数据/文件（JVM 与原生同源对照）
+        function 编译并运行原生([string]$源码, [string]$名称, [string]$目录) {
+            $exe = Join-Path $目录 "$名称.exe"
+            $编译 = 捕获输出 { & "$root\cjc.ps1" 原生 编译 $源码 -o $exe }
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exe)) {
+                return @{ 成功 = $false; 标准输出 = ""; 标准错误 = ""; 诊断 = $编译 }
+            }
+            $标准输出 = Join-Path $目录 "$名称.out"
+            $标准错误 = Join-Path $目录 "$名称.err"
+            $进程 = Start-Process -FilePath $exe -NoNewWindow -Wait -PassThru `
+                -RedirectStandardOutput $标准输出 -RedirectStandardError $标准错误
+            return @{
+                成功 = ($进程.ExitCode -eq 0)
+                标准输出 = [System.IO.File]::ReadAllText($标准输出, [System.Text.Encoding]::UTF8)
+                标准错误 = [System.IO.File]::ReadAllText($标准错误, [System.Text.Encoding]::UTF8)
+                诊断 = ""
+            }
+        }
+
+        $标准库冒烟目录 = 新建临时目录 "M5标准库"
+        $数据目录 = (Join-Path $标准库冒烟目录 "数据").Replace('\', '/')
+        $冒烟源码 = Join-Path $标准库冒烟目录 "标准库冒烟.java"
+        $冒烟模板 = @'
+导入 中文.标准库.*;
+
+输出.打印行("== 输出 ==");
+输出.打印("甲");
+输出.打印(1);
+输出.打印(真);
+输出.打印(3.5);
+字符串 值文本 = 空;
+输出.打印("[", 值文本, "]");
+输出.打印行();
+输出.打印行("多实参：", 1, "-", 真, "-", 2.5);
+输出.格式("格式：%s/%d/%f/%%", "甲", 7, 2.5);
+输出.格式("仅模板");
+
+输出.打印行("== 文本 ==");
+输出.打印行("是否为空：", 文本.是否为空(""), " ", 文本.是否为空("甲"));
+输出.打印行("是否空白：", 文本.是否空白(" \t　"), " ", 文本.是否空白("甲"));
+输出.打印行("去空白：[", 文本.去空白("　 你好 \t"), "]");
+字符串[] 段 = 文本.分割("甲,乙,丙", ",");
+输出.打印("分割：");
+对于 (字符串 项 : 段) {
+    输出.打印("[", 项, "]");
+}
+输出.打印行();
+输出.打印行("重复：", 文本.重复("ab", 3));
+输出.打印行("连接：", 文本.连接("-", "甲", 2, 真, 2.5));
+
+输出.打印行("== 数值 ==");
+输出.打印行("转文本：", 数值.转文本(42), " ", 数值.转文本(3.5), " ", 数值.转文本(真), " ", 数值.转文本("文本"));
+输出.打印行("是整数：", 数值.是整数("42"), " ", 数值.是整数("-7"), " ", 数值.是整数("4.2"), " ", 数值.是整数(" 9 "), " ", 数值.是整数("abc"));
+整数 上限 = 数值.随机整数(6);
+整数 区间 = 数值.随机整数(10, 20);
+输出.打印行("随机范围：", 上限 >= 1 && 上限 <= 6, " ", 区间 >= 10 && 区间 <= 20);
+
+输出.打印行("== 集合工具 ==");
+数组清单<整数> 数们 = 新建 数组清单<>();
+数们.加入(0);
+数们.加入(0);
+数们.加入(0);
+集合工具.填充(数们, 9);
+输出.打印行("填充：", 数们);
+
+输出.打印行("== 时间 ==");
+输出.打印行("相差天数：", 时间.相差天数(时间.今天(), 时间.加天数(时间.今天(), 3)));
+输出.打印行("格式长度：", 时间.格式化(时间.此刻(), "yyyy-MM-dd").长度());
+输出.打印行("时间戳有效：", 时间.时间戳() > 0);
+
+输出.打印行("== 数据 ==");
+键值表<字符串, 对象> 表 = 新建 链式键值表<>();
+表.放入("名称", "小明");
+表.放入("年龄", 18);
+表.放入("标签", 数组清单.从("甲", "乙"));
+输出.打印行("紧凑：", 数据.转JSON(表));
+输出.打印行("美化：");
+输出.打印行(数据.转JSON(表, 真));
+输出.打印行("字符：", 数据.转JSON('丙'));
+输出.打印行("布尔：", 数据.转JSON(真));
+输出.打印行("空：", 数据.转JSON(值文本));
+输出.打印行("转义：", 数据.转JSON("引号\"反斜杠\\换行\n制表\t"));
+整数[] 整数数组 = {3, 1, 2};
+字符串[] 文本数组 = {"甲", "乙"};
+输出.打印行("整数数组：", 数据.转JSON(整数数组));
+输出.打印行("文本数组：", 数据.转JSON(文本数组));
+输出.打印行("数组美化：", 数据.转JSON(整数数组, 真));
+输出.打印行("集合：", 数据.转JSON(数组清单.从("甲", "乙")));
+
+输出.打印行("== 文件 ==");
+文件路径 目录 = 文件路径.取("{数据目录}");
+文件路径 目标 = 文件路径.取("{数据目录}", "说明.txt");
+尝试 {
+    文件.建目录(目录);
+    文件.写文本(目标, "第一行\n第二行\n");
+    输出.打印行("存在：", 文件.存在(目标));
+    输出.打印行("读文本：[", 文件.读文本(目标), "]");
+    输出.打印行("大小：", 文件.大小(目标));
+    输出.打印行("列举数：", 文件.列举(目录).元素数());
+    文件.删除(目标);
+    输出.打印行("删除后存在：", 文件.存在(目标));
+    文件.删除(目标);
+    输出.打印行("重复删除成功");
+} 捕获 (输入输出异常 异常) {
+    输出.打印行("文件操作失败：", 异常.取消息());
+}
+'@
+        $冒烟模板.Replace('{数据目录}', $数据目录) | Set-Content -Path $冒烟源码 -Encoding UTF8
+        $冒烟 = 编译并运行原生 $冒烟源码 "标准库冒烟" $标准库冒烟目录
+        $jvm冒烟 = 捕获输出 { & "$root\工具\对话\运行.ps1" $冒烟源码 }
+        $jvm冒烟码 = $LASTEXITCODE
+        $jvm文本 = ((($jvm冒烟 -split "`r?`n") | Where-Object { $_ -notmatch '^Picked up ' }) -join "`n").Trim()
+        $原生文本 = ((($冒烟.标准输出 -split "`r?`n") -join "`n")).Trim()
+        if (-not $冒烟.成功) {
+            失败项 "原生 M5 标准库冒烟" "原生编译或运行失败" ($冒烟.诊断 + $冒烟.标准输出 + $冒烟.标准错误)
+        } elseif ($jvm冒烟码 -ne 0) {
+            失败项 "原生 M5 标准库冒烟" "JVM 运行失败" $jvm冒烟
+        } elseif ($原生文本 -ne $jvm文本) {
+            失败项 "原生 M5 标准库冒烟" "原生输出与 JVM 不一致" ("原生：`n" + $原生文本 + "`nJVM：`n" + $jvm文本)
+        } else {
+            Write-Host "原生 M5：标准库冒烟（输出/文本/数值/集合工具/时间/数据/文件）与 JVM 逐字节一致" -ForegroundColor Green
+        }
+
+        # 并发与日志：线程名、提交/执行、级别过滤（stderr 带时间戳，按内容断言）
+        $并发源码 = Join-Path $标准库冒烟目录 "并发日志冒烟.java"
+        @'
+导入 中文.标准库.*;
+
+输出.错误("错误行：", 1, "-", 真);
+输出.错误();
+
+线程池 池 = 并发.固定线程池(2);
+尝试 {
+    输出.打印行("结果：", 并发.取结果(并发.提交(池, () -> 1 + 2)));
+    输出.打印行("线程名模式：", 并发.取结果(并发.提交(池, () -> 并发.当前线程名())).以开头("pool-1-thread-"));
+    输出.打印行("结果三：", 并发.取结果(并发.提交(池, () -> 10 * 3)));
+    并发.执行(池, () -> { 整数 临时 = 1; });
+    并发.休眠(20);
+    输出.打印行("休眠完成");
+    并发.关闭(池);
+    输出.打印行("已关闭");
+
+    线程池 单 = 并发.单线程池();
+    输出.打印行("单线程结果：", 并发.取结果(并发.提交(单, () -> 42)));
+    并发.关闭(单);
+} 捕获 (异常 错误) {
+    输出.打印行("并发失败：", 错误.取消息());
+}
+
+日志.信息(日志.控制台("冒烟"), "信息内容");
+日志.警告(日志.控制台("冒烟"), "警告内容");
+日志.错误(日志.控制台("冒烟"), "错误内容");
+日志.调试(日志.控制台("冒烟"), "调试内容");
+
+日志记录器 记录器 = 日志.控制台("级别");
+日志.设置级别(记录器, "FINE");
+日志.调试(记录器, "调试可见");
+日志.信息(记录器, "信息可见");
+日志.设置级别(记录器, "OFF");
+日志.错误(记录器, "错误不可见");
+输出.打印行("日志完成");
+'@ | Set-Content -Path $并发源码 -Encoding UTF8
+        $并发 = 编译并运行原生 $并发源码 "并发日志冒烟" $标准库冒烟目录
+        $并发应有 = @('结果：3', '线程名模式：true', '结果三：30', '休眠完成', '已关闭', '单线程结果：42', '日志完成')
+        $并发缺失 = @($并发应有 | Where-Object { -not $并发.标准输出.Contains($_) })
+        $并发应无 = @('调试内容', '错误不可见')
+        $并发未抑制 = @($并发应无 | Where-Object { $并发.标准错误.Contains($_) })
+        $并发错误应有 = @('错误行：1-true', '信息内容', '警告内容', '错误内容', '调试可见', '信息可见')
+        $并发错误缺失 = @($并发错误应有 | Where-Object { -not $并发.标准错误.Contains($_) })
+        if (-not $并发.成功) {
+            失败项 "原生 M5 并发/日志" "原生编译或运行失败" ($并发.诊断 + $并发.标准输出 + $并发.标准错误)
+        } elseif ($并发缺失.Count -gt 0 -or $并发未抑制.Count -gt 0 -or $并发错误缺失.Count -gt 0) {
+            失败项 "原生 M5 并发/日志" ("stdout 缺少：" + ($并发缺失 -join '、') + "；stderr 缺少：" +
+                ($并发错误缺失 -join '、') + "；未抑制：" + ($并发未抑制 -join '、')) `
+                ($并发.标准输出 + $并发.标准错误)
+        } else {
+            Write-Host "原生 M5：并发与日志冒烟通过（线程名、提交/执行、级别过滤）" -ForegroundColor Green
+        }
+
+        # 网络：本地 HTTP 服务，验证取文本与状态码
+        $网络源码 = Join-Path $标准库冒烟目录 "网络冒烟.java"
+        @'
+导入 中文.标准库.*;
+
+字符串 网址 = "http://127.0.0.1:18766/hello";
+尝试 {
+    输出.打印行("正文：", 网络.取文本(网址));
+    输出.打印行("状态码：", 网络.取状态码(网址));
+} 捕获 (异常 错误) {
+    输出.打印行("网络失败：", 错误.取消息());
+}
+'@ | Set-Content -Path $网络源码 -Encoding UTF8
+        $网络就绪 = Join-Path $标准库冒烟目录 "网络就绪.txt"
+        $网络任务 = Start-Job -ArgumentList $网络就绪 -ScriptBlock {
+            param($就绪文件)
+            $监听 = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 18766)
+            $监听.Start()
+            Set-Content -Path $就绪文件 -Value 'ready' -Encoding ASCII
+            try {
+                while ($true) {
+                    $客户 = $监听.AcceptTcpClient()
+                    try {
+                        $流 = $客户.GetStream()
+                        $读 = [System.IO.StreamReader]::new($流, [System.Text.Encoding]::ASCII)
+                        $请求行 = $读.ReadLine()
+                        if (-not $请求行) { continue }
+                        while ($读.ReadLine()) { }
+                        $正文 = [System.Text.Encoding]::UTF8.GetBytes('{"名称":"你好，原生网络"}')
+                        $头 = "HTTP/1.1 200 OK`r`nContent-Type: application/json; charset=utf-8`r`nContent-Length: $($正文.Length)`r`nConnection: close`r`n`r`n"
+                        $头字节 = [System.Text.Encoding]::ASCII.GetBytes($头)
+                        $流.Write($头字节, 0, $头字节.Length)
+                        $流.Write($正文, 0, $正文.Length)
+                        $流.Flush()
+                    } finally {
+                        $客户.Dispose()
+                    }
+                }
+            } finally {
+                $监听.Stop()
+            }
+        }
+        try {
+            $等待 = 0
+            while (-not (Test-Path $网络就绪) -and $等待 -lt 100) {
+                Start-Sleep -Milliseconds 100
+                $等待++
+            }
+            $网络 = 编译并运行原生 $网络源码 "网络冒烟" $标准库冒烟目录
+            if (-not $网络.成功) {
+                失败项 "原生 M5 网络" "原生编译或运行失败" ($网络.诊断 + $网络.标准输出 + $网络.标准错误)
+            } elseif (-not $网络.标准输出.Contains('正文：{"名称":"你好，原生网络"}') -or
+                      -not $网络.标准输出.Contains('状态码：200')) {
+                失败项 "原生 M5 网络" "HTTP 响应不符合预期" ($网络.标准输出 + $网络.标准错误)
+            } else {
+                Write-Host "原生 M5：网络冒烟通过（本地 HTTP 取文本/状态码）" -ForegroundColor Green
+            }
+        } finally {
+            Stop-Job $网络任务 -ErrorAction SilentlyContinue
+            Remove-Job $网络任务 -Force -ErrorAction SilentlyContinue
         }
     }
 
