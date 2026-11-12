@@ -15,13 +15,43 @@ const pendingChecks = new Map();
 // 关键字表.txt + 近义词典.txt 生成到 关键字数据.json，勿手改本块。
 const KEYWORD_INFO = require('./关键字数据.json');
 
+// 补全数据：类型别名 / 方法糖 / 标准库类名。由 工具\cjc\同步词表.ps1 生成。
+let COMPLETION_INFO = {};
+try {
+    COMPLETION_INFO = require('./补全数据.json');
+} catch (ignored) {
+    COMPLETION_INFO = {};
+}
+
+// 悬停用的统一索引：中文 → [英文, 说明]
+const 说明索引 = new Map(Object.entries(KEYWORD_INFO));
+for (const [中文, 信息] of Object.entries(COMPLETION_INFO.类型别名 || {})) {
+    if (!说明索引.has(中文)) {
+        说明索引.set(中文, 信息);
+    }
+}
+for (const 分区 of ['成员', '声明', '静态']) {
+    for (const [中文, 信息] of Object.entries((COMPLETION_INFO.方法糖 || {})[分区] || {})) {
+        if (!说明索引.has(中文)) {
+            说明索引.set(中文, [信息[0], '方法糖：' + 分区]);
+        }
+    }
+}
+for (const [类名, 说明] of Object.entries(COMPLETION_INFO.标准库 || {})) {
+    if (!说明索引.has(类名)) {
+        说明索引.set(类名, [类名, 说明]);
+    }
+}
+
+let nativeFallbackWarned = false;
+
 function activate(context) {
     collection = vscode.languages.createDiagnosticCollection('cjc');
     context.subscriptions.push(collection);
 
     context.subscriptions.push(vscode.languages.registerCompletionItemProvider({ language: 'java' }, {
         provideCompletionItems() {
-            return Object.entries(KEYWORD_INFO).map(([中文, [英文, 说明]]) => {
+            const items = Object.entries(KEYWORD_INFO).map(([中文, [英文, 说明]]) => {
                 const item = new vscode.CompletionItem(中文, vscode.CompletionItemKind.Keyword);
                 item.detail = 英文;
                 item.documentation = 说明;
@@ -29,6 +59,30 @@ function activate(context) {
                 item.insertText = 中文 + ' ';
                 return item;
             });
+            const 已用 = new Set(Object.keys(KEYWORD_INFO));
+            const 追加 = (中文, 英文, 说明, 种类, 插入) => {
+                if (已用.has(中文)) {
+                    return;
+                }
+                已用.add(中文);
+                const item = new vscode.CompletionItem(中文, 种类);
+                item.detail = 英文;
+                item.documentation = 说明;
+                item.insertText = 插入;
+                items.push(item);
+            };
+            for (const [中文, [英文, 说明]] of Object.entries(COMPLETION_INFO.类型别名 || {})) {
+                追加(中文, 英文, 说明, vscode.CompletionItemKind.Class, 中文);
+            }
+            for (const 分区 of ['成员', '声明', '静态']) {
+                for (const [中文, 信息] of Object.entries((COMPLETION_INFO.方法糖 || {})[分区] || {})) {
+                    追加(中文, 信息[0], 信息[1] || ('方法糖：' + 分区), vscode.CompletionItemKind.Method, 中文);
+                }
+            }
+            for (const [类名, 说明] of Object.entries(COMPLETION_INFO.标准库 || {})) {
+                追加(类名, 类名, 说明, vscode.CompletionItemKind.Module, 类名);
+            }
+            return items;
         }
     }));
 
@@ -39,7 +93,7 @@ function activate(context) {
                 return undefined;
             }
             const 词 = document.getText(range);
-            const info = KEYWORD_INFO[词];
+            const info = 说明索引.get(词);
             if (!info) {
                 return undefined;
             }
@@ -229,11 +283,16 @@ function runCheck(document, content) {
     if (!root) {
         return;
     }
-    const cjcPath = path.join(root, '工具', 'cjc', 'Cjc.java');
-    if (!fs.existsSync(cjcPath)) {
+    const 来源 = vscode.workspace.getConfiguration('cjc').get('diagnosticSource', '原生');
+    const 驱动 = path.join(root, '原生', '驱动.ps1');
+    if (来源 === '原生' && fs.existsSync(驱动)) {
+        runNativeCheck(document, content, root);
         return;
     }
+    runLegacyCheck(document, content, root);
+}
 
+function killRunning() {
     if (running) {
         try {
             running.kill();
@@ -242,23 +301,24 @@ function runCheck(document, content) {
         }
         running = null;
     }
+}
 
-    let target = document.fileName;
-    let tempFile = null;
-    if (content !== undefined) {
-        // 每次检查用独立临时文件，避免上一次进程还没释放文件时覆盖失败
-        const base = 'cjc-vscode-' + document.uri.toString().replace(/[^a-zA-Z0-9]/g, '_');
-        tempFile = path.join(os.tmpdir(), base + '-' + Date.now() + '.java');
-        try {
-            fs.writeFileSync(tempFile, content, 'utf8');
-        } catch (ignored) {
-            return;
-        }
-        target = tempFile;
+// 写临时文件检查未保存内容；返回 { target, cleanup }
+function prepareTarget(document, content) {
+    if (content === undefined) {
+        return { target: document.fileName, cleanup: () => {} };
     }
-
-    const cleanup = () => {
-        if (tempFile) {
+    // 每次检查用独立临时文件，避免上一次进程还没释放文件时覆盖失败
+    const base = 'cjc-vscode-' + document.uri.toString().replace(/[^a-zA-Z0-9]/g, '_');
+    const tempFile = path.join(os.tmpdir(), base + '-' + Date.now() + '.java');
+    try {
+        fs.writeFileSync(tempFile, content, 'utf8');
+    } catch (ignored) {
+        return null;
+    }
+    return {
+        target: tempFile,
+        cleanup: () => {
             try {
                 fs.unlinkSync(tempFile);
             } catch (ignored) {
@@ -266,6 +326,117 @@ function runCheck(document, content) {
             }
         }
     };
+}
+
+// 新前端诊断：优先直接起 java（前后端 classes 已就绪时），否则经 cjc.ps1 触发前端编译。
+function runNativeCheck(document, content, root) {
+    killRunning();
+    const 目标 = prepareTarget(document, content);
+    if (!目标) {
+        return;
+    }
+
+    const classes = path.join(root, '构建', '原生', '前端', 'classes');
+    let child;
+    if (fs.existsSync(classes)) {
+        child = spawn(javaExecutable(), [
+            '-Dstdout.encoding=UTF-8',
+            '-Dstderr.encoding=UTF-8',
+            '-cp', classes,
+            '中文.原生.前端.前端主程序',
+            '诊断', root, 目标.target, '--json'
+        ], { cwd: root, windowsHide: true });
+    } else {
+        const cjcPath = path.join(root, 'cjc.ps1');
+        child = spawn('powershell.exe', [
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', cjcPath,
+            '原生', '诊断', '--json', 目标.target
+        ], { cwd: root, windowsHide: true });
+    }
+
+    let output = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', chunk => { output += chunk; });
+
+    child.on('error', () => {
+        目标.cleanup();
+        if (running === child) {
+            running = null;
+            runLegacyCheck(document, content, root);
+        }
+    });
+
+    child.on('close', code => {
+        目标.cleanup();
+        // 已经被更新的一次检查替代：不覆盖最新结果
+        if (running !== child) {
+            return;
+        }
+        running = null;
+        const diagnostics = code === 0 ? parseNativeDiagnostics(output, document) : null;
+        if (diagnostics) {
+            collection.delete(document.uri);
+            collection.set(document.uri, diagnostics);
+            return;
+        }
+        if (!nativeFallbackWarned) {
+            nativeFallbackWarned = true;
+            vscode.window.showWarningMessage('新前端诊断不可用，已回退到兼容链路。');
+        }
+        runLegacyCheck(document, content, root);
+    });
+
+    running = child;
+}
+
+// 逐行解析 `原生 诊断 --json`；任一行不是合法 JSON 即视为失败，交由调用方回退。
+function parseNativeDiagnostics(text, document) {
+    const diagnostics = [];
+    for (const 行 of text.split(/\r?\n/)) {
+        const 文本 = 行.trim();
+        if (!文本.startsWith('{')) {
+            continue;
+        }
+        let 项;
+        try {
+            项 = JSON.parse(文本);
+        } catch (ignored) {
+            return null;
+        }
+        if (typeof 项.码 !== 'string' || typeof 项.行 !== 'number' || typeof 项.列 !== 'number') {
+            return null;
+        }
+        const lineNumber = Math.max(0, 项.行 - 1);
+        const column = Math.max(0, 项.列 - 1);
+        const lineLength = lineNumber < document.lineCount ? document.lineAt(lineNumber).text.length : column + 1;
+        const width = Math.max(1, Number(项.长度) || 1);
+        const end = Math.min(Math.max(lineLength, column + 1), column + width);
+        const 级别 = 项.错误 ? vscode.DiagnosticSeverity.Error : vscode.DiagnosticSeverity.Warning;
+        const 描述 = 项.消息 || 项.码;
+        const diagnostic = new vscode.Diagnostic(
+            new vscode.Range(lineNumber, column, lineNumber, end),
+            项.建议 ? `${描述}\n建议：${项.建议}` : 描述,
+            级别);
+        diagnostic.source = 'cjc';
+        diagnostic.code = 项.码;
+        diagnostics.push(diagnostic);
+    }
+    return diagnostics;
+}
+
+// 兼容链路：直接调用 工具\cjc\Cjc.java 检查，解析中文文本诊断。
+function runLegacyCheck(document, content, root) {
+    const cjcPath = path.join(root, '工具', 'cjc', 'Cjc.java');
+    if (!fs.existsSync(cjcPath)) {
+        return;
+    }
+
+    killRunning();
+    const 目标 = prepareTarget(document, content);
+    if (!目标) {
+        return;
+    }
 
     const child = spawn(javaExecutable(), [
         '-Dstdout.encoding=UTF-8',
@@ -273,7 +444,7 @@ function runCheck(document, content) {
         '-Dcjc.home=' + root,
         cjcPath,
         '检查',
-        target
+        目标.target
     ], { cwd: root, windowsHide: true });
 
     let output = '';
@@ -283,14 +454,14 @@ function runCheck(document, content) {
     child.stderr.on('data', chunk => { output += chunk; });
 
     child.on('error', () => {
-        cleanup();
+        目标.cleanup();
         if (running === child) {
             running = null;
         }
     });
 
     child.on('close', code => {
-        cleanup();
+        目标.cleanup();
         // 已经被更新的一次检查替代：不覆盖最新结果
         if (running !== child) {
             return;

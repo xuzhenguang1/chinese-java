@@ -27,6 +27,14 @@ cjk_class CJK_CLS_类转换异常 = {8, "类转换异常", &CJK_CLS_运行时异
 
 cjk_handler *cjk_handler_top = NULL;
 
+#if defined(_WIN64)
+/* LLVM 后端按此布局直接发射 IR；布局变化必须同步修改 原生\后端LLVM。 */
+_Static_assert(sizeof(jmp_buf) == 256, "jmp_buf 布局变化：LLVM 后端需同步");
+_Static_assert(sizeof(cjk_handler) == 272, "cjk_handler 布局变化：LLVM 后端需同步");
+_Static_assert(offsetof(cjk_handler, prev) == 256, "cjk_handler.prev 偏移变化");
+_Static_assert(offsetof(cjk_handler, exception) == 264, "cjk_handler.exception 偏移变化");
+#endif
+
 static const char *源路径 = "";
 
 static uint16_t 空字面量[] = {'n', 'u', 'l', 'l'};

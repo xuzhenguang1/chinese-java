@@ -4,6 +4,8 @@
 param(
     [string]$根目录 = (Resolve-Path "$PSScriptRoot\..\..").Path,
     [string]$类目录 = (Join-Path (Resolve-Path "$PSScriptRoot\..\..").Path "构建\原生\前端\classes"),
+    [ValidateSet("c", "llvm")]
+    [string]$后端 = "c",
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$路径
 )
@@ -13,7 +15,7 @@ chcp 65001 | Out-Null
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $cjc = Join-Path $根目录 "cjc.ps1"
-$工作目录 = Join-Path $根目录 "构建\原生\对拍原生"
+$工作目录 = Join-Path $根目录 ("构建\原生\对拍原生-" + $后端)
 $jvm目录 = Join-Path $工作目录 "jvm"
 $exe目录 = Join-Path $工作目录 "exe"
 if (Test-Path $工作目录) {
@@ -96,7 +98,11 @@ foreach ($文件 in $文件们) {
     ) -NoNewWindow -Wait -PassThru -RedirectStandardOutput $JvmOut -RedirectStandardError $JvmErr
     $jvm码 = $进程.ExitCode
 
-    & $cjc 原生 编译 $文件.FullName -o $Exe *> $null
+    if ($后端 -eq "llvm") {
+        & $cjc 原生 llvm 编译 $文件.FullName -o $Exe *> $null
+    } else {
+        & $cjc 原生 编译 $文件.FullName -o $Exe *> $null
+    }
     if ($LASTEXITCODE -ne 0) {
         $失败 += "原生编译失败：$名"
         continue

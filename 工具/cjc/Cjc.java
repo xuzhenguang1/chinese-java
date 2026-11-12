@@ -353,16 +353,43 @@ public class Cjc {
         }
         Path source = project.resolve("src/main/中文/演示/应用/主程序.java");
         Files.createDirectories(source.getParent());
-        String display = name.replace("\\", "/");
+        String display = Paths.get(name).getFileName().toString().replace("\\", "/");
         writeUtf8(source, "包 演示.应用;\n\n公有 类 主程序 {\n    入口 {\n        打印行(\"你好，" + display + "！\");\n    }\n}\n");
         writeUtf8(project.resolve("pom.xml"), pomTemplate(name, relative));
+        // Windows PowerShell 5.1 对无 BOM 的 .ps1 按 ANSI 读取，中文会乱码，因此显式写 BOM。
+        Files.write(project.resolve("构建.ps1"),
+                ("\uFEFF" + nativeBuildTemplate(relative)).getBytes(StandardCharsets.UTF_8));
         System.out.println("项目已创建：" + project);
         System.out.println("  源码：" + project.relativize(source).toString().replace("\\", "/"));
-        System.out.println("  构建：pom.xml（cjc-maven-plugin 0.2.0）");
+        System.out.println("  构建：构建.ps1（原生 exe）/ pom.xml（cjc-maven-plugin 0.2.0）");
         System.out.println("下一步：");
         System.out.println("  cd " + name);
-        System.out.println("  mvn package");
-        System.out.println("  java -jar target\\cjc-app-1.0.jar");
+        System.out.println("  .\\构建.ps1");
+        System.out.println("  .\\target\\应用.exe");
+        System.out.println("JVM 路径（可选）：mvn package && java -jar target\\cjc-app-1.0.jar");
+    }
+
+    /** 原生构建脚本：在项目根目录执行即可产出 target\应用.exe。 */
+    static String nativeBuildTemplate(String relative) {
+        String 仓库行 = relative.contains(":")
+                ? "$仓库 = \"" + relative + "\""
+                : "$仓库 = Join-Path $PSScriptRoot \"" + relative + "\"";
+        StringBuilder sb = new StringBuilder();
+        sb.append("# 原生构建：在本项目根目录执行 .\\构建.ps1，产出 target\\应用.exe\n");
+        sb.append("$ErrorActionPreference = \"Stop\"\n");
+        sb.append("chcp 65001 | Out-Null\n");
+        sb.append("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n");
+        sb.append(仓库行).append("\n");
+        sb.append("$cjc = Join-Path $仓库 \"cjc.ps1\"\n");
+        sb.append("if (-not (Test-Path $cjc)) {\n");
+        sb.append("    Write-Host \"找不到 cjc.ps1：$cjc；请把仓库放到构建脚本生成时的相对位置。\"\n");
+        sb.append("    exit 2\n");
+        sb.append("}\n");
+        sb.append("$源码 = Join-Path $PSScriptRoot \"src\\main\\中文\\演示\\应用\\主程序.java\"\n");
+        sb.append("$输出 = Join-Path $PSScriptRoot \"target\\应用.exe\"\n");
+        sb.append("& $cjc 原生 编译 $源码 -o $输出\n");
+        sb.append("exit $LASTEXITCODE\n");
+        return sb.toString();
     }
 
     static void writeUtf8(Path path, String text) throws IOException {

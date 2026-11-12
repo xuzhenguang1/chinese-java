@@ -13,16 +13,24 @@ import java.util.Set;
 /** 诊断收集与输出。错误影响退出码，提示不影响。 */
 public final class 诊断 {
 
-    public record 项(String 码, int 行, int 列, String 消息, String 建议, boolean 错误) {}
+    public record 项(String 码, int 行, int 列, int 长度, String 消息, String 建议, boolean 错误) {}
 
     private final List<项> 列表 = new ArrayList<>();
 
     public void 错误(String 码, int 行, int 列, String 消息, String 建议) {
-        列表.add(new 项(码, 行, 列, 消息, 建议, true));
+        错误(码, 行, 列, 1, 消息, 建议);
+    }
+
+    public void 错误(String 码, int 行, int 列, int 长度, String 消息, String 建议) {
+        列表.add(new 项(码, 行, 列, Math.max(1, 长度), 消息, 建议, true));
     }
 
     public void 提示(String 码, int 行, int 列, String 消息, String 建议) {
-        列表.add(new 项(码, 行, 列, 消息, 建议, false));
+        提示(码, 行, 列, 1, 消息, 建议);
+    }
+
+    public void 提示(String 码, int 行, int 列, int 长度, String 消息, String 建议) {
+        列表.add(new 项(码, 行, 列, Math.max(1, 长度), 消息, 建议, false));
     }
 
     public boolean 有错误() {

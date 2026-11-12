@@ -7,6 +7,7 @@
 # 生成物：
 #   工具\原生补丁\源码\com\sun\tools\javac\parser\Tokens.java  CJC_KEYWORDS 块
 #   工具\vscode-中文java\关键字数据.json
+#   工具\vscode-中文java\补全数据.json
 #   工具\vscode-中文java\syntaxes\中文java.tmLanguage.json
 
 param(
@@ -22,6 +23,8 @@ $tablePath = Join-Path $PSScriptRoot '关键字表.txt'
 $dictPath = Join-Path $PSScriptRoot '近义词典.txt'
 $tokensPath = Join-Path $root '工具\原生补丁\源码\com\sun\tools\javac\parser\Tokens.java'
 $dataPath = Join-Path $root '工具\vscode-中文java\关键字数据.json'
+$completionPath = Join-Path $root '工具\vscode-中文java\补全数据.json'
+$sugarPath = Join-Path $PSScriptRoot '方法糖.txt'
 $tmPath = Join-Path $root '工具\vscode-中文java\syntaxes\中文java.tmLanguage.json'
 
 Import-Module (Join-Path $PSScriptRoot '词表.psm1') -Force
@@ -151,6 +154,55 @@ foreach ($pair in $pairs) {
 }
 $dataNew = ($data | ConvertTo-Json -Depth 5) + $nl
 
+# ---- 4.5 生成补全数据：类型别名 + 方法糖 + 标准库类名 ----
+$糖 = @{ 成员 = @(); 声明 = @(); 静态 = @(); 白名单 = @() }
+$糖区 = $null
+foreach ($糖行 in ((Read-Utf8 $sugarPath) -split "`r?`n")) {
+    $糖内容 = $糖行.Trim()
+    if ($糖内容 -eq '' -or $糖内容.StartsWith('#')) {
+        continue
+    }
+    if ($糖内容 -match '^\[(.+)\]$') {
+        $糖区 = $Matches[1]
+        continue
+    }
+    if ($null -eq $糖区 -or -not $糖.ContainsKey($糖区)) {
+        continue
+    }
+    $糖[$糖区] += $糖内容
+}
+
+$补全 = [ordered]@{
+    类型别名 = [ordered]@{}
+    方法糖 = [ordered]@{ 成员 = [ordered]@{}; 声明 = [ordered]@{}; 静态 = [ordered]@{} }
+    标准库 = [ordered]@{}
+}
+foreach ($pair in $aliasPairs) {
+    $补全.类型别名[$pair.Word] = @($pair.English, $typeAliasDesc[$pair.English])
+}
+foreach ($项 in $糖['成员']) {
+    $部分 = $项 -split '=', 2
+    if ($部分.Count -eq 2) {
+        $补全.方法糖.成员[$部分[0].Trim()] = @($部分[1].Trim(), '成员方法糖：名称.中文(...) → .英文(...)')
+    }
+}
+foreach ($项 in $糖['声明']) {
+    $部分 = $项 -split '=', 2
+    if ($部分.Count -eq 2) {
+        $补全.方法糖.声明[$部分[0].Trim()] = @($部分[1].Trim(), '重写方法声明糖')
+    }
+}
+foreach ($项 in $糖['静态']) {
+    $部分 = $项 -split '=', 2
+    if ($部分.Count -eq 2) {
+        $补全.方法糖.静态[$部分[0].Trim()] = @($部分[1].Trim(), '静态调用糖')
+    }
+}
+foreach ($类名 in $糖['白名单']) {
+    $补全.标准库[$类名.Trim()] = '标准库类名（先 导入 中文.标准库.*）'
+}
+$completionNew = ($补全 | ConvertTo-Json -Depth 5) + $nl
+
 # ---- 5. 生成高亮正则文件 ----
 $sortedWords = @($pairs | ForEach-Object { $_.Word } | Sort-Object @{ Expression = { $_.Length }; Descending = $true }, @{ Expression = { $_ }; Descending = $false })
 $regex = '(?<!\p{L})(' + ($sortedWords -join '|') + ')(?!\p{L})'
@@ -185,6 +237,7 @@ $tmNew = $tmNew -replace "`r?`n", $nl
 $targets = @(
     @{ Path = $tokensPath; Text = $tokensNew },
     @{ Path = $dataPath; Text = $dataNew },
+    @{ Path = $completionPath; Text = $completionNew },
     @{ Path = $tmPath; Text = $tmNew }
 )
 

@@ -618,10 +618,32 @@ if (Test-Path $脚手架) { Remove-Item -Recurse -Force $脚手架 }
         Pop-Location
     }
 }
-if ((Test-Path (Join-Path $脚手架 "pom.xml")) -and (Test-Path (Join-Path $脚手架 "src\main\中文\演示\应用\主程序.java"))) {
-    Write-Host "新建项目脚手架：通过" -ForegroundColor Green
+if ((Test-Path (Join-Path $脚手架 "pom.xml")) -and
+    (Test-Path (Join-Path $脚手架 "src\main\中文\演示\应用\主程序.java")) -and
+    (Test-Path (Join-Path $脚手架 "构建.ps1"))) {
+    Write-Host "新建项目脚手架：骨架通过" -ForegroundColor Green
 } else {
-    失败项 "新建项目脚手架" "缺少 pom.xml 或主程序.java"
+    失败项 "新建项目脚手架" "缺少 pom.xml、主程序.java 或 构建.ps1"
+}
+# M7 核心验收：进入项目目录执行一条命令，产出可运行的 exe
+$脚手架构建输出 = ""
+Push-Location $脚手架
+try {
+    $脚手架构建输出 = 捕获输出 { & ".\构建.ps1" }
+    $脚手架构建码 = $LASTEXITCODE
+} finally {
+    Pop-Location
+}
+$脚手架exe = Join-Path $脚手架 "target\应用.exe"
+if ($脚手架构建码 -eq 0 -and (Test-Path $脚手架exe)) {
+    $脚手架运行输出 = 捕获输出 { & $脚手架exe }
+    if ($LASTEXITCODE -eq 0 -and $脚手架运行输出.Contains("你好，示例工具！")) {
+        Write-Host "新建项目脚手架：一条命令产出 exe 并运行通过" -ForegroundColor Green
+    } else {
+        失败项 "新建项目脚手架" "exe 输出不符合预期" $脚手架运行输出
+    }
+} else {
+    失败项 "新建项目脚手架" "构建.ps1 未产出 exe" $脚手架构建输出
 }
 
 # 8) 可选：原生实现 M0 检查 + 原生补丁回归（基于 JDK 25 的 Tokens.java）
@@ -647,10 +669,10 @@ if ($含原生) {
         失败项 "原生 M0 词表副本" "原生目录下存在词表副本：$($词表副本.FullName -join '；')"
     }
     $adr文件 = @(Get-ChildItem (Join-Path $root "文档\原生\ADR") -Filter "ADR-*.md" -File -ErrorAction SilentlyContinue)
-    if ($adr文件.Count -eq 8) {
-        Write-Host "原生 M0：ADR 8 份齐备" -ForegroundColor Green
+    if ($adr文件.Count -eq 10) {
+        Write-Host "原生 M0：ADR 10 份齐备" -ForegroundColor Green
     } else {
-        失败项 "原生 M0 ADR" "ADR 数量应为 8，实际 $($adr文件.Count)"
+        失败项 "原生 M0 ADR" "ADR 数量应为 10，实际 $($adr文件.Count)"
     }
 
     # 8.1) 原生 M1：35 课 Token/AST、黄金快照可重复、词法/语法/新手提示反例
@@ -909,8 +931,19 @@ if ($含原生) {
         if ($LASTEXITCODE -eq 0 -and (Test-Path $压力exe)) {
             $压力输出 = Join-Path $压力目录 "压力.out"
             $压力错误 = Join-Path $压力目录 "压力.err"
-            $压力进程 = Start-Process -FilePath $压力exe -NoNewWindow -Wait -PassThru `
-                -RedirectStandardOutput $压力输出 -RedirectStandardError $压力错误
+            # 新生成的 exe 可能被杀毒/索引短暂占用，首次启动会 Access denied，重试即可
+            $压力进程 = $null
+            for ($尝试 = 1; $尝试 -le 5; $尝试++) {
+                try {
+                    $压力进程 = Start-Process -FilePath $压力exe -NoNewWindow -Wait -PassThru `
+                        -RedirectStandardOutput $压力输出 -RedirectStandardError $压力错误 `
+                        -ErrorAction Stop
+                    break
+                } catch {
+                    if ($尝试 -eq 5) { throw }
+                    Start-Sleep -Milliseconds 1000
+                }
+            }
             $压力文本 = [System.IO.File]::ReadAllText($压力输出, [System.Text.Encoding]::UTF8)
             if ($压力进程.ExitCode -eq 0 -and $压力文本.Contains('合计：45002138890')) {
                 Write-Host "原生 M4：GC 压力用例（30 万次分配）通过" -ForegroundColor Green
@@ -1161,6 +1194,121 @@ if ($含原生) {
             Stop-Job $网络任务 -ErrorAction SilentlyContinue
             Remove-Job $网络任务 -Force -ErrorAction SilentlyContinue
         }
+    }
+
+    # 8.4) 原生 M6：LLVM 后端 01–35 对拍 + DWARF 中文文件名/行号
+    if (-not $clang路径) {
+        Write-Host "原生 M6：未找到 clang，跳过 LLVM 后端断言" -ForegroundColor Yellow
+    } else {
+        $m6对拍输出 = 捕获输出 { & "$root\原生\测试\对拍原生.ps1" -后端 llvm }
+        if ($m6对拍输出 -match '对拍结果：通过 35 / 共 35') {
+            Write-Host "原生 M6：01–35 LLVM 对拍 35/35，stdout 与退出码一致" -ForegroundColor Green
+        } else {
+            失败项 "原生 M6 LLVM 对拍" "汇总不是 35/35" $m6对拍输出
+        }
+
+        $m6dwarf输出 = 捕获输出 { & "$root\原生\测试\检查调试信息.ps1" }
+        if ($m6dwarf输出 -match 'DWARF 断言：通过 2 / 共 2') {
+            Write-Host "原生 M6：DWARF 中文文件名与行号命中" -ForegroundColor Green
+        } else {
+            失败项 "原生 M6 DWARF" "汇总不是 2/2" $m6dwarf输出
+        }
+
+        $m6基准输出 = 捕获输出 { & "$root\原生\测试\基准.ps1" }
+        if ($m6基准输出 -match '基准结论：LLVM 不慢于 C') {
+            Write-Host "原生 M6：基准 LLVM 不慢于 C" -ForegroundColor Green
+        } else {
+            失败项 "原生 M6 基准" "结论缺失或比值超出 1.05" $m6基准输出
+        }
+    }
+
+    # 8.5) 原生 M7：新前端 JSON 诊断、增量编译、无缓存对照、VSCode 接入与补全数据
+    $m7目录 = 新建临时目录 "M7工具链"
+    $m7诊断源码 = Join-Path $m7目录 "诊断样例.java"
+    @'
+包 演示.应用;
+
+类 诊断样例 {
+    私有 字符串 标题 = "甲";
+    入口 {
+        整数 结果 = 1;
+        整数结果 = 2;
+        打印行(标题)。
+    }
+}
+'@ | Set-Content -Path $m7诊断源码 -Encoding UTF8
+    $m7诊断输出 = 捕获输出 { & "$root\cjc.ps1" 原生 诊断 --json $m7诊断源码 }
+    $m7诊断码 = $LASTEXITCODE
+    $m7诊断行 = @($m7诊断输出 -split "`r?`n" | Where-Object { $_.Trim().StartsWith('{') })
+    $m7码集 = @()
+    $m7字段齐 = $true
+    foreach ($行 in $m7诊断行) {
+        try {
+            $项 = $行 | ConvertFrom-Json
+        } catch {
+            $m7字段齐 = $false
+            continue
+        }
+        foreach ($字段 in @('码', '行', '列', '长度', '消息', '建议', '错误')) {
+            if (-not ($项.PSObject.Properties.Name -contains $字段)) {
+                $m7字段齐 = $false
+            }
+        }
+        $m7码集 += [string]$项.码
+    }
+    if ($m7诊断码 -eq 0 -and $m7字段齐 -and $m7诊断行.Count -gt 0 -and
+        ($m7码集 -contains 'CJK001') -and ($m7码集 -contains 'CJK106')) {
+        Write-Host "原生 M7：JSON 诊断字段齐全，CJK001 / CJK106 命中" -ForegroundColor Green
+    } else {
+        失败项 "原生 M7 JSON 诊断" "输出不可解析或缺少 CJK001/CJK106" $m7诊断输出
+    }
+
+    $m7增量目录 = Join-Path $m7目录 "增量"
+    New-Item -ItemType Directory -Force $m7增量目录 | Out-Null
+    $m7源 = Join-Path $root "示例\脚本示例.java"
+    $m7exe = Join-Path $m7增量目录 "脚本示例.exe"
+    $m7首次 = 捕获输出 { & "$root\cjc.ps1" 原生 编译 $m7源 -o $m7exe }
+    $m7首次码 = $LASTEXITCODE
+    $m7再次 = 捕获输出 { & "$root\cjc.ps1" 原生 编译 $m7源 -o $m7exe }
+    $m7再次码 = $LASTEXITCODE
+    $m7无缓存exe = Join-Path $m7增量目录 "脚本示例-无缓存.exe"
+    $m7无缓存 = 捕获输出 { & "$root\cjc.ps1" 原生 编译 $m7源 -o $m7无缓存exe -无缓存 }
+    $m7无缓存码 = $LASTEXITCODE
+    if ($m7首次码 -eq 0 -and $m7再次码 -eq 0 -and $m7无缓存码 -eq 0 -and
+        $m7首次.Contains("增量：运行时命中") -and $m7再次.Contains("跳过编译")) {
+        $m7缓存输出 = 捕获输出 { & $m7exe }
+        $m7缓存运行码 = $LASTEXITCODE
+        $m7直编输出 = 捕获输出 { & $m7无缓存exe }
+        $m7直编运行码 = $LASTEXITCODE
+        if ($m7缓存运行码 -eq 0 -and $m7直编运行码 -eq 0 -and $m7缓存输出 -ceq $m7直编输出) {
+            Write-Host "原生 M7：增量跳过与 -无缓存 产物输出一致" -ForegroundColor Green
+        } else {
+            失败项 "原生 M7 增量编译" "缓存与无缓存产物输出不一致" ($m7缓存输出 + "`n---`n" + $m7直编输出)
+        }
+    } else {
+        失败项 "原生 M7 增量编译" "缺少缓存命中或增量跳过标记" ($m7首次 + "`n---`n" + $m7再次 + "`n---`n" + $m7无缓存)
+    }
+
+    # VSCode 扩展：诊断已切到新前端，补全数据计数与词表一致
+    $扩展源码 = Get-Content "$root\工具\vscode-中文java\extension.js" -Raw -Encoding UTF8
+    $node检查 = 捕获输出 { node --check "$root\工具\vscode-中文java\extension.js" }
+    $node码 = $LASTEXITCODE
+    $补全文件 = "$root\工具\vscode-中文java\补全数据.json"
+    $补全计数 = ""
+    if (Test-Path $补全文件) {
+        $补全 = Get-Content $补全文件 -Raw -Encoding UTF8 | ConvertFrom-Json
+        $补全计数 = "{0}/{1}/{2}/{3}/{4}" -f @($补全.类型别名.PSObject.Properties).Count,
+            @($补全.方法糖.成员.PSObject.Properties).Count,
+            @($补全.方法糖.声明.PSObject.Properties).Count,
+            @($补全.方法糖.静态.PSObject.Properties).Count,
+            @($补全.标准库.PSObject.Properties).Count
+    }
+    if ($node码 -eq 0 -and $扩展源码.Contains("前端主程序") -and
+        $扩展源码.Contains("--json") -and $扩展源码.Contains("补全数据.json") -and
+        $补全计数 -eq "34/52/3/56/10") {
+        Write-Host "原生 M7：VSCode 诊断来源为新前端，补全数据 34/52/3/56/10" -ForegroundColor Green
+    } else {
+        失败项 "原生 M7 VSCode" "扩展未接入新前端或补全计数不符（实际 $补全计数）" $node检查
     }
 
     运行 "原生补丁编译" {

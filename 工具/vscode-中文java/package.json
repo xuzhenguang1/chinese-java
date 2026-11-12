@@ -64,6 +64,15 @@
           "type": "boolean",
           "default": true,
           "description": "输入 .java 文件后 500ms 防抖运行 cjc 检查（检查内存中的内容，无需先保存）；CJK001/CJK002 显示为错误，CJK101–CJK106 显示为警告。"
+        },
+        "cjc.diagnosticSource": {
+          "type": "string",
+          "enum": [
+            "原生",
+            "兼容"
+          ],
+          "default": "原生",
+          "description": "诊断来源：「原生」调用 原生\\驱动.ps1 的新前端（JSON 诊断），不可用时自动回退；「兼容」沿用 工具\\cjc\\Cjc.java 检查链路。"
         }
       }
     }

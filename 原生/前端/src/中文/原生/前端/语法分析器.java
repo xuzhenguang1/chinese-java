@@ -53,7 +53,9 @@ public final class 语法分析器 {
         List<类型声明> 类型 = new ArrayList<>();
         List<语句> 语句 = new ArrayList<>();
         while (看().类别 != 标记类别.结束) {
-            if (是关键字("import")) {
+            if (是关键字("package")) {
+                解析包声明();
+            } else if (是关键字("import")) {
                 导入.add(解析导入());
             } else if (是类型声明起点()) {
                 类型.add(解析类型声明());
@@ -70,6 +72,17 @@ public final class 语法分析器 {
     }
 
     // ---------- 顶层与成员 ----------
+
+    /** 顶层 `包 名称;`：只消费标记，不建 AST 节点，不影响快照与后端。 */
+    private void 解析包声明() {
+        取();
+        期望名称();
+        while (是符号(".")) {
+            取();
+            期望名称();
+        }
+        期望符号(";");
+    }
 
     private 导入声明 解析导入() {
         取();
