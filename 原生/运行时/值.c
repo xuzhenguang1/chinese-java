@@ -8,6 +8,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <shellapi.h>
+#endif
+
 /* ---------------- 字符串小工具 ---------------- */
 
 static cjk_string *串新建(int32_t len) {
@@ -352,7 +357,36 @@ int32_t cjk_value_hash(cjk_value v) {
 
 static cjk_array *参数数组 = NULL;
 
+#ifdef _WIN32
+/* 宽字符参数转 cjk_string：Windows 的 argv 用 ANSI 代码页，中文路径会丢字。 */
+static cjk_string *宽参数转字符串(const wchar_t *宽) {
+    int 八长 = WideCharToMultiByte(CP_UTF8, 0, 宽, -1, NULL, 0, NULL, NULL);
+    if (八长 <= 0) {
+        return cjk_str_from_utf8("");
+    }
+    char *缓冲 = (char *)cjk_gc_alloc((size_t)八长);
+    WideCharToMultiByte(CP_UTF8, 0, 宽, -1, 缓冲, 八长, NULL, NULL);
+    return cjk_str_from_utf8(缓冲);
+}
+#endif
+
 void cjk_set_args(int argc, char **argv) {
+#ifdef _WIN32
+    /* 对齐 Java：程序参数不含 argv[0]；从宽字符命令行读取以保留中文路径。 */
+    (void)argc;
+    (void)argv;
+    int 宽数 = 0;
+    LPWSTR *宽列表 = CommandLineToArgvW(GetCommandLineW(), &宽数);
+    int 数 = (宽列表 != NULL && 宽数 > 0) ? 宽数 - 1 : 0;
+    cjk_string **项 = (cjk_string **)cjk_gc_alloc(sizeof(cjk_string *) * (size_t)(数 > 0 ? 数 : 1));
+    for (int i = 0; i < 数; i++) {
+        项[i] = 宽参数转字符串(宽列表[i + 1]);
+    }
+    if (宽列表 != NULL) {
+        LocalFree(宽列表);
+    }
+    参数数组 = cjk_array_from(CJK_KIND_REF, (int32_t)sizeof(cjk_string *), 数, 项);
+#else
     /* 对齐 Java：程序参数不含 argv[0]（可执行文件路径）。 */
     int 数 = argc > 0 ? argc - 1 : 0;
     cjk_string **项 = (cjk_string **)cjk_gc_alloc(sizeof(cjk_string *) * (size_t)(数 > 0 ? 数 : 1));
@@ -360,6 +394,7 @@ void cjk_set_args(int argc, char **argv) {
         项[i] = cjk_str_from_utf8(argv[i + 1]);
     }
     参数数组 = cjk_array_from(CJK_KIND_REF, (int32_t)sizeof(cjk_string *), 数, 项);
+#endif
 }
 
 cjk_array *cjk_program_args(void) {

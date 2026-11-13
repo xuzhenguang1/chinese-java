@@ -2294,6 +2294,10 @@ public final class LLVM生成器 {
                     表达式(实参.get(0)), 表达式(实参.get(1))));
         }
         if ("字符串比较".equals(名)) {
+            if (调用.接收者() != null) {
+                return 定型(调用, 调("cjk_str_compare", "i32",
+                        表达式(调用.接收者()), 表达式(实参.get(0))));
+            }
             return 定型(调用, 调("cjk_str_compare", "i32",
                     表达式(实参.get(0)), 表达式(实参.get(1))));
         }

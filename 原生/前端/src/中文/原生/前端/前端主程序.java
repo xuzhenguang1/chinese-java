@@ -44,6 +44,7 @@ public final class 前端主程序 {
                 case "词表" -> 打印词表(词表数据);
                 case "检查" -> System.exit(检查(根目录, 词表数据, 取文件参数(参数, 2)));
                 case "诊断" -> System.exit(诊断(根目录, 词表数据, 参数));
+                case "分词" -> System.exit(分词(根目录, 词表数据, 取文件参数(参数, 2)));
                 case "语法树" -> System.exit(打印语法树(词表数据, 取文件参数(参数, 2), null));
                 case "快照" -> {
                     if (参数.length < 3) {
@@ -228,6 +229,69 @@ public final class 前端主程序 {
                         结果.append(字符);
                     }
                 }
+            }
+        }
+        return 结果.toString();
+    }
+
+    /**
+     * 词法自举的参考口径：逐文件输出 Token 与词法诊断（CJK001/002/106）。
+     * 输出为单行字段格式，供 原生\自举\分词器.java 逐字节对拍；诊断是数据，退出码恒为 0。
+     */
+    private static int 分词(Path 根目录, 词表 词表, List<String> 文件参数) throws IOException {
+        List<Path> 文件们 = 收集文件(根目录, 文件参数);
+        List<分析结果> 结果 = new ArrayList<>();
+        Set<String> 标识符名 = new HashSet<>();
+        for (Path 路径 : 文件们) {
+            诊断 诊断 = new 诊断();
+            标记.源文件 文件 = 读取(路径, 词表, 诊断);
+            结果.add(new 分析结果(文件, 诊断));
+            for (标记 标记 : 文件.标记()) {
+                if (标记.类别 == 标记类别.标识符) {
+                    标识符名.add(标记.原文);
+                }
+            }
+        }
+
+        int 标记总数 = 0;
+        int 错误总数 = 0;
+        int 提示总数 = 0;
+        for (分析结果 项 : 结果) {
+            词法分析器.检查粘连(项.文件(), 标识符名, 词表, 项.诊断());
+            System.out.println("文件|" + 转义分词字段(项.文件().名称()));
+            for (标记 标记 : 项.文件().标记()) {
+                System.out.println("标记|" + 标记.类别 + "|" + 标记.行 + "|" + 标记.列
+                        + "|" + 转义分词字段(标记.原文) + "|" + 转义分词字段(标记.规范));
+                标记总数++;
+            }
+            for (诊断.项 一条 : 项.诊断().全部()) {
+                System.out.println("诊断|" + (一条.错误() ? "错误" : "提示")
+                        + "|" + 转义分词字段(一条.码()) + "|" + 一条.行() + "|" + 一条.列()
+                        + "|" + 一条.长度() + "|" + 转义分词字段(一条.消息())
+                        + "|" + 转义分词字段(一条.建议()));
+                if (一条.错误()) {
+                    错误总数++;
+                } else {
+                    提示总数++;
+                }
+            }
+        }
+        System.out.println("汇总|" + 结果.size() + "|" + 标记总数 + "|" + 错误总数 + "|" + 提示总数);
+        return 0;
+    }
+
+    /** 对拍字段转义：反斜杠、竖线与换行/回车/制表符，保证每条记录只占一行。 */
+    private static String 转义分词字段(String 文本) {
+        StringBuilder 结果 = new StringBuilder();
+        for (int i = 0; i < 文本.length(); i++) {
+            char 字符 = 文本.charAt(i);
+            switch (字符) {
+                case '\\' -> 结果.append("\\\\");
+                case '|' -> 结果.append("\\|");
+                case '\n' -> 结果.append("\\n");
+                case '\r' -> 结果.append("\\r");
+                case '\t' -> 结果.append("\\t");
+                default -> 结果.append(字符);
             }
         }
         return 结果.toString();
@@ -454,6 +518,7 @@ public final class 前端主程序 {
         System.out.println("  前端主程序 词表 <根目录>");
         System.out.println("  前端主程序 检查 <根目录> <文件或目录...>");
         System.out.println("  前端主程序 诊断 <根目录> <文件或目录...> [--json]");
+        System.out.println("  前端主程序 分词 <根目录> <文件或目录...>");
         System.out.println("  前端主程序 语法树 <根目录> <文件或目录...>");
         System.out.println("  前端主程序 快照 <根目录> <输出目录> <文件或目录...>");
         System.out.println("  前端主程序 中间 <根目录> <文件或目录...>");

@@ -1262,6 +1262,10 @@ public final class C生成器 {
                     + 表达式(实参.get(1)) + "))";
         }
         if ("字符串比较".equals(名)) {
+            if (调用.接收者() != null) {
+                return "cjk_str_compare(" + 表达式(调用.接收者()) + ", "
+                        + 表达式(实参.get(0)) + ")";
+            }
             return "cjk_str_compare(" + 表达式(实参.get(0)) + ", " + 表达式(实参.get(1)) + ")";
         }
         if ("异常取消息".equals(名)) {

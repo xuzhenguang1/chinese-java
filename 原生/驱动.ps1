@@ -33,6 +33,8 @@ function 显示用法 {
     Write-Output "用法："
     Write-Output "  .\cjc.ps1 原生 检查   [路径...]"
     Write-Output "  .\cjc.ps1 原生 诊断   [--json] [路径...]"
+    Write-Output "  .\cjc.ps1 原生 分词   [路径...]"
+    Write-Output "  .\cjc.ps1 原生 自举"
     Write-Output "  .\cjc.ps1 原生 语法树 [路径...]"
     Write-Output "  .\cjc.ps1 原生 快照   <输出目录> [路径...]"
     Write-Output "  .\cjc.ps1 原生 中间   [路径...]"
@@ -178,7 +180,7 @@ function 编译运行时对象 {
 
 function 链接可执行 {
     param([string]$clang, [string]$模块对象, $运行时对象, [string]$输出exe)
-    $输出 = & $clang -static $模块对象 @($运行时对象.对象们) -lm -lwinhttp -lws2_32 -o $输出exe 2>&1
+    $输出 = & $clang -static $模块对象 @($运行时对象.对象们) -lm -lwinhttp -lws2_32 -lshell32 -o $输出exe 2>&1
     if ($输出) {
         $输出 | ForEach-Object { [Console]::Error.WriteLine($_) }
     }
@@ -268,7 +270,7 @@ if ($子命令 -in @('-h', '--帮助', '帮助')) {
     显示用法
     exit 0
 }
-if ($子命令 -notin @('检查', '诊断', '语法树', '快照', '词表', '中间', '运行', '对拍', '编译', '对拍原生', 'llvm')) {
+if ($子命令 -notin @('检查', '诊断', '分词', '语法树', '快照', '词表', '中间', '运行', '对拍', '编译', '对拍原生', 'llvm', '自举')) {
     Write-Output "未知原生子命令：$子命令"
     显示用法
     exit 2
@@ -323,6 +325,15 @@ switch ($子命令) {
         运行前端 $前端参数
         exit $LASTEXITCODE
     }
+    '分词' {
+        $绝对路径 = 转绝对路径 $路径列表
+        if ($绝对路径.Count -eq 0) {
+            $绝对路径 = @((Join-Path $根目录 "教程"))
+        }
+        确保前端已编译
+        运行前端 (@('分词', $根目录) + $绝对路径)
+        exit $LASTEXITCODE
+    }
     '语法树' {
         $绝对路径 = 转绝对路径 $路径列表
         if ($绝对路径.Count -eq 0) {
@@ -367,6 +378,11 @@ switch ($子命令) {
     '对拍' {
         确保前端已编译
         & (Join-Path $PSScriptRoot "测试\对拍.ps1") -根目录 $根目录 -类目录 $类目录 -路径 $路径列表
+        exit $LASTEXITCODE
+    }
+    '自举' {
+        确保前端已编译
+        & (Join-Path $PSScriptRoot "测试\对拍分词.ps1") -根目录 $根目录
         exit $LASTEXITCODE
     }
     '对拍原生' {
@@ -437,7 +453,7 @@ switch ($子命令) {
 
         if ($无缓存) {
             Write-Output "增量：未启用缓存（-无缓存）"
-            & $clang -O2 -std=c11 -fwrapv -fno-strict-aliasing -static -I $运行时.目录 $C文件 @($运行时.源们 | ForEach-Object FullName) -lm -lwinhttp -lws2_32 -o $输出exe
+            & $clang -O2 -std=c11 -fwrapv -fno-strict-aliasing -static -I $运行时.目录 $C文件 @($运行时.源们 | ForEach-Object FullName) -lm -lwinhttp -lws2_32 -lshell32 -o $输出exe
             if ($LASTEXITCODE -ne 0) {
                 Write-Output "clang 编译失败（退出码 $LASTEXITCODE）。"
                 exit 1
@@ -542,7 +558,7 @@ switch ($子命令) {
 
         if ($无缓存) {
             Write-Output "增量：未启用缓存（-无缓存）"
-            & $clang -O2 -std=c11 -fwrapv -fno-strict-aliasing -static -I $运行时.目录 $IR文件 @($运行时.源们 | ForEach-Object FullName) -lm -lwinhttp -lws2_32 -o $输出exe
+            & $clang -O2 -std=c11 -fwrapv -fno-strict-aliasing -static -I $运行时.目录 $IR文件 @($运行时.源们 | ForEach-Object FullName) -lm -lwinhttp -lws2_32 -lshell32 -o $输出exe
             if ($LASTEXITCODE -ne 0) {
                 Write-Output "clang 编译失败（退出码 $LASTEXITCODE）。"
                 exit 1

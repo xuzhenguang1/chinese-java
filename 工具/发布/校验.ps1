@@ -669,10 +669,10 @@ if ($含原生) {
         失败项 "原生 M0 词表副本" "原生目录下存在词表副本：$($词表副本.FullName -join '；')"
     }
     $adr文件 = @(Get-ChildItem (Join-Path $root "文档\原生\ADR") -Filter "ADR-*.md" -File -ErrorAction SilentlyContinue)
-    if ($adr文件.Count -eq 10) {
-        Write-Host "原生 M0：ADR 10 份齐备" -ForegroundColor Green
+    if ($adr文件.Count -eq 11) {
+        Write-Host "原生 M0：ADR 11 份齐备" -ForegroundColor Green
     } else {
-        失败项 "原生 M0 ADR" "ADR 数量应为 10，实际 $($adr文件.Count)"
+        失败项 "原生 M0 ADR" "ADR 数量应为 11，实际 $($adr文件.Count)"
     }
 
     # 8.1) 原生 M1：35 课 Token/AST、黄金快照可重复、词法/语法/新手提示反例
@@ -1309,6 +1309,15 @@ if ($含原生) {
         Write-Host "原生 M7：VSCode 诊断来源为新前端，补全数据 34/52/3/56/10" -ForegroundColor Green
     } else {
         失败项 "原生 M7 VSCode" "扩展未接入新前端或补全计数不符（实际 $补全计数）" $node检查
+    }
+
+    # 8.6) 原生 M8：自举词法器与 Java 参考实现逐字节对拍
+    $m8输出 = 捕获输出 { & "$root\原生\测试\对拍分词.ps1" -根目录 $root }
+    $m8码 = $LASTEXITCODE
+    if ($m8码 -eq 0 -and $m8输出.Contains("教程分词：逐字节一致") -and $m8输出.Contains("通过 4 / 共 4 项")) {
+        Write-Host "原生 M8：自举词法器与参考实现逐字节一致（教程 35 课）" -ForegroundColor Green
+    } else {
+        失败项 "原生 M8 自举分词" "对拍失败（退出码 $m8码）" $m8输出
     }
 
     运行 "原生补丁编译" {
