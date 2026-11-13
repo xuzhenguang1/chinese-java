@@ -9,10 +9,10 @@ chcp 65001 | Out-Null
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $cjc = Join-Path $根目录 "cjc.ps1"
-$源 = Join-Path $根目录 "原生\自举\分词器.java"
+$源 = Join-Path $根目录 "原生\自举\自举前端.java"
 $工作 = Join-Path $根目录 "构建\自举"
 New-Item -ItemType Directory -Force $工作 | Out-Null
-$exe = Join-Path $工作 "分词器.exe"
+$exe = Join-Path $工作 "自举前端.exe"
 
 $script:通过 = 0
 $script:失败 = @()

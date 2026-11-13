@@ -86,7 +86,6 @@ void cjk_rt_init(void);
 void cjk_set_source(const char *path);
 
 /* GC */
-void cjk_gc_init(void);
 void *cjk_gc_alloc(size_t bytes);
 void cjk_gc_add_root(void *addr, size_t bytes);
 void cjk_gc_collect(void);

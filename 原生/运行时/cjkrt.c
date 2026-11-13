@@ -45,7 +45,6 @@ void cjk_rt_init(void) {
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
 #endif
-    cjk_gc_init();
 }
 
 void cjk_set_source(const char *path) {

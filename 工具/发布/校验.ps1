@@ -669,10 +669,10 @@ if ($含原生) {
         失败项 "原生 M0 词表副本" "原生目录下存在词表副本：$($词表副本.FullName -join '；')"
     }
     $adr文件 = @(Get-ChildItem (Join-Path $root "文档\原生\ADR") -Filter "ADR-*.md" -File -ErrorAction SilentlyContinue)
-    if ($adr文件.Count -eq 11) {
-        Write-Host "原生 M0：ADR 11 份齐备" -ForegroundColor Green
+    if ($adr文件.Count -eq 12) {
+        Write-Host "原生 M0：ADR 12 份齐备" -ForegroundColor Green
     } else {
-        失败项 "原生 M0 ADR" "ADR 数量应为 11，实际 $($adr文件.Count)"
+        失败项 "原生 M0 ADR" "ADR 数量应为 12，实际 $($adr文件.Count)"
     }
 
     # 8.1) 原生 M1：35 课 Token/AST、黄金快照可重复、词法/语法/新手提示反例
@@ -1318,6 +1318,16 @@ if ($含原生) {
         Write-Host "原生 M8：自举词法器与参考实现逐字节一致（教程 35 课）" -ForegroundColor Green
     } else {
         失败项 "原生 M8 自举分词" "对拍失败（退出码 $m8码）" $m8输出
+    }
+
+    # 8.7) 原生 M8：自举语法分析与 AST 打印对拍参考实现与黄金快照
+    $m8语法输出 = 捕获输出 { & "$root\原生\测试\对拍语法.ps1" -根目录 $root }
+    $m8语法码 = $LASTEXITCODE
+    if ($m8语法码 -eq 0 -and $m8语法输出.Contains("教程语法：逐字节一致") -and
+        $m8语法输出.Contains("快照：35/35 一致") -and $m8语法输出.Contains("通过 3 / 共 3 项")) {
+        Write-Host "原生 M8：自举语法分析与 AST 打印逐字节一致（教程 35 课 + 快照）" -ForegroundColor Green
+    } else {
+        失败项 "原生 M8 自举语法" "对拍失败（退出码 $m8语法码）" $m8语法输出
     }
 
     运行 "原生补丁编译" {

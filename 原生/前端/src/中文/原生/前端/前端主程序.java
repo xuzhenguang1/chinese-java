@@ -45,6 +45,7 @@ public final class 前端主程序 {
                 case "检查" -> System.exit(检查(根目录, 词表数据, 取文件参数(参数, 2)));
                 case "诊断" -> System.exit(诊断(根目录, 词表数据, 参数));
                 case "分词" -> System.exit(分词(根目录, 词表数据, 取文件参数(参数, 2)));
+                case "语法" -> System.exit(语法(词表数据, 取文件参数(参数, 2)));
                 case "语法树" -> System.exit(打印语法树(词表数据, 取文件参数(参数, 2), null));
                 case "快照" -> {
                     if (参数.length < 3) {
@@ -236,7 +237,7 @@ public final class 前端主程序 {
 
     /**
      * 词法自举的参考口径：逐文件输出 Token 与词法诊断（CJK001/002/106）。
-     * 输出为单行字段格式，供 原生\自举\分词器.java 逐字节对拍；诊断是数据，退出码恒为 0。
+     * 输出为单行字段格式，供 原生\自举\自举前端.java 逐字节对拍；诊断是数据，退出码恒为 0。
      */
     private static int 分词(Path 根目录, 词表 词表, List<String> 文件参数) throws IOException {
         List<Path> 文件们 = 收集文件(根目录, 文件参数);
@@ -277,6 +278,41 @@ public final class 前端主程序 {
             }
         }
         System.out.println("汇总|" + 结果.size() + "|" + 标记总数 + "|" + 错误总数 + "|" + 提示总数);
+        return 0;
+    }
+
+    /**
+     * 语法自举的参考口径：逐文件输出词法诊断、语法诊断与 AST 全文。
+     * 单行字段格式，供 原生\自举\自举前端.java 逐字节对拍；诊断是数据，退出码恒为 0。
+     */
+    private static int 语法(词表 词表, List<String> 文件参数) throws IOException {
+        List<Path> 文件们 = 收集文件(Paths.get(".").toAbsolutePath().normalize(), 文件参数);
+        int 成功 = 0;
+        for (Path 路径 : 文件们) {
+            诊断 诊断 = new 诊断();
+            标记.源文件 文件 = 读取(路径, 词表, 诊断);
+            String 树 = null;
+            if (!诊断.有错误()) {
+                try {
+                    编译单元 单元 = new 语法分析器(文件.标记()).解析();
+                    树 = new 语法树打印器(词表).打印(单元);
+                    成功++;
+                } catch (语法分析器.语法异常 异常) {
+                    诊断.错误("语法", 异常.行, 异常.列, 异常.消息, 异常.建议);
+                }
+            }
+            System.out.println("文件|" + 转义分词字段(文件.名称()));
+            for (诊断.项 一条 : 诊断.全部()) {
+                System.out.println("诊断|" + (一条.错误() ? "错误" : "提示")
+                        + "|" + 转义分词字段(一条.码()) + "|" + 一条.行() + "|" + 一条.列()
+                        + "|" + 一条.长度() + "|" + 转义分词字段(一条.消息())
+                        + "|" + 转义分词字段(一条.建议()));
+            }
+            if (树 != null) {
+                System.out.println("树|" + 转义分词字段(树));
+            }
+        }
+        System.out.println("汇总|" + 文件们.size() + "|" + 成功 + "|" + (文件们.size() - 成功));
         return 0;
     }
 
@@ -519,6 +555,7 @@ public final class 前端主程序 {
         System.out.println("  前端主程序 检查 <根目录> <文件或目录...>");
         System.out.println("  前端主程序 诊断 <根目录> <文件或目录...> [--json]");
         System.out.println("  前端主程序 分词 <根目录> <文件或目录...>");
+        System.out.println("  前端主程序 语法 <根目录> <文件或目录...>");
         System.out.println("  前端主程序 语法树 <根目录> <文件或目录...>");
         System.out.println("  前端主程序 快照 <根目录> <输出目录> <文件或目录...>");
         System.out.println("  前端主程序 中间 <根目录> <文件或目录...>");

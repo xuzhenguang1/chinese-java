@@ -32,7 +32,6 @@ static cjk_块 *块表 = NULL;
 static cjk_根 *根表 = NULL;
 static size_t 堆字节 = 0;
 static size_t 阈值 = 4u * 1024u * 1024u;
-static char *栈底 = NULL;
 
 /* 线程安全：块表与根表的增删都走同一把锁；多线程存活期间暂停自动回收。 */
 static INIT_ONCE 锁初始化一次 = INIT_ONCE_STATIC_INIT;
@@ -63,11 +62,17 @@ static void *载荷(cjk_块 *b) {
     return (char *)b + CJK_块头;
 }
 
-void cjk_gc_init(void) {
-    if (栈底 == NULL) {
-        char 局部;
-        栈底 = &局部;
-    }
+/*
+ * 根扫描上界：线程栈顶（TEB.StackBase）。
+ * 不能改用启动时记录的栈底：clang -O2 会把入口及其调用链内联进 main，
+ * 局部变量落在那个记录点之上，会被漏扫，导致活跃对象被误回收。
+ */
+static unsigned char *线程栈顶(void) {
+#if defined(_WIN64)
+    return (unsigned char *)__readgsqword(0x08);
+#else
+    return NULL;
+#endif
 }
 
 void cjk_gc_add_root(void *addr, size_t bytes) {
@@ -237,17 +242,14 @@ void cjk_gc_collect(void) {
                  (unsigned char *)&寄存器 + sizeof(寄存器));
     }
 
-    /* C 栈：从当前帧到 cjk_gc_init 记录的栈底。 */
+    /* C 栈：从当前帧扫到线程栈顶。 */
     {
         char 局部;
         unsigned char *甲 = (unsigned char *)&局部;
-        unsigned char *乙 = (unsigned char *)栈底;
-        if (甲 > 乙) {
-            unsigned char *临时 = 甲;
-            甲 = 乙;
-            乙 = 临时;
+        unsigned char *乙 = 线程栈顶();
+        if (乙 != NULL && 甲 < 乙) {
+            扫描区间(甲, 乙);
         }
-        扫描区间(甲, 乙);
     }
 
     while (待扫数 > 0) {

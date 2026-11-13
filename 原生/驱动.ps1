@@ -34,6 +34,7 @@ function 显示用法 {
     Write-Output "  .\cjc.ps1 原生 检查   [路径...]"
     Write-Output "  .\cjc.ps1 原生 诊断   [--json] [路径...]"
     Write-Output "  .\cjc.ps1 原生 分词   [路径...]"
+    Write-Output "  .\cjc.ps1 原生 语法   [路径...]"
     Write-Output "  .\cjc.ps1 原生 自举"
     Write-Output "  .\cjc.ps1 原生 语法树 [路径...]"
     Write-Output "  .\cjc.ps1 原生 快照   <输出目录> [路径...]"
@@ -270,7 +271,7 @@ if ($子命令 -in @('-h', '--帮助', '帮助')) {
     显示用法
     exit 0
 }
-if ($子命令 -notin @('检查', '诊断', '分词', '语法树', '快照', '词表', '中间', '运行', '对拍', '编译', '对拍原生', 'llvm', '自举')) {
+if ($子命令 -notin @('检查', '诊断', '分词', '语法', '语法树', '快照', '词表', '中间', '运行', '对拍', '编译', '对拍原生', 'llvm', '自举')) {
     Write-Output "未知原生子命令：$子命令"
     显示用法
     exit 2
@@ -334,6 +335,15 @@ switch ($子命令) {
         运行前端 (@('分词', $根目录) + $绝对路径)
         exit $LASTEXITCODE
     }
+    '语法' {
+        $绝对路径 = 转绝对路径 $路径列表
+        if ($绝对路径.Count -eq 0) {
+            $绝对路径 = @((Join-Path $根目录 "教程"))
+        }
+        确保前端已编译
+        运行前端 (@('语法', $根目录) + $绝对路径)
+        exit $LASTEXITCODE
+    }
     '语法树' {
         $绝对路径 = 转绝对路径 $路径列表
         if ($绝对路径.Count -eq 0) {
@@ -383,6 +393,10 @@ switch ($子命令) {
     '自举' {
         确保前端已编译
         & (Join-Path $PSScriptRoot "测试\对拍分词.ps1") -根目录 $根目录
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
+        & (Join-Path $PSScriptRoot "测试\对拍语法.ps1") -根目录 $根目录
         exit $LASTEXITCODE
     }
     '对拍原生' {
