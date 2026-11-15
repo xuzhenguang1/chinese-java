@@ -28,6 +28,8 @@ public final class 前端主程序 {
 
     private record 分析结果(标记.源文件 文件, 诊断 诊断) {}
 
+    private record 语义输入(标记.源文件 文件, 诊断 诊断, 编译单元 单元) {}
+
     private 前端主程序() {}
 
     public static void main(String[] 参数) {
@@ -47,6 +49,7 @@ public final class 前端主程序 {
                 case "分词" -> System.exit(分词(根目录, 词表数据, 取文件参数(参数, 2)));
                 case "语法" -> System.exit(语法(词表数据, 取文件参数(参数, 2)));
                 case "语法树" -> System.exit(打印语法树(词表数据, 取文件参数(参数, 2), null));
+                case "语义" -> System.exit(语义(词表数据, 取文件参数(参数, 2)));
                 case "快照" -> {
                     if (参数.length < 3) {
                         显示用法();
@@ -316,6 +319,147 @@ public final class 前端主程序 {
         return 0;
     }
 
+    /**
+     * M9 语义自举的参考口径：先词法/语法，再做名称解析与类型检查，输出符号表与语义诊断。
+     * 单行字段格式，供 原生\自举\自举前端.java 逐字节对拍；诊断是数据，退出码恒为 0。
+     */
+    private static int 语义(词表 词表, List<String> 文件参数) throws IOException {
+        List<Path> 文件们 = 收集文件(Paths.get(".").toAbsolutePath().normalize(), 文件参数);
+        List<语义输入> 输入们 = new ArrayList<>();
+        for (Path 路径 : 文件们) {
+            诊断 诊断 = new 诊断();
+            标记.源文件 文件 = 读取(路径, 词表, 诊断);
+            if (诊断.有错误()) {
+                System.out.println("汇总|0|0|0|0");
+                return 0;
+            }
+            try {
+                编译单元 单元 = new 语法分析器(文件.标记()).解析();
+                输入们.add(new 语义输入(文件, 诊断, 单元));
+            } catch (语法分析器.语法异常 异常) {
+                System.out.println("汇总|0|0|0|0");
+                return 0;
+            }
+        }
+
+        List<String> 类行 = new ArrayList<>();
+        List<String> 字段行 = new ArrayList<>();
+        List<String> 方法行 = new ArrayList<>();
+        List<String> 诊断行 = new ArrayList<>();
+        for (语义输入 输入 : 输入们) {
+            new 语义分析器(词表, 输入.诊断()).语义检查(输入.单元(), 输入.文件().名称());
+            for (诊断.项 一条 : 输入.诊断().全部()) {
+                if (!"语义".equals(一条.码())) {
+                    continue;
+                }
+                诊断行.add("诊断|" + 一条.行() + "|" + 一条.列() + "|"
+                        + 转义分词字段(一条.码()) + "|" + 转义分词字段(一条.消息()));
+            }
+            for (语法树.类型声明 声明 : 输入.单元().类型()) {
+                收集速览(词表, 声明, null, 类行, 字段行, 方法行);
+            }
+            if (输入.单元().类型().isEmpty()) {
+                收集脚本速览(输入.文件().名称(), 类行, 方法行);
+            }
+        }
+        类行.sort(Comparator.naturalOrder());
+        字段行.sort(Comparator.naturalOrder());
+        方法行.sort(Comparator.naturalOrder());
+        类行.forEach(System.out::println);
+        字段行.forEach(System.out::println);
+        方法行.forEach(System.out::println);
+        诊断行.forEach(System.out::println);
+        System.out.println("汇总|" + 输入们.size() + "|" + 类行.size()
+                + "|" + 方法行.size() + "|" + 诊断行.size());
+        return 0;
+    }
+
+    /** 按 AST 声明输出一个类型的符号速览；嵌套类型名用 `$` 连接。 */
+    private static void 收集速览(词表 词表, 语法树.类型声明 声明, String 外部名,
+            List<String> 类行, List<String> 字段行, List<String> 方法行) {
+        String 全名 = 外部名 == null ? 声明.名() : 外部名 + "$" + 声明.名();
+        String 英文种类 = 词表.中文到英文.getOrDefault(声明.种类(), 声明.种类());
+        boolean 是接口 = 英文种类.equals("interface");
+        String 父 = 声明.父类() == null || "对象".equals(声明.父类().名())
+                ? "-" : 类型文本(声明.父类());
+        int 字段数 = 声明.分量().size();
+        int 方法数 = 0;
+        for (语法树.成员 成员 : 声明.成员()) {
+            if (成员 instanceof 语法树.类型声明 内嵌) {
+                收集速览(词表, 内嵌, 全名, 类行, 字段行, 方法行);
+            } else if (成员 instanceof 语法树.字段声明 字段) {
+                boolean 静态 = 是接口 || 字段.修饰符().contains("static");
+                boolean 只读 = 是接口 || 字段.修饰符().contains("final");
+                for (语法树.变量声明 变量 : 字段.变量()) {
+                    字段行.add("字段|" + 全名 + "|" + 变量.名() + "|" + 类型文本(变量.类型())
+                            + "|" + 真值(静态) + "|" + 真值(只读));
+                    字段数++;
+                }
+            } else if (成员 instanceof 语法树.方法声明 方法) {
+                方法行.add("方法|" + 全名 + "|" + 方法.名() + "|" + 参数文本(方法.参数())
+                        + "|" + 类型文本(方法.返回类型()) + "|"
+                        + 真值(方法.修饰符().contains("static")) + "|" + 真值(方法.体() == null));
+                方法数++;
+            } else if (成员 instanceof 语法树.构造器声明 构造器) {
+                方法行.add("方法|" + 全名 + "|<构造>|" + 参数文本(构造器.参数()) + "|无|假|假");
+                方法数++;
+            } else if (成员 instanceof 语法树.入口声明) {
+                方法行.add("方法|" + 全名 + "|<入口>||无|真|假");
+                方法数++;
+            }
+        }
+        for (语法树.参数 分量 : 声明.分量()) {
+            字段行.add("字段|" + 全名 + "|" + 分量.名() + "|" + 类型文本(分量.类型()) + "|假|真");
+        }
+        类行.add("类|" + 全名 + "|" + 父 + "|" + 声明.接口().size() + "|" + 字段数 + "|" + 方法数);
+    }
+
+    /** 纯语句文件与参考实现一致：用去后缀的文件名作为隐式类名，只含一个 `<入口>`。 */
+    private static void 收集脚本速览(String 文件名, List<String> 类行, List<String> 方法行) {
+        String 名 = 文件名;
+        if (名.endsWith(".java")) {
+            名 = 名.substring(0, 名.length() - 5);
+        }
+        类行.add("类|" + 名 + "|-|0|0|1");
+        方法行.add("方法|" + 名 + "|<入口>||无|真|假");
+    }
+
+    private static String 类型文本(语法树.类型引用 类型) {
+        if (类型 == null) {
+            return "-";
+        }
+        StringBuilder 文本 = new StringBuilder(类型.名());
+        if (!类型.实参().isEmpty()) {
+            StringBuilder 实参 = new StringBuilder();
+            for (语法树.类型引用 项 : 类型.实参()) {
+                if (实参.length() > 0) {
+                    实参.append(',');
+                }
+                实参.append(类型文本(项));
+            }
+            文本.append('<').append(实参).append('>');
+        }
+        for (int i = 0; i < 类型.数组维数(); i++) {
+            文本.append("[]");
+        }
+        return 文本.toString();
+    }
+
+    private static String 参数文本(List<语法树.参数> 参数) {
+        StringBuilder 文本 = new StringBuilder();
+        for (语法树.参数 项 : 参数) {
+            if (文本.length() > 0) {
+                文本.append(',');
+            }
+            文本.append(类型文本(项.类型()));
+        }
+        return 文本.toString();
+    }
+
+    private static String 真值(boolean 值) {
+        return 值 ? "真" : "假";
+    }
+
     /** 对拍字段转义：反斜杠、竖线与换行/回车/制表符，保证每条记录只占一行。 */
     private static String 转义分词字段(String 文本) {
         StringBuilder 结果 = new StringBuilder();
@@ -557,6 +701,7 @@ public final class 前端主程序 {
         System.out.println("  前端主程序 分词 <根目录> <文件或目录...>");
         System.out.println("  前端主程序 语法 <根目录> <文件或目录...>");
         System.out.println("  前端主程序 语法树 <根目录> <文件或目录...>");
+        System.out.println("  前端主程序 语义 <根目录> <文件或目录...>");
         System.out.println("  前端主程序 快照 <根目录> <输出目录> <文件或目录...>");
         System.out.println("  前端主程序 中间 <根目录> <文件或目录...>");
         System.out.println("  前端主程序 运行 <根目录> <文件或目录...>");
