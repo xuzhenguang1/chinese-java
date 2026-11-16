@@ -1,7 +1,9 @@
 ﻿# 重新生成 M2 MIR 黄金快照：调用 原生\前端 的「中间」命令，不手写任何快照内容。
-# 用法：.\原生\测试\生成MIR快照.ps1 [-输出目录 <目录>] [-路径 <文件或目录...>]
+# 用法：.\原生\测试\生成MIR快照.ps1 [-输出目录 <目录>] [-范围 <文件名正则>] [-路径 <文件或目录...>]
 param(
     [string]$输出目录 = (Join-Path $PSScriptRoot "MIR快照"),
+    # 目录输入时的文件名过滤；M10 起基线为教程 01–21。
+    [string]$范围 = '^第(0[1-9]|1[0-9]|2[01])课',
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$路径
 )
@@ -19,9 +21,8 @@ $文件们 = @()
 if ($路径 -and $路径.Count -gt 0) {
     foreach ($项 in $路径) {
         if (Test-Path $项 -PathType Container) {
-            # M2 只对教程 01–10 负责，目录输入自动收敛到这一段。
             $文件们 += @(Get-ChildItem $项 -Filter *.java -File |
-                Where-Object { $_.Name -match '^第(0[1-9]|10)课' } | Sort-Object Name)
+                Where-Object { $_.Name -match $范围 } | Sort-Object Name)
         } elseif (Test-Path $项) {
             $文件们 += @(Get-Item $项)
         } else {
@@ -31,7 +32,7 @@ if ($路径 -and $路径.Count -gt 0) {
     }
 } else {
     $文件们 = @(Get-ChildItem (Join-Path $根目录 "教程") -Filter *.java -File |
-        Where-Object { $_.Name -match '^第(0[1-9]|10)课' } | Sort-Object Name)
+        Where-Object { $_.Name -match $范围 } | Sort-Object Name)
 }
 
 if ($文件们.Count -eq 0) {

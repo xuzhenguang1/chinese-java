@@ -411,6 +411,10 @@ switch ($子命令) {
             exit $LASTEXITCODE
         }
         & (Join-Path $PSScriptRoot "测试\对拍语义.ps1") -根目录 $根目录
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
+        & (Join-Path $PSScriptRoot "测试\对拍中间码.ps1") -根目录 $根目录
         exit $LASTEXITCODE
     }
     '对拍原生' {
