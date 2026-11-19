@@ -80,8 +80,12 @@ if ($快照码 -eq 0 -and $黄金文件.Count -eq 35 -and $快照文件.Count -e
         $对应 = Join-Path $快照目录 $基准.Name
         if (-not (Test-Path $对应)) {
             $快照差 += "缺少 $($基准.Name)"
-        } elseif ((Get-Content $基准.FullName -Raw) -cne (Get-Content $对应 -Raw)) {
-            $快照差 += "不同 $($基准.Name)"
+        } else {
+            $期望文本 = [System.IO.File]::ReadAllText($基准.FullName, (New-Object System.Text.UTF8Encoding($false))) -replace "`r`n", "`n"
+            $实际文本 = [System.IO.File]::ReadAllText($对应, (New-Object System.Text.UTF8Encoding($false))) -replace "`r`n", "`n"
+            if ($期望文本 -cne $实际文本) {
+                $快照差 += "不同 $($基准.Name)"
+            }
         }
     }
 }

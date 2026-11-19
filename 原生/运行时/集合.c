@@ -517,38 +517,78 @@ void cjk_map_for_each(cjk_object *map, cjk_object *fn, cjk_callback cb) {
 
 /* ---------------- 文本构建器 ---------------- */
 
+/* 动态容量 UTF-16 缓冲：追加摊还 O(1)，避免逐次 str_concat 的 O(n^2)。
+ * 结构保持 24 字节（cls+buf+len+cap），与类描述符中的 size=24 一致。 */
 typedef struct cjk_builder {
     cjk_class *cls;
-    cjk_string *content;
+    uint16_t *buf;
+    int32_t len;
+    int32_t cap;
 } cjk_builder;
+
+static void 构建器扩容(cjk_builder *b, int32_t 需要) {
+    if (需要 <= b->cap) {
+        return;
+    }
+    int32_t 新容量 = b->cap > 0 ? b->cap : 16;
+    while (新容量 < 需要) {
+        新容量 *= 2;
+    }
+    uint16_t *新缓冲 = (uint16_t *)cjk_gc_alloc(sizeof(uint16_t) * (size_t)新容量);
+    if (b->len > 0) {
+        memcpy(新缓冲, b->buf, sizeof(uint16_t) * (size_t)b->len);
+    }
+    /* 旧缓冲交给保守 GC：扩容后不再有栈上/对象内引用指向它。 */
+    b->buf = 新缓冲;
+    b->cap = 新容量;
+}
 
 cjk_object *cjk_builder_new(void) {
     cjk_builder *b = (cjk_builder *)cjk_gc_alloc(sizeof(cjk_builder));
     b->cls = &CJK_CLS_文本构建器;
-    b->content = cjk_str_from_utf8("");
+    b->cap = 16;
+    b->len = 0;
+    b->buf = (uint16_t *)cjk_gc_alloc(sizeof(uint16_t) * (size_t)b->cap);
     return (cjk_object *)b;
 }
 
 cjk_object *cjk_builder_append(cjk_object *builder, cjk_value v) {
     cjk_builder *b = (cjk_builder *)builder;
-    b->content = cjk_str_concat(b->content, cjk_value_to_string(v));
+    cjk_string *s = cjk_value_to_string(v);
+    int32_t 需要 = b->len + (s ? s->len : 0);
+    构建器扩容(b, 需要);
+    if (s && s->len > 0) {
+        memcpy(b->buf + b->len, s->data, sizeof(uint16_t) * (size_t)s->len);
+        b->len = 需要;
+    }
     return builder;
 }
 
+static cjk_string *构建器快照(cjk_builder *b) {
+    cjk_string *r = (cjk_string *)cjk_gc_alloc(sizeof(cjk_string));
+    r->len = b->len;
+    r->data = (uint16_t *)cjk_gc_alloc(sizeof(uint16_t) * (size_t)(b->len > 0 ? b->len : 1));
+    if (b->len > 0) {
+        memcpy(r->data, b->buf, sizeof(uint16_t) * (size_t)b->len);
+    }
+    return r;
+}
+
 cjk_string *cjk_builder_to_string(cjk_object *builder) {
-    return ((cjk_builder *)builder)->content;
+    return 构建器快照((cjk_builder *)builder);
 }
 
 int32_t cjk_builder_len(cjk_object *builder) {
-    return ((cjk_builder *)builder)->content->len;
+    return ((cjk_builder *)builder)->len;
 }
 
 void cjk_builder_clear(cjk_object *builder) {
-    ((cjk_builder *)builder)->content = cjk_str_from_utf8("");
+    cjk_builder *b = (cjk_builder *)builder;
+    b->len = 0;
 }
 
 static cjk_string *构建器转文本(cjk_object *self) {
-    return ((cjk_builder *)self)->content;
+    return 构建器快照((cjk_builder *)self);
 }
 
 /* ---------------- 可选值 ---------------- */

@@ -72,7 +72,7 @@ if ($基准文件.Count -eq 35) {
             continue
         }
         $实际 = @(& $exe 语义 $根目录 $源文件) -join "`n"
-        $期望 = (Get-Content $基准.FullName -Raw) -replace "`r`n", "`n"
+        $期望 = [System.IO.File]::ReadAllText($基准.FullName, (New-Object System.Text.UTF8Encoding($false))) -replace "`r`n", "`n"
         if (($实际 + "`n") -cne $期望) {
             $快照差 += "不同 $($基准.Name)"
         }
@@ -98,7 +98,7 @@ foreach ($反例 in $反例文件) {
     }
     $参考 = @(& $cjc 原生 语义 $反例.FullName | Where-Object { $_ -match '^(类|字段|方法|诊断|汇总)\|' })
     $自举 = @(& $exe 语义 $根目录 $反例.FullName)
-    $期望 = (Get-Content $期望路径 -Raw) -replace "`r`n", "`n"
+    $期望 = [System.IO.File]::ReadAllText($期望路径, (New-Object System.Text.UTF8Encoding($false))) -replace "`r`n", "`n"
     if ((($参考 -join "`n") + "`n") -cne $期望) {
         $反例差 += "参考不同 $($反例.BaseName)"
     }

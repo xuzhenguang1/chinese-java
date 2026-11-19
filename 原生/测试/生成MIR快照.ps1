@@ -2,8 +2,8 @@
 # 用法：.\原生\测试\生成MIR快照.ps1 [-输出目录 <目录>] [-范围 <文件名正则>] [-路径 <文件或目录...>]
 param(
     [string]$输出目录 = (Join-Path $PSScriptRoot "MIR快照"),
-    # 目录输入时的文件名过滤；M10 起基线为教程 01–21。
-    [string]$范围 = '^第(0[1-9]|1[0-9]|2[01])课',
+    # 目录输入时的文件名过滤；M11 起基线为教程 01–35。
+    [string]$范围 = '^第(0[1-9]|[12][0-9]|3[0-5])课',
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$路径
 )

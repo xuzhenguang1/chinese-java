@@ -182,11 +182,30 @@ function 编译运行时对象 {
 
 function 链接可执行 {
     param([string]$clang, [string]$模块对象, $运行时对象, [string]$输出exe)
-    $输出 = & $clang -static $模块对象 @($运行时对象.对象们) -lm -lwinhttp -lws2_32 -lshell32 -o $输出exe 2>&1
-    if ($输出) {
-        $输出 | ForEach-Object { [Console]::Error.WriteLine($_) }
+    # Windows clang/ld 会把中文路径按 ANSI 解读；先复制为 ASCII 临时文件再链接。
+    $链接目录 = Join-Path ([System.IO.Path]::GetTempPath()) ("cjc-link-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force $链接目录 | Out-Null
+    try {
+        $临时对象们 = @()
+        $索引 = 0
+        foreach ($对象 in @(@($模块对象) + @($运行时对象.对象们))) {
+            $临时对象 = Join-Path $链接目录 ("obj{0}.o" -f $索引)
+            Copy-Item -LiteralPath $对象 -Destination $临时对象 -Force
+            $临时对象们 += $临时对象
+            $索引 = $索引 + 1
+        }
+        $临时输出 = Join-Path $链接目录 "out.exe"
+        $输出 = & $clang -static $临时对象们 -lm -lwinhttp -lws2_32 -lshell32 -o $临时输出 2>&1
+        if ($输出) {
+            $输出 | ForEach-Object { [Console]::Error.WriteLine($_) }
+        }
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $临时输出)) {
+            Copy-Item -LiteralPath $临时输出 -Destination $输出exe -Force
+        }
+        return $LASTEXITCODE
+    } finally {
+        Remove-Item -LiteralPath $链接目录 -Recurse -Force -ErrorAction SilentlyContinue
     }
-    return $LASTEXITCODE
 }
 
 function 读取缓存状态 {
@@ -415,6 +434,10 @@ switch ($子命令) {
             exit $LASTEXITCODE
         }
         & (Join-Path $PSScriptRoot "测试\对拍中间码.ps1") -根目录 $根目录
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
+        & (Join-Path $PSScriptRoot "测试\对拍自举不动点.ps1") -根目录 $根目录
         exit $LASTEXITCODE
     }
     '对拍原生' {
@@ -485,9 +508,25 @@ switch ($子命令) {
 
         if ($无缓存) {
             Write-Output "增量：未启用缓存（-无缓存）"
-            & $clang -O2 -std=c11 -fwrapv -fno-strict-aliasing -static -I $运行时.目录 $C文件 @($运行时.源们 | ForEach-Object FullName) -lm -lwinhttp -lws2_32 -lshell32 -o $输出exe
-            if ($LASTEXITCODE -ne 0) {
-                Write-Output "clang 编译失败（退出码 $LASTEXITCODE）。"
+            # 与缓存分支共用「链接可执行」以绕开 clang/ld 对中文路径的 ANSI 解读：
+            # 先强制重编运行时对象与模块对象（不读缓存），再把所有对象复制成 ASCII 名链接。
+            $运行时对象 = 编译运行时对象 $clang $运行时
+            $无缓存目录 = Join-Path ([System.IO.Path]::GetTempPath()) ("cjc-nocache-" + [guid]::NewGuid().ToString("N"))
+            New-Item -ItemType Directory -Force $无缓存目录 | Out-Null
+            $模块对象 = Join-Path $无缓存目录 "module.o"
+            try {
+                $模块输出 = & $clang -c -O2 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $C文件 -o $模块对象 2>&1
+                $编译码 = $LASTEXITCODE
+                if ($编译码 -ne 0) {
+                    $模块输出 | ForEach-Object { Write-Output $_ }
+                } else {
+                    $编译码 = 链接可执行 $clang $模块对象 $运行时对象 $输出exe
+                }
+            } finally {
+                Remove-Item -LiteralPath $无缓存目录 -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            if ($编译码 -ne 0) {
+                Write-Output "clang 编译失败（退出码 $编译码）。"
                 exit 1
             }
         } else {

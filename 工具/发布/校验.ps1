@@ -669,10 +669,10 @@ if ($含原生) {
         失败项 "原生 M0 词表副本" "原生目录下存在词表副本：$($词表副本.FullName -join '；')"
     }
     $adr文件 = @(Get-ChildItem (Join-Path $root "文档\原生\ADR") -Filter "ADR-*.md" -File -ErrorAction SilentlyContinue)
-    if ($adr文件.Count -eq 14) {
-        Write-Host "原生 M0：ADR 14 份齐备" -ForegroundColor Green
+    if ($adr文件.Count -eq 15) {
+        Write-Host "原生 M0：ADR 15 份齐备" -ForegroundColor Green
     } else {
-        失败项 "原生 M0 ADR" "ADR 数量应为 14，实际 $($adr文件.Count)"
+        失败项 "原生 M0 ADR" "ADR 数量应为 15，实际 $($adr文件.Count)"
     }
 
     # 8.1) 原生 M1：35 课 Token/AST、黄金快照可重复、词法/语法/新手提示反例
@@ -746,7 +746,9 @@ if ($含原生) {
         & "$root\原生\测试\生成MIR快照.ps1" -输出目录 $mir临时 -路径 "$root\教程"
     }
     $mir码 = $LASTEXITCODE
-    $mir基准文件 = @(Get-ChildItem $mir基准 -Filter *.mir.txt -File -ErrorAction SilentlyContinue)
+    # 只比较教程 MIR 快照；自举前端自身的 MIR 基线（自举前端.mir.txt）不参与教程快照可重复性断言。
+    $mir基准文件 = @(Get-ChildItem $mir基准 -Filter *.mir.txt -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^第.*课.*\.mir\.txt$' })
     $mir临时文件 = @(Get-ChildItem $mir临时 -Filter *.mir.txt -File -ErrorAction SilentlyContinue)
     $mir差异 = @()
     foreach ($基准 in $mir基准文件) {
@@ -759,8 +761,8 @@ if ($含原生) {
             $mir差异 += $基准.Name
         }
     }
-    if ($mir码 -eq 0 -and $mir基准文件.Count -eq 21 -and $mir临时文件.Count -eq 21 -and $mir差异.Count -eq 0) {
-        Write-Host "原生 M2：MIR 黄金快照 21 份可重复" -ForegroundColor Green
+    if ($mir码 -eq 0 -and $mir基准文件.Count -eq 35 -and $mir临时文件.Count -eq 35 -and $mir差异.Count -eq 0) {
+        Write-Host "原生 M2：MIR 黄金快照 35 份可重复" -ForegroundColor Green
     } else {
         失败项 "原生 M2 快照" "基准 $($mir基准文件.Count) 份 / 重生成 $($mir临时文件.Count) 份 / 差异 $($mir差异.Count) 条" $mir生成输出
     }
@@ -1342,14 +1344,25 @@ if ($含原生) {
         失败项 "原生 M9 自举语义" "对拍失败（退出码 $m9码）" $m9输出
     }
 
-    # 8.9) 原生 M10：自举 MIR 降级与打印对拍参考实现与 MIR 快照
+    # 8.9) 原生 M10/M11：自举 MIR 降级与打印对拍参考实现、MIR 快照与自举自举第一阶
     $m10输出 = 捕获输出 { & "$root\原生\测试\对拍中间码.ps1" -根目录 $root }
     $m10码 = $LASTEXITCODE
-    if ($m10码 -eq 0 -and $m10输出.Contains("教程中间码：逐字节一致") -and
-        $m10输出.Contains("中间码快照：21/21 一致") -and $m10输出.Contains("通过 2 / 共 2 项")) {
-        Write-Host "原生 M10：自举 MIR 降级逐字节一致（教程 01–21 + 21 份快照）" -ForegroundColor Green
+    if ($m10码 -eq 0 -and $m10输出.Contains("教程中间码：逐字节一致（35 份") -and
+        $m10输出.Contains("中间码快照：35/35 一致") -and
+        $m10输出.Contains("自举前端自身中间码：逐字节一致") -and
+        $m10输出.Contains("通过 3 / 共 3 项")) {
+        Write-Host "原生 M11：自举 MIR 降级逐字节一致（教程 01–35 + 35 份快照 + 自举自举第一阶）" -ForegroundColor Green
     } else {
-        失败项 "原生 M10 自举中间码" "对拍失败（退出码 $m10码）" $m10输出
+        失败项 "原生 M11 自举中间码" "对拍失败（退出码 $m10码）" $m10输出
+    }
+
+    # 8.10) 原生 M11：自举自举第二阶不动点
+    $不动点输出 = 捕获输出 { & "$root\原生\测试\对拍自举不动点.ps1" -根目录 $root }
+    $不动点码 = $LASTEXITCODE
+    if ($不动点码 -eq 0 -and $不动点输出.Contains("自举不动点：通过")) {
+        Write-Host "原生 M11：自举不动点逐字节一致" -ForegroundColor Green
+    } else {
+        失败项 "原生 M11 自举不动点" "对拍失败（退出码 $不动点码）" $不动点输出
     }
 
     运行 "原生补丁编译" {

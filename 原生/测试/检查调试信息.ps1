@@ -22,6 +22,10 @@ if (Test-Path $工作目录) {
     Remove-Item $工作目录 -Recurse -Force
 }
 New-Item -ItemType Directory -Force $工作目录 | Out-Null
+# Windows 下 objdump 会把中文路径按 ANSI 解读，复制为纯 ASCII 路径再读取。
+# DWARF 里嵌入的是编译期源文件名（中文），与 exe 所在目录无关，断言不受影响。
+$读取目录 = Join-Path ([System.IO.Path]::GetTempPath()) "cjk_dwarf_tmp"
+New-Item -ItemType Directory -Force $读取目录 | Out-Null
 
 if (-not $路径 -or $路径.Count -eq 0) {
     $路径 = @("教程\第01课你好世界.java", "教程\第34课密封类.java")
@@ -30,8 +34,10 @@ $文件们 = foreach ($项 in $路径) { Get-Item (Join-Path $根目录 $项) }
 
 $通过 = 0
 $失败 = @()
+$序号 = 0
 
 foreach ($文件 in $文件们) {
+    $序号++
     $名 = $文件.BaseName
     $exe = Join-Path $工作目录 "$名.exe"
     & $cjc 原生 llvm 编译 $文件.FullName -o $exe *> $null
@@ -40,7 +46,9 @@ foreach ($文件 in $文件们) {
         continue
     }
 
-    $转储 = & $objdump --dwarf=decodedline $exe 2>&1 | Out-String
+    $读取exe = Join-Path $读取目录 ("obj{0}.exe" -f $序号)
+    Copy-Item -LiteralPath $exe -Destination $读取exe -Force
+    $转储 = & $objdump --dwarf=decodedline $读取exe 2>&1 | Out-String
     if ($转储 -notmatch [regex]::Escape($文件.Name)) {
         $失败 += "$名：DWARF 缺少中文源文件名「$($文件.Name)」"
         continue
