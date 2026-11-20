@@ -49,12 +49,13 @@ public final class 语法分析器 {
     }
 
     public 编译单元 解析() {
+        String 包名 = "";
         List<导入声明> 导入 = new ArrayList<>();
         List<类型声明> 类型 = new ArrayList<>();
         List<语句> 语句 = new ArrayList<>();
         while (看().类别 != 标记类别.结束) {
             if (是关键字("package")) {
-                解析包声明();
+                包名 = 解析包声明().名称();
             } else if (是关键字("import")) {
                 导入.add(解析导入());
             } else if (是类型声明起点()) {
@@ -63,7 +64,7 @@ public final class 语法分析器 {
                 语句.add(解析语句());
             }
         }
-        return new 编译单元(导入, 类型, 语句);
+        return new 编译单元(包名, 导入, 类型, 语句);
     }
 
     /** 解析单个表达式：供字符串插值等内部复用，不消费文件级结构。 */
@@ -73,15 +74,16 @@ public final class 语法分析器 {
 
     // ---------- 顶层与成员 ----------
 
-    /** 顶层 `包 名称;`：只消费标记，不建 AST 节点，不影响快照与后端。 */
-    private void 解析包声明() {
+    /** 顶层 `包 名称;`：M13 建 包声明 节点；打印器无包时零新增行，快照不受影响。 */
+    private 包声明 解析包声明() {
         取();
-        期望名称();
+        StringBuilder 名称 = new StringBuilder(期望名称().原文);
         while (是符号(".")) {
             取();
-            期望名称();
+            名称.append('.').append(期望名称().原文);
         }
         期望符号(";");
+        return new 包声明(名称.toString());
     }
 
     private 导入声明 解析导入() {

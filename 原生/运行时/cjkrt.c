@@ -2,16 +2,13 @@
  * 中文 Java 原生运行时（M4）
  */
 #include "cjkrt.h"
+#include "cjk_platform.h"
 
 #include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifdef _WIN32
-#include <windows.h>
-#endif
 
 /* ---------------- 内置类描述符 ---------------- */
 
@@ -107,10 +104,7 @@ static uint16_t 空字面量[] = {'n', 'u', 'l', 'l'};
 static cjk_string 空字面量串 = {4, 空字面量};
 
 void cjk_rt_init(void) {
-#ifdef _WIN32
-    SetConsoleOutputCP(CP_UTF8);
-    SetConsoleCP(CP_UTF8);
-#endif
+    cjk_console_init_utf8();
 }
 
 void cjk_set_source(const char *path) {

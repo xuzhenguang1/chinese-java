@@ -7,7 +7,7 @@ public final class 语法树 {
 
     private 语法树() {}
 
-    public sealed interface 节点 permits 编译单元, 导入声明, 类型声明, 成员, 语句, 表达式,
+    public sealed interface 节点 permits 编译单元, 包声明, 导入声明, 类型声明, 成员, 语句, 表达式,
             类型引用, 类型参数, 参数, 变量声明, 枚举常量, 切换分支, 捕获子句 {
     }
 
@@ -24,7 +24,15 @@ public final class 语法树 {
             λ表达式, 方法引用, 后缀自增, 切换表达式 {
     }
 
-    public record 编译单元(List<导入声明> 导入, List<类型声明> 类型, List<语句> 语句) implements 节点 {}
+    /** M13：编译单元增包名；3 参便捷构造器兼容旧单文件调用（无包 → 空串）。 */
+    public record 编译单元(String 包名, List<导入声明> 导入, List<类型声明> 类型, List<语句> 语句) implements 节点 {
+        public 编译单元(List<导入声明> 导入, List<类型声明> 类型, List<语句> 语句) {
+            this("", 导入, 类型, 语句);
+        }
+    }
+
+    /** M13：包声明（如「包 演示.应用;」）。名称为空表示默认包。 */
+    public record 包声明(String 名称) implements 节点 {}
 
     public record 导入声明(String 名称, boolean 通配) implements 节点 {}
 

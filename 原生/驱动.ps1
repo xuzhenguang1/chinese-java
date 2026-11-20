@@ -455,19 +455,23 @@ switch ($子命令) {
             显示用法
             exit 2
         }
-        $源文件 = @(转绝对路径 @($参数[1]))[0]
+        # M13：编译接受 <源文件...>；第一个为入口。多源走"编译模块"共享分析。
+        $源文件们 = @(转绝对路径 @($参数[1..($参数.Count - 1)]))
+        if ($源文件们.Count -lt 1) {
+            显示用法
+            exit 2
+        }
+        $源文件 = $源文件们[0]
+        $是多源 = $源文件们.Count -gt 1
         $输出exe = $null
         if ($o) {
             $输出exe = @(转绝对路径 @($o))[0]
         }
-        for ($i = 2; $i -lt $参数.Count; $i++) {
-            Write-Output "未知编译参数：$($参数[$i])"
-            显示用法
-            exit 2
-        }
-        if (-not (Test-Path $源文件)) {
-            Write-Output "源文件不存在：$源文件"
-            exit 2
+        foreach ($源 in $源文件们) {
+            if (-not (Test-Path $源)) {
+                Write-Output "源文件不存在：$源"
+                exit 2
+            }
         }
         $模块 = [System.IO.Path]::GetFileNameWithoutExtension($源文件)
         $C目录 = Join-Path $根目录 "构建\原生"
@@ -488,7 +492,13 @@ switch ($子命令) {
 
         $运行时 = 取运行时信息
         $工具链哈希 = 取工具链哈希
-        $源哈希 = 取文件哈希 $源文件
+        if ($是多源) {
+            # 聚合哈希：任一被引用源文件变化都让缓存失效。
+            $聚合 = ($源文件们 | ForEach-Object { 取文件哈希 $_ }) -join ''
+            $源哈希 = 取文本哈希 $聚合
+        } else {
+            $源哈希 = 取文件哈希 $源文件
+        }
         $缓存目录 = Join-Path $根目录 "构建\原生\缓存"
         $状态文件 = Join-Path $缓存目录 ("状态\" + $模块 + ".json")
 
@@ -503,7 +513,12 @@ switch ($子命令) {
         }
 
         确保前端已编译
-        运行前端 @('编译', $根目录, $源文件, $C文件)
+        if ($是多源) {
+            $前端参数 = @('编译模块', $根目录, $C文件, $源文件) + @($源文件们[1..($源文件们.Count - 1)])
+            运行前端 $前端参数
+        } else {
+            运行前端 @('编译', $根目录, $源文件, $C文件)
+        }
         if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
         }
@@ -573,15 +588,15 @@ switch ($子命令) {
             显示用法
             exit 2
         }
-        $源文件 = @(转绝对路径 @($参数[2]))[0]
-        for ($i = 3; $i -lt $参数.Count; $i++) {
-            Write-Output "未知 llvm 参数：$($参数[$i])"
-            显示用法
-            exit 2
-        }
-        if (-not (Test-Path $源文件)) {
-            Write-Output "源文件不存在：$源文件"
-            exit 2
+        # M13：llvm 编译接受 <源文件...>，第一个为入口；多源走"编译模块LLVM"。
+        $源文件们 = @(转绝对路径 @($参数[2..($参数.Count - 1)]))
+        $源文件 = $源文件们[0]
+        $是多源 = $源文件们.Count -gt 1
+        foreach ($源 in $源文件们) {
+            if (-not (Test-Path $源)) {
+                Write-Output "源文件不存在：$源"
+                exit 2
+            }
         }
         $模块 = [System.IO.Path]::GetFileNameWithoutExtension($源文件)
         $llvm目录 = Join-Path $根目录 "构建\原生\llvm"
@@ -598,7 +613,12 @@ switch ($子命令) {
 
         $运行时 = 取运行时信息
         $工具链哈希 = 取工具链哈希
-        $源哈希 = 取文件哈希 $源文件
+        if ($是多源) {
+            $聚合 = ($源文件们 | ForEach-Object { 取文件哈希 $_ }) -join ''
+            $源哈希 = 取文本哈希 $聚合
+        } else {
+            $源哈希 = 取文件哈希 $源文件
+        }
         $缓存目录 = Join-Path $根目录 "构建\原生\缓存"
         $状态文件 = Join-Path $缓存目录 ("状态\" + $模块 + ".llvm.json")
 
@@ -613,7 +633,12 @@ switch ($子命令) {
         }
 
         确保前端已编译
-        运行前端 @('编译LLVM', $根目录, $源文件, $IR文件)
+        if ($是多源) {
+            $前端参数 = @('编译模块LLVM', $根目录, $IR文件, $源文件) + @($源文件们[1..($源文件们.Count - 1)])
+            运行前端 $前端参数
+        } else {
+            运行前端 @('编译LLVM', $根目录, $源文件, $IR文件)
+        }
         if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
         }

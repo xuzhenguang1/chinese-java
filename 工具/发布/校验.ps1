@@ -676,10 +676,10 @@ if ($含原生) {
         失败项 "原生 M0 词表副本" "原生目录下存在词表副本：$($词表副本.FullName -join '；')"
     }
     $adr文件 = @(Get-ChildItem (Join-Path $root "文档\原生\ADR") -Filter "ADR-*.md" -File -ErrorAction SilentlyContinue)
-    if ($adr文件.Count -eq 16) {
-        Write-Host "原生 M0：ADR 16 份齐备" -ForegroundColor Green
+    if ($adr文件.Count -eq 17) {
+        Write-Host "原生 M0：ADR 17 份齐备" -ForegroundColor Green
     } else {
-        失败项 "原生 M0 ADR" "ADR 数量应为 16，实际 $($adr文件.Count)"
+        失败项 "原生 M0 ADR" "ADR 数量应为 17，实际 $($adr文件.Count)"
     }
 
     # 8.1) 原生 M1：35 课 Token/AST、黄金快照可重复、词法/语法/新手提示反例
@@ -1384,6 +1384,27 @@ if ($含原生) {
         }
     } else {
         Write-Host "原生 M12：基准门槛未验证（无 clang，基准未运行）" -ForegroundColor Yellow
+    }
+
+    # 8.12) 原生 M13：多文件模块对拍（示例工程 3 包 10 文件，C/LLVM × JVM）+ 平台静态检查报告归档。
+    $平台报告 = Join-Path $root "文档\原生\M13\平台配置与静态检查.md"
+    if (Test-Path $平台报告) {
+        Write-Host "原生 M13：平台配置与静态检查报告归档" -ForegroundColor Green
+    } else {
+        失败项 "原生 M13 平台报告" "缺少 $平台报告"
+    }
+    $cjc存在 = Test-Path "$root\cjc.ps1"
+    if ($cjc存在) {
+        foreach ($后端 in @('c', 'llvm')) {
+            $模块对拍输出 = 捕获输出 { & "$root\原生\测试\对拍模块.ps1" -后端 $后端 }
+            if ($模块对拍输出 -match '通过：示例工程.*多文件.*逐字节' -or $模块对拍输出 -match '通过：示例工程') {
+                Write-Host ("原生 M13：多文件对拍 {0} 后端通过" -f $后端.ToUpper()) -ForegroundColor Green
+            } else {
+                失败项 "原生 M13 多文件对拍($后端)" "输出：$模块对拍输出"
+            }
+        }
+    } else {
+        Write-Host "原生 M13：多文件对拍未验证（无 cjc.ps1）" -ForegroundColor Yellow
     }
 
     运行 "原生补丁编译" {

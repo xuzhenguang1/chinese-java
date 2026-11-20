@@ -1246,9 +1246,14 @@ public final class LLVM生成器 {
         作用域.push(new LinkedHashMap<>());
         语句(尝试.体());
         作用域.pop();
-        指令("store ptr " + 前一个 + ", ptr @cjk_handler_top");
-        if (尝试.兜底() != null) {
-            语句(尝试.兜底());
+        /* 修复：try 体内 return 会已终结基本块（ret 已发射），此时不能再输出
+         * handler 恢复 store（否则 ret 后跟孤立指令，LLVM 报 expected instruction opcode）。
+         * 仅当 try 体正常落出时才恢复 handler 并跑兜底/跳结束块。 */
+        if (!块已终结) {
+            指令("store ptr " + 前一个 + ", ptr @cjk_handler_top");
+            if (尝试.兜底() != null) {
+                语句(尝试.兜底());
+            }
         }
         if (!块已终结) {
             终结("br label %" + 结束块);

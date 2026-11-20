@@ -4,13 +4,20 @@
  * 一期仅 Windows：内部用 UTF-16（wchar_t）调用 Win32 API。
  */
 #include "cjkrt.h"
+#include "cjk_platform.h"
 
-#include <direct.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if CJK_PLATFORM_WINDOWS
+#include <direct.h>
 #include <sys/stat.h>
 #include <windows.h>
+#endif
+
+#if CJK_PLATFORM_WINDOWS
+/* ==================== Windows 实现（UTF-16 路径，原样保留） ==================== */
 
 static cjk_string *串新建(int32_t len) {
     cjk_string *s = (cjk_string *)cjk_gc_alloc(sizeof(cjk_string));
@@ -428,3 +435,90 @@ cjk_object *cjk_files_move(cjk_object *from, cjk_object *to, int32_t line) {
     }
     return NULL;
 }
+/* ==================== /Windows 实现 ==================== */
+
+#else /* !CJK_PLATFORM_WINDOWS */
+/* ==================== Linux 骨架：明确中文诊断，不静默 ====================
+ * M13 不承诺 Linux 可运行文件 IO（ADR-017）：本分支提供与 Windows 侧同签名的
+ * 导出函数，路径操作按 POSIX 语义（'/' 分隔）做纯字符串处理，涉及真实 IO 的
+ * 函数抛"平台暂不支持"中文诊断并带行号。M14 引入 sysroot 后替换为 POSIX 实现。 */
+
+cjk_class CJK_CLS_输入输出异常 = {9, "输入输出异常", &CJK_CLS_异常, 0, NULL, NULL, 0, NULL};
+
+typedef struct cjk_path { cjk_class *cls; cjk_string *s; } cjk_path;
+
+static cjk_string *路径转文本(cjk_object *self) { return ((cjk_path *)self)->s; }
+
+static cjk_object *路径新建(cjk_string *s) {
+    cjk_path *p = (cjk_path *)cjk_gc_alloc(sizeof(cjk_path));
+    p->cls = &CJK_CLS_文件路径;
+    p->s = s;
+    return (cjk_object *)p;
+}
+
+cjk_object *cjk_path_of(int32_t n, cjk_string **parts) {
+    cjk_string *结果 = cjk_str_from_utf8("");
+    for (int32_t i = 0; i < n; i++) {
+        结果 = (i == 0) ? parts[i] : cjk_str_concat(cjk_str_concat(结果, cjk_str_from_utf8("/")), parts[i]);
+    }
+    return (cjk_object *)路径新建(结果);
+}
+cjk_string *cjk_path_to_string(cjk_object *path) { return ((cjk_path *)path)->s; }
+cjk_object *cjk_path_parent(cjk_object *path) {
+    cjk_string *s = cjk_path_to_string(path);
+    for (int32_t i = s->len - 1; i >= 0; i--) {
+        if (s->data[i] == (uint16_t)'/') {
+            return (cjk_object *)路径新建(cjk_str_substring(s, 0, i, 0));
+        }
+    }
+    return NULL;
+}
+cjk_object *cjk_path_absolute(cjk_object *path) { return path; }
+cjk_string *cjk_path_file_name(cjk_object *path) {
+    cjk_string *s = cjk_path_to_string(path);
+    for (int32_t i = s->len - 1; i >= 0; i--) {
+        if (s->data[i] == (uint16_t)'/') {
+            return cjk_str_substring(s, i + 1, s->len, 0);
+        }
+    }
+    return s;
+}
+
+static void 不支持(const char *动作, cjk_object *path, int32_t line) {
+    cjk_string *消息 = cjk_str_concat(cjk_str_from_utf8(动作),
+                                      path == NULL ? cjk_str_from_utf8("") : cjk_path_to_string(path));
+    消息 = cjk_str_concat(消息, cjk_str_from_utf8("：Linux 平台文件 IO 尚未实现（M14 引入 sysroot 后支持）"));
+    cjk_throw(cjk_new_exception(&CJK_CLS_输入输出异常, 消息), line);
+}
+
+cjk_string *cjk_files_read_text(cjk_object *path, int32_t line) { 不支持("无法读取文件：", path, line); return NULL; }
+cjk_object *cjk_files_write_text(cjk_object *path, cjk_string *text, int32_t line) {
+    (void)text; 不支持("无法写入文件：", path, line); return NULL;
+}
+cjk_object *cjk_files_create_directories(cjk_object *path, int32_t line) {
+    (void)line; (void)path; return NULL;
+}
+void cjk_files_write_text_parents(cjk_object *path, cjk_string *text, int32_t line) {
+    cjk_files_write_text(path, text, line);
+}
+cjk_object *cjk_files_read_all_lines(cjk_object *path, int32_t line) {
+    不支持("无法读取文件：", path, line); return NULL;
+}
+int32_t cjk_files_exists(cjk_object *path) { (void)path; return 0; }
+int64_t cjk_files_size(cjk_object *path, int32_t line) {
+    不支持("无法获取文件大小：", path, line); return 0;
+}
+int32_t cjk_files_delete(cjk_object *path, int32_t line) {
+    不支持("无法删除文件：", path, line); return 0;
+}
+int32_t cjk_files_delete_if_exists(cjk_object *path, int32_t line) { (void)path; (void)line; return 0; }
+cjk_object *cjk_files_list(cjk_object *path, int32_t line) {
+    不支持("无法列举目录：", path, line); return NULL;
+}
+cjk_object *cjk_files_copy(cjk_object *from, cjk_object *to, int32_t line) {
+    不支持("无法复制文件：", from, line); (void)to; return NULL;
+}
+cjk_object *cjk_files_move(cjk_object *from, cjk_object *to, int32_t line) {
+    不支持("无法移动文件：", from, line); (void)to; return NULL;
+}
+#endif /* CJK_PLATFORM_WINDOWS */

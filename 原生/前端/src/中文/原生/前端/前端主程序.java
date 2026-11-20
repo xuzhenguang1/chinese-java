@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -60,6 +61,14 @@ public final class 前端主程序 {
                 }
                 case "中间" -> System.exit(打印中间代码(根目录, 词表数据, 取文件参数(参数, 2)));
                 case "运行" -> System.exit(运行(根目录, 词表数据, 取文件参数(参数, 2)));
+                case "运行模块" -> {
+                    // 参数：<入口源文件> <其他源文件...>
+                    if (参数.length < 3) {
+                        显示用法();
+                        System.exit(2);
+                    }
+                    System.exit(运行模块(根目录, 词表数据, 参数));
+                }
                 case "编译" -> {
                     if (参数.length < 4) {
                         显示用法();
@@ -73,6 +82,24 @@ public final class 前端主程序 {
                         System.exit(2);
                     }
                     System.exit(编译LLVM(根目录, 词表数据, 参数[2], 参数[3]));
+                }
+                case "编译模块" -> {
+                    // 参数：<输出 C> <入口源文件> <其他源文件...>
+                    if (参数.length < 5) {
+                        显示用法();
+                        System.exit(2);
+                    }
+                    System.exit(编译模块(根目录, 词表数据, 参数[2], 参数[3],
+                            java.util.Arrays.copyOfRange(参数, 4, 参数.length), false));
+                }
+                case "编译模块LLVM" -> {
+                    // 参数：<输出 IR> <入口源文件> <其他源文件...>
+                    if (参数.length < 5) {
+                        显示用法();
+                        System.exit(2);
+                    }
+                    System.exit(编译模块(根目录, 词表数据, 参数[2], 参数[3],
+                            java.util.Arrays.copyOfRange(参数, 4, 参数.length), true));
                 }
                 default -> {
                     System.out.println("未知前端命令：" + 命令);
@@ -663,6 +690,143 @@ public final class 前端主程序 {
         return 程序;
     }
 
+    /** M13：多文件解释运行（JVM 参考后端），与原生 C/LLVM 对拍。 */
+    private static int 运行模块(Path 根目录, 词表 词表, String[] 参数) {
+        java.util.List<Path> 路径列表 = new java.util.ArrayList<>();
+        Path 入口 = Paths.get(参数[2]);
+        if (!入口.isAbsolute()) {
+            入口 = Paths.get(".").toAbsolutePath().normalize().resolve(参数[2]).normalize();
+        }
+        路径列表.add(入口);
+        for (int i = 3; i < 参数.length; i++) {
+            Path p = Paths.get(参数[i]);
+            if (!p.isAbsolute()) {
+                p = Paths.get(".").toAbsolutePath().normalize().resolve(参数[i]).normalize();
+            }
+            路径列表.add(p);
+        }
+        诊断 诊断 = new 诊断();
+        中间代码.程序 程序;
+        try {
+            程序 = 分析模块程序(根目录, 路径列表, 词表, 诊断, 入口);
+        } catch (IOException 异常) {
+            System.err.println("错误：读取源文件失败 " + 异常.getMessage());
+            return 2;
+        }
+        if (程序 == null) {
+            return 1;
+        }
+        try {
+            return new 解释器(程序, System.out).运行();
+        } catch (解释器异常 异常) {
+            System.err.println("运行失败：" + 异常.getMessage());
+            return 1;
+        }
+    }
+
+    /** M13：单个源文件的解析结果（编译单元 + 行号表 + 相对路径）。 */
+    private record 模块解析结果(编译单元 单元, Map<语法树.节点, Integer> 行号, String 相对路径) {}
+
+    /** M13：解析单个源文件为模块输入；词法/语法错误写入诊断并返回 null。 */
+    private static 模块解析结果 解析模块源(Path 根目录, Path 路径, 词表 词表, 诊断 诊断) throws IOException {
+        标记.源文件 文件 = 读取(路径, 词表, 诊断);
+        if (诊断.有错误()) {
+            return null;
+        }
+        语法分析器 分析器 = new 语法分析器(文件.标记());
+        编译单元 单元;
+        try {
+            单元 = 分析器.解析();
+        } catch (语法分析器.语法异常 异常) {
+            诊断.错误("语法", 异常.行, 异常.列, 异常.消息, 异常.建议);
+            return null;
+        }
+        String 相对路径 = 相对化(根目录, 路径);
+        return new 模块解析结果(单元, 分析器.语句行号(), 相对路径);
+    }
+
+    private static String 相对化(Path 根目录, Path 路径) {
+        String 相对 = 路径.toAbsolutePath().normalize().toString();
+        try {
+            相对 = 根目录.toAbsolutePath().normalize()
+                    .relativize(路径.toAbsolutePath().normalize()).toString();
+        } catch (IllegalArgumentException 忽略) {
+            // 源文件不在根目录下时保留绝对路径。
+        }
+        return 相对.replace('\\', '/');
+    }
+
+    /** M13：多文件共享分析 → 单个 MIR 程序。 */
+    private static 中间代码.程序 分析模块程序(Path 根目录, java.util.List<Path> 路径列表,
+                                              词表 词表, 诊断 诊断, Path 入口路径) throws IOException {
+        Map<语法树.节点, Integer> 合并行号 = new java.util.HashMap<>();
+        java.util.List<语义分析器.模块单元> 单元们 = new java.util.ArrayList<>();
+        String 入口相对 = 相对化(根目录, 入口路径);
+        for (Path 路径 : 路径列表) {
+            模块解析结果 解析 = 解析模块源(根目录, 路径, 词表, 诊断);
+            if (解析 == null) {
+                诊断.打印(System.out, System.err);
+                return null;
+            }
+            合并行号.putAll(解析.行号());
+            单元们.add(new 语义分析器.模块单元(解析.单元(), 路径.getFileName().toString()));
+        }
+        中间代码.程序 程序 = new 语义分析器(词表, 诊断, 合并行号, 入口相对)
+                .分析模块(单元们, 入口路径.getFileName().toString());
+        if (诊断.有错误()) {
+            诊断.打印(System.out, System.err);
+            return null;
+        }
+        return 程序;
+    }
+
+    /** M13：多文件 → 一个 C/LLVM 输出（isLLVM 选择后端）。 */
+    private static int 编译模块(Path 根目录, 词表 词表, String 输出路径, String 入口源,
+                                String[] 其他源, boolean isLLVM) {
+        java.util.List<Path> 路径列表 = new java.util.ArrayList<>();
+        Path 入口 = Paths.get(入口源);
+        if (!入口.isAbsolute()) {
+            入口 = Paths.get(".").toAbsolutePath().normalize().resolve(入口源).normalize();
+        }
+        路径列表.add(入口);
+        for (String 源 : 其他源) {
+            Path p = Paths.get(源);
+            if (!p.isAbsolute()) {
+                p = Paths.get(".").toAbsolutePath().normalize().resolve(源).normalize();
+            }
+            路径列表.add(p);
+        }
+        诊断 诊断 = new 诊断();
+        中间代码.程序 程序;
+        try {
+            程序 = 分析模块程序(根目录, 路径列表, 词表, 诊断, 入口);
+        } catch (IOException 异常) {
+            System.err.println("错误：读取源文件失败 " + 异常.getMessage());
+            return 2;
+        }
+        if (程序 == null) {
+            return 1;
+        }
+        try {
+            String 源码 = isLLVM
+                    ? 中文.原生.后端LLVM.LLVM生成器.生成(程序)
+                    : 中文.原生.后端C.C生成器.生成(程序);
+            Path 输出 = Paths.get(输出路径).toAbsolutePath().normalize();
+            if (输出.getParent() != null) {
+                Files.createDirectories(输出.getParent());
+            }
+            Files.writeString(输出, 源码, StandardCharsets.UTF_8);
+            System.out.println("已生成" + (isLLVM ? " LLVM IR：" : " C：") + 输出);
+            return 0;
+        } catch (中文.原生.后端C.C生成器.生成异常 | 中文.原生.后端LLVM.LLVM生成器.生成异常 异常) {
+            System.err.println(异常.getMessage());
+            return 1;
+        } catch (IOException 异常) {
+            System.err.println("错误：写入输出文件失败 " + 异常.getMessage());
+            return 2;
+        }
+    }
+
     private static 标记.源文件 读取(Path 路径, 词表 词表, 诊断 诊断) throws IOException {
         String 源码 = Files.readString(路径, StandardCharsets.UTF_8);
         if (!源码.isEmpty() && 源码.charAt(0) == '\uFEFF') {
@@ -705,7 +869,10 @@ public final class 前端主程序 {
         System.out.println("  前端主程序 快照 <根目录> <输出目录> <文件或目录...>");
         System.out.println("  前端主程序 中间 <根目录> <文件或目录...>");
         System.out.println("  前端主程序 运行 <根目录> <文件或目录...>");
+        System.out.println("  前端主程序 运行模块 <根目录> <入口源文件> <其他源文件...>");
         System.out.println("  前端主程序 编译 <根目录> <源文件> <输出 C 文件>");
         System.out.println("  前端主程序 编译LLVM <根目录> <源文件> <输出 LLVM IR 文件>");
+        System.out.println("  前端主程序 编译模块 <根目录> <输出 C> <入口源文件> <其他源文件...>");
+        System.out.println("  前端主程序 编译模块LLVM <根目录> <输出 IR> <入口源文件> <其他源文件...>");
     }
 }

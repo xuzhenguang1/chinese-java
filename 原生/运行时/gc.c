@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <windows.h>
+#include "cjk_platform.h"
 
 typedef struct cjk_块 {
     size_t 大小;
@@ -33,29 +33,16 @@ static cjk_根 *根表 = NULL;
 static size_t 堆字节 = 0;
 static size_t 阈值 = 4u * 1024u * 1024u;
 
-/* 线程安全：块表与根表的增删都走同一把锁；多线程存活期间暂停自动回收。 */
-static INIT_ONCE 锁初始化一次 = INIT_ONCE_STATIC_INIT;
-static CRITICAL_SECTION 堆锁;
-static volatile LONG 存活线程数 = 1;
-
-static BOOL CALLBACK 初始化堆锁(PINIT_ONCE 一次, PVOID 参数, PVOID *上下文) {
-    (void)一次;
-    (void)参数;
-    (void)上下文;
-    InitializeCriticalSection(&堆锁);
-    return TRUE;
-}
-
-static void 确保堆锁(void) {
-    InitOnceExecuteOnce(&锁初始化一次, 初始化堆锁, NULL, NULL);
-}
+/* 线程安全：块表与根表的增删都走同一把锁；多线程存活期间暂停自动回收。
+ * M13：锁/原子/once 经 cjk_platform.h，Windows 后端为原 Win32 原语的直接映射。 */
+static volatile cjk_atomic_i32_t 存活线程数 = 1;
 
 void cjk_gc_enter_thread(void) {
-    InterlockedIncrement(&存活线程数);
+    cjk_atomic_inc32(&存活线程数);
 }
 
 void cjk_gc_leave_thread(void) {
-    InterlockedDecrement(&存活线程数);
+    cjk_atomic_dec32(&存活线程数);
 }
 
 /* M12：查询自动回收是否因多线程存活而暂停（供诊断与压力脚本观测）。 */
@@ -75,17 +62,10 @@ static void *载荷(cjk_块 *b) {
 }
 
 /*
- * 根扫描上界：线程栈顶（TEB.StackBase）。
+ * 根扫描上界：线程栈顶（M13 经平台接口取，Windows = TEB.StackBase）。
  * 不能改用启动时记录的栈底：clang -O2 会把入口及其调用链内联进 main，
  * 局部变量落在那个记录点之上，会被漏扫，导致活跃对象被误回收。
  */
-static unsigned char *线程栈顶(void) {
-#if defined(_WIN64)
-    return (unsigned char *)__readgsqword(0x08);
-#else
-    return NULL;
-#endif
-}
 
 void cjk_gc_add_root(void *addr, size_t bytes) {
     if (addr == NULL || bytes == 0) {
@@ -98,19 +78,19 @@ void cjk_gc_add_root(void *addr, size_t bytes) {
     }
     根->地址 = addr;
     根->大小 = bytes;
-    确保堆锁();
-    EnterCriticalSection(&堆锁);
+    cjk_lock_t *堆锁 = cjk_global_mutex();
+    cjk_lock_enter(堆锁);
     根->下一根 = 根表;
     根表 = 根;
-    LeaveCriticalSection(&堆锁);
+    cjk_lock_leave(堆锁);
 }
 
 void *cjk_gc_alloc(size_t bytes) {
     if (bytes == 0) {
         bytes = 1;
     }
-    确保堆锁();
-    EnterCriticalSection(&堆锁);
+    cjk_lock_t *堆锁 = cjk_global_mutex();
+    cjk_lock_enter(堆锁);
     /* 多线程存活时不做回收：保守扫描只看当前线程栈，会误回收其他线程的活跃对象。 */
     if (存活线程数 <= 1 && 堆字节 + CJK_块头 + bytes > 阈值) {
         cjk_gc_collect();
@@ -120,7 +100,7 @@ void *cjk_gc_alloc(size_t bytes) {
         cjk_gc_collect();
         b = (cjk_块 *)malloc(CJK_块头 + bytes);
         if (b == NULL) {
-            LeaveCriticalSection(&堆锁);
+            cjk_lock_leave(堆锁);
             fprintf(stderr, "内存不足\n");
             exit(1);
         }
@@ -132,7 +112,7 @@ void *cjk_gc_alloc(size_t bytes) {
     堆字节 += CJK_块头 + bytes;
     void *结果 = 载荷(b);
     memset(结果, 0, bytes);
-    LeaveCriticalSection(&堆锁);
+    cjk_lock_leave(堆锁);
     return 结果;
 }
 
@@ -213,8 +193,8 @@ void cjk_gc_collect(void) {
     if (块表 == NULL) {
         return;
     }
-    确保堆锁();
-    EnterCriticalSection(&堆锁);
+    cjk_lock_t *堆锁 = cjk_global_mutex();
+    cjk_lock_enter(堆锁);
 
     排序数 = 0;
     for (cjk_块 *b = 块表; b != NULL; b = b->下一块) {
@@ -258,7 +238,7 @@ void cjk_gc_collect(void) {
     {
         char 局部;
         unsigned char *甲 = (unsigned char *)&局部;
-        unsigned char *乙 = 线程栈顶();
+        unsigned char *乙 = cjk_thread_stack_top();
         if (乙 != NULL && 甲 < 乙) {
             扫描区间(甲, 乙);
         }
@@ -288,5 +268,5 @@ void cjk_gc_collect(void) {
     if (阈值 < 1024u * 1024u) {
         阈值 = 1024u * 1024u;
     }
-    LeaveCriticalSection(&堆锁);
+    cjk_lock_leave(堆锁);
 }

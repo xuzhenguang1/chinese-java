@@ -5,6 +5,7 @@
  * 与 JDK 无法对齐的行为都在函数内给出中文诊断，不做静默降级。
  */
 #include "cjkrt.h"
+#include "cjk_platform.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -13,10 +14,11 @@
 #include <string.h>
 #include <time.h>
 
+#if CJK_PLATFORM_WINDOWS
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winhttp.h>
-#include <process.h>
+#endif
 
 /* ================= 通用文本缓冲 ================= */
 
@@ -358,10 +360,7 @@ static void 取本地时刻(struct tm *out) {
 }
 
 int64_t cjk_now_millis(void) {
-    FILETIME ft;
-    GetSystemTimeAsFileTime(&ft);
-    uint64_t t = ((uint64_t)ft.dwHighDateTime << 32) | (uint64_t)ft.dwLowDateTime;
-    return (int64_t)(t / 10000u) - 11644473600000LL;
+    return cjk_wall_millis();
 }
 
 cjk_object *cjk_date_today(void) {
@@ -528,8 +527,8 @@ cjk_string *cjk_datetime_format(cjk_object *dt, cjk_string *pattern, int32_t lin
 
 typedef struct {
     cjk_class *cls;
-    CRITICAL_SECTION 锁;
-    CONDITION_VARIABLE 条件;
+    cjk_lock_t 锁;
+    cjk_cond_t 条件;
     int32_t 完成;
     cjk_value 结果;
 } 未来对象;
@@ -545,12 +544,12 @@ typedef struct {
     cjk_class *cls;
     int32_t 线程数;
     int32_t 已关闭;
-    HANDLE *线程;
-    CRITICAL_SECTION 锁;
-    CONDITION_VARIABLE 条件;
+    cjk_thread_t *线程;
+    cjk_lock_t 锁;
+    cjk_cond_t 条件;
     任务节点 *头;
     任务节点 *尾;
-    int32_t 序号;
+    cjk_atomic_i32_t 序号;
 } 线程池对象;
 
 typedef struct 日志对象 {
@@ -600,22 +599,22 @@ static cjk_string *响应转文本(cjk_object *self) {
     return cjk_str_from_utf8(暂);
 }
 
-static __thread const char *当前线程名 = "main";
+static CJK_THREAD_LOCAL const char *当前线程名 = "main";
 
-static unsigned __stdcall 工作线程(void *参数) {
+static unsigned CJK_THREAD_CALL 工作线程(void *参数) {
     线程池对象 *p = (线程池对象 *)参数;
     cjk_gc_enter_thread();
     char 名[48];
     snprintf(名, sizeof(名), "pool-1-thread-%d",
-             (int)InterlockedIncrement((volatile LONG *)&p->序号));
+             (int)cjk_atomic_inc32(&p->序号));
     当前线程名 = 名;
     for (;;) {
-        EnterCriticalSection(&p->锁);
+        cjk_lock_enter(&p->锁);
         while (p->头 == NULL && !p->已关闭) {
-            SleepConditionVariableCS(&p->条件, &p->锁, INFINITE);
+            cjk_cond_wait(&p->条件, &p->锁);
         }
         if (p->头 == NULL && p->已关闭) {
-            LeaveCriticalSection(&p->锁);
+            cjk_lock_leave(&p->锁);
             break;
         }
         任务节点 *任务 = p->头;
@@ -623,16 +622,16 @@ static unsigned __stdcall 工作线程(void *参数) {
         if (p->头 == NULL) {
             p->尾 = NULL;
         }
-        LeaveCriticalSection(&p->锁);
+        cjk_lock_leave(&p->锁);
 
         cjk_value 结果 = 任务->回调(任务->函数, cjk_v_null(), cjk_v_null(), 0);
         if (任务->未来 != NULL) {
             未来对象 *f = 任务->未来;
-            EnterCriticalSection(&f->锁);
+            cjk_lock_enter(&f->锁);
             f->结果 = 结果;
             f->完成 = 1;
-            WakeAllConditionVariable(&f->条件);
-            LeaveCriticalSection(&f->锁);
+            cjk_cond_wake_all(&f->条件);
+            cjk_lock_leave(&f->锁);
         }
     }
     cjk_gc_leave_thread();
@@ -650,17 +649,17 @@ cjk_object *cjk_pool_new(int32_t size, int32_t line) {
     p->头 = NULL;
     p->尾 = NULL;
     p->序号 = 0;
-    InitializeCriticalSection(&p->锁);
-    InitializeConditionVariable(&p->条件);
-    p->线程 = (HANDLE *)cjk_gc_alloc(sizeof(HANDLE) * (size_t)size);
+    cjk_lock_init(&p->锁);
+    cjk_cond_init(&p->条件);
+    p->线程 = (cjk_thread_t *)cjk_gc_alloc(sizeof(cjk_thread_t) * (size_t)size);
     for (int32_t i = 0; i < size; i++) {
-        p->线程[i] = (HANDLE)_beginthreadex(NULL, 0, 工作线程, p, 0, NULL);
+        p->线程[i] = cjk_thread_start(工作线程, p);
     }
     return (cjk_object *)p;
 }
 
 static void 入队(线程池对象 *p, 任务节点 *任务) {
-    EnterCriticalSection(&p->锁);
+    cjk_lock_enter(&p->锁);
     任务->下一个 = NULL;
     if (p->尾 == NULL) {
         p->头 = 任务;
@@ -668,8 +667,8 @@ static void 入队(线程池对象 *p, 任务节点 *任务) {
         p->尾->下一个 = 任务;
     }
     p->尾 = 任务;
-    WakeAllConditionVariable(&p->条件);
-    LeaveCriticalSection(&p->锁);
+    cjk_cond_wake_all(&p->条件);
+    cjk_lock_leave(&p->锁);
 }
 
 void cjk_pool_execute(cjk_object *pool, cjk_object *fn, cjk_callback cb) {
@@ -687,8 +686,8 @@ cjk_object *cjk_pool_submit(cjk_object *pool, cjk_object *fn, cjk_callback cb) {
     f->cls = &CJK_CLS_未来;
     f->完成 = 0;
     f->结果 = cjk_v_null();
-    InitializeCriticalSection(&f->锁);
-    InitializeConditionVariable(&f->条件);
+    cjk_lock_init(&f->锁);
+    cjk_cond_init(&f->条件);
     任务节点 *任务 = (任务节点 *)cjk_gc_alloc(sizeof(任务节点));
     任务->函数 = fn;
     任务->回调 = cb;
@@ -702,12 +701,12 @@ cjk_value cjk_future_get(cjk_object *future, int32_t line) {
         cjk_throw_message(&CJK_CLS_空指针异常, "未来为空", line);
     }
     未来对象 *f = (未来对象 *)future;
-    EnterCriticalSection(&f->锁);
+    cjk_lock_enter(&f->锁);
     while (!f->完成) {
-        SleepConditionVariableCS(&f->条件, &f->锁, INFINITE);
+        cjk_cond_wait(&f->条件, &f->锁);
     }
     cjk_value 结果 = f->结果;
-    LeaveCriticalSection(&f->锁);
+    cjk_lock_leave(&f->锁);
     return 结果;
 }
 
@@ -716,24 +715,20 @@ void cjk_pool_shutdown(cjk_object *pool) {
         return;
     }
     线程池对象 *p = (线程池对象 *)pool;
-    EnterCriticalSection(&p->锁);
+    cjk_lock_enter(&p->锁);
     p->已关闭 = 1;
-    WakeAllConditionVariable(&p->条件);
-    LeaveCriticalSection(&p->锁);
+    cjk_cond_wake_all(&p->条件);
+    cjk_lock_leave(&p->锁);
     for (int32_t i = 0; i < p->线程数; i++) {
-        if (p->线程[i] != NULL) {
-            WaitForSingleObject(p->线程[i], INFINITE);
-            CloseHandle(p->线程[i]);
-            p->线程[i] = NULL;
+        if (p->线程[i] != (cjk_thread_t)0) {
+            cjk_thread_join(p->线程[i]);
+            p->线程[i] = (cjk_thread_t)0;
         }
     }
 }
 
 void cjk_sleep(int64_t millis) {
-    if (millis <= 0) {
-        return;
-    }
-    Sleep((DWORD)millis);
+    cjk_sleep_ms(millis);
 }
 
 cjk_string *cjk_thread_name(void) {
@@ -741,6 +736,9 @@ cjk_string *cjk_thread_name(void) {
 }
 
 /* ================= 网络 ================= */
+
+#if CJK_PLATFORM_WINDOWS
+/* ---- Windows：WinHTTP 原样保留 ---- */
 
 static wchar_t *转宽串(cjk_string *s) {
     int32_t 长 = s == NULL ? 0 : s->len;
@@ -922,6 +920,30 @@ void cjk_http_download(cjk_string *url, cjk_object *path, int32_t line) {
     cjk_string *正文 = cjk_http_get_text(url, line);
     cjk_files_write_text_parents(path, 正文, line);
 }
+/* ---- /Windows ---- */
+
+#else /* !CJK_PLATFORM_WINDOWS */
+/* ---- Linux：网络 IO 明确中文诊断，不静默（M14 引入 socket 后实现） ---- */
+static void 网络不支持(cjk_string *url, int32_t line) {
+    cjk_string *消息 = cjk_str_concat(cjk_str_from_utf8("网络请求：Linux 平台暂不支持（M14 引入 socket 后可用）："),
+                                      url == NULL ? cjk_str_from_utf8("") : url);
+    cjk_throw(cjk_new_exception(&CJK_CLS_输入输出异常, 消息), line);
+}
+cjk_string *cjk_http_get_text(cjk_string *url, int32_t line) { 网络不支持(url, line); return NULL; }
+int32_t cjk_http_status(cjk_string *url, int32_t line) { 网络不支持(url, line); return 0; }
+cjk_object *cjk_http_get(cjk_string *url, int32_t line) { 网络不支持(url, line); return NULL; }
+int32_t cjk_http_response_status(cjk_object *resp) {
+    if (resp == NULL) { cjk_throw_message(&CJK_CLS_空指针异常, "响应为空", 0); }
+    return 0;
+}
+cjk_string *cjk_http_response_body(cjk_object *resp) {
+    if (resp == NULL) { cjk_throw_message(&CJK_CLS_空指针异常, "响应为空", 0); }
+    return cjk_str_from_utf8("");
+}
+void cjk_http_download(cjk_string *url, cjk_object *path, int32_t line) {
+    (void)path; 网络不支持(url, line);
+}
+#endif /* CJK_PLATFORM_WINDOWS */
 
 /* ================= 日志 ================= */
 
