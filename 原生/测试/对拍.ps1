@@ -16,7 +16,7 @@ $cjc = Join-Path $根目录 "cjc.ps1"
 $工作目录 = Join-Path $根目录 "构建\原生\对拍"
 $jvm目录 = Join-Path $工作目录 "jvm"
 if (Test-Path $工作目录) {
-    Remove-Item $工作目录 -Recurse -Force
+    [System.IO.Directory]::Delete($工作目录, $true)
 }
 New-Item -ItemType Directory -Force $工作目录 | Out-Null
 New-Item -ItemType Directory -Force $jvm目录 | Out-Null

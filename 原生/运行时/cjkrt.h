@@ -81,9 +81,23 @@ typedef struct cjk_handler {
 
 extern cjk_handler *cjk_handler_top;
 
+/* 影子栈（M12）：显式维护的调用帧，供未捕获异常逐帧打印中文调用栈。
+ * 帧名是生成期写入的 UTF-8 静态字符串，不参与 GC；深度固定上限，避免堆分配。 */
+#define CJK_帧上限 1024
+void cjk_frame_push(const char *名, int32_t 行);
+void cjk_frame_pop(void);
+void cjk_frame_set_line(int32_t 行);
+int  cjk_frame_mark(void);
+void cjk_frame_rewind(int 标记);
+void cjk_frame_print(void);
+
 /* 启动与全局设置 */
 void cjk_rt_init(void);
 void cjk_set_source(const char *path);
+/* 查询自动回收是否被暂停（多线程存活期间为 1）。 */
+int cjk_gc_auto_paused(void);
+/* 中文状态文本（供诊断主动输出；不自动打印，避免污染对拍输出）。 */
+const char *cjk_gc_status_text(void);
 
 /* GC */
 void *cjk_gc_alloc(size_t bytes);

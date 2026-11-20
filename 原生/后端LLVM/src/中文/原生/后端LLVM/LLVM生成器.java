@@ -199,6 +199,33 @@ public final class LLVM生成器 {
         定义函数();
     }
 
+    /** M12 影子栈：当前函数体是否已压帧，决定返回/结束时是否 emit pop。 */
+    private boolean 当前函数已压帧 = false;
+
+    /** M12 影子栈：声明 C 运行时的帧接口；只声明一次。 */
+    private boolean 影子栈已声明 = false;
+
+    private void 声明影子栈() {
+        if (影子栈已声明) {
+            return;
+        }
+        影子栈已声明 = true;
+        IR.声明("void", "cjk_frame_push", List.of("ptr", "i32"));
+        IR.声明("void", "cjk_frame_pop", List.of());
+        IR.声明("void", "cjk_frame_set_line", List.of("i32"));
+        IR.声明("i32", "cjk_frame_mark", List.of());
+        IR.声明("void", "cjk_frame_rewind", List.of("i32"));
+    }
+
+    /** M12 影子栈：中文可读帧名 "类.方法"（UTF-8 IR 字符串常量）。 */
+    private String 帧名(String 类名, String 方法名) {
+        String 显示 = 方法名;
+        if (显示.startsWith("<") && 显示.endsWith(">")) {
+            显示 = 显示.substring(1, 显示.length() - 1);
+        }
+        return IR.新字符串(类名 + "." + 显示);
+    }
+
     private void 输出公共类型() {
         IR.类型定义("%cjk_string = type { i32, ptr }");
         IR.类型定义("%cjk_array = type { i32, i32, ptr }");
@@ -476,6 +503,8 @@ public final class LLVM生成器 {
         IR.声明("void", "cjk_rt_init", List.of());
         IR.声明("void", "cjk_set_source", List.of("ptr"));
         IR.声明("void", "cjk_set_args", List.of("i32", "ptr"));
+        /* M12 影子栈：声明运行时帧接口（帧表在 C 运行时内部，IR 只传 ptr/i32）。 */
+        声明影子栈();
         指令("call void @cjk_rt_init()");
         指令("call void @cjk_set_source(ptr " + IR.新字符串(源路径) + ")");
         指令("call void @cjk_set_args(i32 %argc, ptr %argv)");
@@ -559,8 +588,14 @@ public final class LLVM生成器 {
         当前返回类型 = 方法.返回类型();
         开始函数(方法名(类.名(), 方法), 方法.返回类型(), 方法.参数(), !方法.静态(),
                 类.名() + "." + 方法.名());
+        /* M12 影子栈：方法入口压帧，返回/自然结束时弹帧。 */
+        IR.声明("void", "cjk_frame_push", List.of("ptr", "i32"));
+        IR.声明("void", "cjk_frame_pop", List.of());
+        指令("call void @cjk_frame_push(ptr " + 帧名(类.名(), 方法.名()) + ", i32 0)");
+        当前函数已压帧 = true;
         语句(方法.体());
         结束函数(方法.返回类型());
+        当前函数已压帧 = false;
         当前返回类型 = 类型.无;
     }
 
@@ -706,6 +741,10 @@ public final class LLVM生成器 {
     }
 
     private void 终结默认(类型 返回) {
+        /* M12 影子栈：自然结束（无显式 return 的函数）先弹帧。 */
+        if (当前函数已压帧) {
+            指令("call void @cjk_frame_pop()");
+        }
         if (返回 == null || 返回.同型(类型.无)) {
             终结("ret void");
         } else {
@@ -972,6 +1011,10 @@ public final class LLVM生成器 {
         int 行 = 位置 == null ? 0 : 位置.行(语句);
         if (行 > 0) {
             当前行 = 行;
+            /* M12 影子栈：同步当前帧行号，异常回溯定位到真实语句行。 */
+            if (当前函数已压帧) {
+                指令("call void @cjk_frame_set_line(i32 " + 行 + ")");
+            }
         }
         if (块已终结) {
             标签行(新标签("不可达"));
@@ -1001,7 +1044,11 @@ public final class LLVM生成器 {
             return;
         }
         if (语句 instanceof 中间代码.返回语句 返回) {
+            /* M12 影子栈：先求值返回表达式，再弹帧，最后 ret。 */
             if (返回.值() == null) {
+                if (当前函数已压帧) {
+                    指令("call void @cjk_frame_pop()");
+                }
                 if (当前返回类型 == null || 当前返回类型.同型(类型.无)) {
                     终结("ret void");
                 } else {
@@ -1011,6 +1058,9 @@ public final class LLVM生成器 {
                 return;
             }
             值 值 = 适配(当前返回类型, 返回.值());
+            if (当前函数已压帧) {
+                指令("call void @cjk_frame_pop()");
+            }
             终结("ret " + LLVM类型(当前返回类型) + " " + 值.文本());
             return;
         }
@@ -1161,8 +1211,13 @@ public final class LLVM生成器 {
 
     private void 尝试语句(中间代码.尝试语句 尝试) {
         确保处理器栈();
+        声明影子栈();
         IR.声明("i32", "_setjmp", List.of("ptr", "ptr"), "returns_twice");
         IR.声明("ptr", "llvm.frameaddress.p0", List.of("i32"));
+        /* M12 影子栈：setjmp 前记录帧深，catch 分支 rewind 回退被 longjmp 跳过的帧。 */
+        String 帧标记槽 = 新临时();
+        新入口临时(帧标记槽 + " = alloca i32");
+        指令("store i32 " + 调("cjk_frame_mark", "i32").文本() + ", ptr " + 帧标记槽);
         String 处理器 = 新临时();
         // MinGW 的 jmp_buf 要求 16 字节对齐（_setjmp 用 movaps 保存 XMM）。
         新入口临时(处理器 + " = alloca %cjk_handler, align 16");
@@ -1201,8 +1256,12 @@ public final class LLVM生成器 {
         标签行(捕获块);
         String 异常 = 新临时();
         指令(异常 + " = load ptr, ptr " + 异常指针);
-        指令("store ptr " + 前一个 + ", ptr @cjk_handler_top");
+       指令("store ptr " + 前一个 + ", ptr @cjk_handler_top");
         指令("store i32 0, ptr " + 捕获标志);
+        /* M12 影子栈：回退 longjmp 跳过的调用帧。 */
+        String 帧标记值 = 新临时();
+        指令(帧标记值 + " = load i32, ptr " + 帧标记槽);
+        指令("call void @cjk_frame_rewind(i32 " + 帧标记值 + ")");
         for (中间代码.捕获子句 子句 : 尝试.捕获()) {
             String 子块 = 新标签("捕获");
             String 下一 = 新标签("捕获");

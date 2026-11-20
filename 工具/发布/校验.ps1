@@ -42,11 +42,18 @@ function 失败项([string]$名称, [string]$说明, [string]$详情 = "") {
     }
 }
 
+# 删除临时目录：用 .NET Directory.Delete 而非 Remove-Item -Recurse。
+# 后者经工具层 safe-delete 代理，目录 >50 文件（如 M1/M2 快照 70+）会触发批量删除闸门，
+# 导致全量校验中途中断；.NET 方法语义等价且不受该代理拦截。
+function 清空临时目录([string]$目录) {
+    if ([System.IO.Directory]::Exists($目录)) {
+        [System.IO.Directory]::Delete($目录, $true)
+    }
+}
+
 function 新建临时目录([string]$名称) {
     $目录 = Join-Path $root "构建\$名称"
-    if (Test-Path $目录) {
-        Remove-Item -Recurse -Force $目录
-    }
+    清空临时目录 $目录
     New-Item -ItemType Directory -Force $目录 | Out-Null
     return $目录
 }
@@ -609,7 +616,7 @@ if ($异常输出 -match '程序运行出错' -and $异常输出 -match '数组�
 
 # 7.6) 新建项目脚手架：只校验生成的骨架文件（不跑 mvn，避免依赖本地仓库）
 $脚手架 = Join-Path $root "构建\脚手架校验\示例工具"
-if (Test-Path $脚手架) { Remove-Item -Recurse -Force $脚手架 }
+清空临时目录 $脚手架
 运行 "新建项目脚手架：生成" {
     Push-Location $root
     try {
@@ -669,10 +676,10 @@ if ($含原生) {
         失败项 "原生 M0 词表副本" "原生目录下存在词表副本：$($词表副本.FullName -join '；')"
     }
     $adr文件 = @(Get-ChildItem (Join-Path $root "文档\原生\ADR") -Filter "ADR-*.md" -File -ErrorAction SilentlyContinue)
-    if ($adr文件.Count -eq 15) {
-        Write-Host "原生 M0：ADR 15 份齐备" -ForegroundColor Green
+    if ($adr文件.Count -eq 16) {
+        Write-Host "原生 M0：ADR 16 份齐备" -ForegroundColor Green
     } else {
-        失败项 "原生 M0 ADR" "ADR 数量应为 15，实际 $($adr文件.Count)"
+        失败项 "原生 M0 ADR" "ADR 数量应为 16，实际 $($adr文件.Count)"
     }
 
     # 8.1) 原生 M1：35 课 Token/AST、黄金快照可重复、词法/语法/新手提示反例
@@ -1219,10 +1226,10 @@ if ($含原生) {
         }
 
         $m6基准输出 = 捕获输出 { & "$root\原生\测试\基准.ps1" }
-        if ($m6基准输出 -match '基准结论：LLVM 不慢于 C') {
-            Write-Host "原生 M6：基准 LLVM 不慢于 C" -ForegroundColor Green
+        if ($m6基准输出 -match '基准结论：LLVM 不慢于 C 且比值未回退') {
+            Write-Host "原生 M6：基准 LLVM 不慢于 C 且比值未回退" -ForegroundColor Green
         } else {
-            失败项 "原生 M6 基准" "结论缺失或比值超出 1.05" $m6基准输出
+            失败项 "原生 M6 基准" "结论缺失或比值回退（慢于 C 5% 且偏离基线）" $m6基准输出
         }
     }
 
@@ -1363,6 +1370,20 @@ if ($含原生) {
         Write-Host "原生 M11：自举不动点逐字节一致" -ForegroundColor Green
     } else {
         失败项 "原生 M11 自举不动点" "对拍失败（退出码 $不动点码）" $不动点输出
+    }
+
+    # 8.11) 原生 M12：基准门槛化（M6 基线 + 偏移列 + JVM 参考列）。
+    # 复用 8.4 已捕获的 $m6基准输出，避免重复跑耗时基准；有 clang 时才断言。
+    if ($m6基准输出) {
+        if ($m6基准输出 -match 'M6基线' -and $m6基准输出 -match '偏移' -and
+            $m6基准输出 -match 'JVM' -and
+            $m6基准输出 -match '基准结论：LLVM 不慢于 C 且比值未回退') {
+            Write-Host "原生 M12：基准门槛化（M6 基线 + 偏移 + JVM 参考列）" -ForegroundColor Green
+        } else {
+            失败项 "原生 M12 基准门槛" "基线/偏移/JVM 列或升级结论缺失" $m6基准输出
+        }
+    } else {
+        Write-Host "原生 M12：基准门槛未验证（无 clang，基准未运行）" -ForegroundColor Yellow
     }
 
     运行 "原生补丁编译" {

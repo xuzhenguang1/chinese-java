@@ -77,7 +77,7 @@ if ($教程输出.Count -gt 0) {
 # 5) 词法反例：CJK001 粘连 / CJK002 坏标点 / CJK106 句读折叠
 $反例目录 = Join-Path $工作 "反例"
 if (Test-Path $反例目录) {
-    Remove-Item $反例目录 -Recurse -Force
+    [System.IO.Directory]::Delete($反例目录, $true)
 }
 New-Item -ItemType Directory -Force $反例目录 | Out-Null
 

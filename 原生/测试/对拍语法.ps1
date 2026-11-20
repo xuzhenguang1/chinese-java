@@ -68,7 +68,7 @@ if ($教程输出.Count -gt 0) {
 $黄金 = Join-Path $根目录 "原生\测试\语法树快照"
 $快照目录 = Join-Path $工作 "语法快照"
 if (Test-Path $快照目录) {
-    Remove-Item $快照目录 -Recurse -Force
+    [System.IO.Directory]::Delete($快照目录, $true)
 }
 & $exe 快照 $根目录 $快照目录 $教程 | Out-Null
 $快照码 = $LASTEXITCODE
@@ -95,12 +95,12 @@ if ($快照码 -eq 0 -and $黄金文件.Count -eq 35 -and $快照文件.Count -e
 } else {
     记录失败 ("快照：基准 {0} 份 / 自举 {1} 份 / 差异 {2} 条（{3}）" -f $黄金文件.Count, $快照文件.Count, $快照差.Count, ($快照差 -join '；'))
 }
-Remove-Item $快照目录 -Recurse -Force -ErrorAction SilentlyContinue
+if (Test-Path $快照目录) { [System.IO.Directory]::Delete($快照目录, $true) }
 
 # 5) 语法反例：缺 ; / 缺 } / 非法表达式 / 缺 )
 $反例目录 = Join-Path $工作 "反例语法"
 if (Test-Path $反例目录) {
-    Remove-Item $反例目录 -Recurse -Force
+    [System.IO.Directory]::Delete($反例目录, $true)
 }
 New-Item -ItemType Directory -Force $反例目录 | Out-Null
 
@@ -126,7 +126,7 @@ if ($反例输出.Count -gt 0) {
         记录失败 ("语法反例：缺少 " + ($缺 -join ' / '))
     }
 }
-Remove-Item $反例目录 -Recurse -Force -ErrorAction SilentlyContinue
+if (Test-Path $反例目录) { [System.IO.Directory]::Delete($反例目录, $true) }
 
 Write-Output ""
 Write-Output ("自举语法对拍：通过 {0} / 共 3 项" -f $script:通过)

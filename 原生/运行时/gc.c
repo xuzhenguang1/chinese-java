@@ -58,6 +58,18 @@ void cjk_gc_leave_thread(void) {
     InterlockedDecrement(&存活线程数);
 }
 
+/* M12：查询自动回收是否因多线程存活而暂停（供诊断与压力脚本观测）。 */
+int cjk_gc_auto_paused(void) {
+    return 存活线程数 > 1;
+}
+
+const char *cjk_gc_status_text(void) {
+    if (存活线程数 > 1) {
+        return "自动回收已暂停（多线程存活）：保守扫描仅覆盖当前线程栈，回收在线程退出后恢复";
+    }
+    return "自动回收运行中（单线程）：保守标记-清除，根覆盖 C 栈/静态根/setjmp 寄存器";
+}
+
 static void *载荷(cjk_块 *b) {
     return (char *)b + CJK_块头;
 }

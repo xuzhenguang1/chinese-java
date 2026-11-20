@@ -27,6 +27,74 @@ cjk_class CJK_CLS_类转换异常 = {8, "类转换异常", &CJK_CLS_运行时异
 
 cjk_handler *cjk_handler_top = NULL;
 
+static const char *源路径 = "";
+
+/* ---------------- 影子栈（M12） ----------------
+ * 显式调用帧链：每个方法入口 push、出口 pop，setjmp/longjmp 靠 mark/rewind 复位。
+ * 帧名指向生成期静态 UTF-8 字面量，不分配堆，不进 GC。深度满时停止记录（截断不崩溃）。 */
+typedef struct cjk_frame {
+    const char *名;      /* UTF-8："类名.方法名" */
+    int32_t 行;
+} cjk_frame;
+
+static cjk_frame 帧表[CJK_帧上限];
+static int 帧深 = 0;
+static int 帧已截断 = 0;   /* 深度曾达上限、有帧被丢弃 */
+
+void cjk_frame_push(const char *名, int32_t 行) {
+    if (帧深 < CJK_帧上限) {
+        帧表[帧深].名 = 名 == NULL ? "" : 名;
+        帧表[帧深].行 = 行;
+        帧深++;
+    } else {
+        帧已截断 = 1;
+    }
+}
+
+void cjk_frame_pop(void) {
+    if (帧深 > 0) {
+        帧深--;
+    }
+}
+
+void cjk_frame_set_line(int32_t 行) {
+    if (帧深 > 0) {
+        帧表[帧深 - 1].行 = 行;
+    }
+}
+
+int cjk_frame_mark(void) {
+    return 帧深;
+}
+
+void cjk_frame_rewind(int 标记) {
+    if (标记 >= 0 && 标记 <= 帧深) {
+        帧深 = 标记;
+    }
+}
+
+/* 写 UTF-8 静态串到 stderr（帧名已是 UTF-8 字节，直接 fputs）。 */
+void cjk_frame_print(void) {
+    if (帧深 <= 0) {
+        return;
+    }
+    fputs("调用栈：\n", stderr);
+    if (帧已截断) {
+        fprintf(stderr, "  （帧深超过上限 %d，深层帧已省略）\n", CJK_帧上限);
+        帧已截断 = 0;
+    }
+    for (int i = 帧深 - 1; i >= 0; i--) {
+        fputs("  于 ", stderr);
+        fputs(帧表[i].名, stderr);
+        fputs("(", stderr);
+        if (源路径[0] != '\0') {
+            fputs(源路径, stderr);
+            fputc(':', stderr);
+        }
+        fprintf(stderr, "%d)\n", (int)帧表[i].行);
+    }
+}
+
 #if defined(_WIN64)
 /* LLVM 后端按此布局直接发射 IR；布局变化必须同步修改 原生\后端LLVM。 */
 _Static_assert(sizeof(jmp_buf) == 256, "jmp_buf 布局变化：LLVM 后端需同步");
@@ -34,8 +102,6 @@ _Static_assert(sizeof(cjk_handler) == 272, "cjk_handler 布局变化：LLVM 后�
 _Static_assert(offsetof(cjk_handler, prev) == 256, "cjk_handler.prev 偏移变化");
 _Static_assert(offsetof(cjk_handler, exception) == 264, "cjk_handler.exception 偏移变化");
 #endif
-
-static const char *源路径 = "";
 
 static uint16_t 空字面量[] = {'n', 'u', 'l', 'l'};
 static cjk_string 空字面量串 = {4, 空字面量};
@@ -113,6 +179,8 @@ static void 未捕获(cjk_exception *e, int32_t line) {
         }
     }
     fputc('\n', stderr);
+    /* M12 影子栈：首行格式不变，追加逐帧中文调用栈。 */
+    cjk_frame_print();
     exit(1);
 }
 

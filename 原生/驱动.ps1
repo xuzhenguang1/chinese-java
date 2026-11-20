@@ -8,10 +8,15 @@ param(
     # 编译输出路径；显式声明避免 PowerShell 把 -o 当成 -OutVariable 的缩写。
     [string]$o,
     # 关闭增量缓存，强制全量编译（用于对照与排错）。
-    [switch]$无缓存
+    [switch]$无缓存,
+    # M12：clang 优化级别（默认 O2 不变）；仅影响原生编译，供基准各档实测。
+    [ValidateSet("O0", "O1", "O2", "O3", "Os")]
+    [string]$优化 = "O2"
 )
 
 $ErrorActionPreference = "Continue"
+# clang 优化开关：-优化 <档> 展开为 "-O<档>"（Os 保持 "-Os"）。
+$优化开关 = if ($优化 -eq "Os") { "-Os" } else { "-$优化" }
 chcp 65001 | Out-Null
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -168,7 +173,7 @@ function 编译运行时对象 {
         if (Test-Path $对象) {
             $命中++
         } else {
-            $输出 = & $clang -c -O2 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $源.FullName -o $对象 2>&1
+            $输出 = & $clang -c $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $源.FullName -o $对象 2>&1
             if ($LASTEXITCODE -ne 0) {
                 $输出 | ForEach-Object { Write-Output $_ }
                 Write-Output ("运行时编译失败：{0}" -f $源.Name)
@@ -515,7 +520,7 @@ switch ($子命令) {
             New-Item -ItemType Directory -Force $无缓存目录 | Out-Null
             $模块对象 = Join-Path $无缓存目录 "module.o"
             try {
-                $模块输出 = & $clang -c -O2 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $C文件 -o $模块对象 2>&1
+                $模块输出 = & $clang -c $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $C文件 -o $模块对象 2>&1
                 $编译码 = $LASTEXITCODE
                 if ($编译码 -ne 0) {
                     $模块输出 | ForEach-Object { Write-Output $_ }
@@ -537,7 +542,7 @@ switch ($子命令) {
             if (Test-Path $模块对象) {
                 $模块状态 = "命中"
             } else {
-                $输出 = & $clang -c -O2 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $C文件 -o $模块对象 2>&1
+                $输出 = & $clang -c $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $C文件 -o $模块对象 2>&1
                 if ($LASTEXITCODE -ne 0) {
                     $输出 | ForEach-Object { Write-Output $_ }
                     Write-Output "clang 编译失败（退出码 $LASTEXITCODE）。"
@@ -629,7 +634,7 @@ switch ($子命令) {
 
         if ($无缓存) {
             Write-Output "增量：未启用缓存（-无缓存）"
-            & $clang -O2 -std=c11 -fwrapv -fno-strict-aliasing -static -I $运行时.目录 $IR文件 @($运行时.源们 | ForEach-Object FullName) -lm -lwinhttp -lws2_32 -lshell32 -o $输出exe
+            & $clang $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -static -I $运行时.目录 $IR文件 @($运行时.源们 | ForEach-Object FullName) -lm -lwinhttp -lws2_32 -lshell32 -o $输出exe
             if ($LASTEXITCODE -ne 0) {
                 Write-Output "clang 编译失败（退出码 $LASTEXITCODE）。"
                 exit 1
@@ -642,7 +647,7 @@ switch ($子命令) {
             if (Test-Path $模块对象) {
                 $模块状态 = "命中"
             } else {
-                $输出 = & $clang -c -O2 -std=c11 -fwrapv -fno-strict-aliasing $IR文件 -o $模块对象 2>&1
+                $输出 = & $clang -c $优化开关 -std=c11 -fwrapv -fno-strict-aliasing $IR文件 -o $模块对象 2>&1
                 if ($LASTEXITCODE -ne 0) {
                     $输出 | ForEach-Object { Write-Output $_ }
                     Write-Output "clang 编译失败（退出码 $LASTEXITCODE）。"

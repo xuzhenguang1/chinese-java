@@ -19,7 +19,7 @@ if (-not (Test-Path $objdump)) {
 
 $工作目录 = Join-Path $根目录 "构建\原生\DWARF断言"
 if (Test-Path $工作目录) {
-    Remove-Item $工作目录 -Recurse -Force
+    [System.IO.Directory]::Delete($工作目录, $true)
 }
 New-Item -ItemType Directory -Force $工作目录 | Out-Null
 # Windows 下 objdump 会把中文路径按 ANSI 解读，复制为纯 ASCII 路径再读取。

@@ -57,6 +57,8 @@ public final class C生成器 {
     private String 源路径 = "";
     private 中间代码.类定义 当前类;
     private 类型 当前返回类型 = 类型.无;
+    /** M12 影子栈：当前函数体是否已压帧（决定是否 emit pop）。 */
+    private boolean 当前函数已压帧 = false;
 
     private C生成器(中间代码.程序 程序) {
         this.程序 = 程序;
@@ -667,7 +669,13 @@ public final class C生成器 {
         缩进++;
         当前类 = 类;
         当前返回类型 = 方法.返回类型();
+        /* M12 影子栈：方法入口压帧；返回语句弹帧（见 语句() 的返回分支）。 */
+        输出行("cjk_frame_push(" + 帧名(类.名(), 方法.名()) + ", 0);");
+        当前函数已压帧 = true;
         语句(方法.体());
+        /* 自然结束（无 return 的 void 方法）弹帧，避免帧栈漂移。 */
+        输出行("cjk_frame_pop();");
+        当前函数已压帧 = false;
         缩进--;
         当前返回类型 = 类型.无;
         输出.append("}\n\n");
@@ -720,14 +728,24 @@ public final class C生成器 {
             return;
         }
         int 行 = 位置 == null ? 0 : 位置.行(语句);
+        boolean 是块 = 语句 instanceof 中间代码.块;
         if (行 > 0) {
             当前行 = 行;
             原样行("#line " + 行 + " \"" + 转义C路径(源路径) + "\"");
+            /* M12 影子栈：块的行号同步必须放进 `{` 内（见下方），否则会夹在
+             * for/if/while(...) 与体之间成为唯一语句，劫持控制流。 */
+            if (!是块) {
+                输出行("cjk_frame_set_line(" + 行 + ");");
+            }
         }
-        if (语句 instanceof 中间代码.块 块) {
+        if (是块) {
+            中间代码.块 块体 = (中间代码.块) 语句;
             原样行("{");
             缩进++;
-            for (中间代码.语句 子 : 块.语句()) {
+            if (行 > 0) {
+                输出行("cjk_frame_set_line(" + 行 + ");");
+            }
+            for (中间代码.语句 子 : 块体.语句()) {
                 语句(子);
             }
             缩进--;
@@ -738,26 +756,33 @@ public final class C生成器 {
         } else if (语句 instanceof 中间代码.表达式语句 表达式语句) {
             输出行(表达式(表达式语句.值()) + ";");
         } else if (语句 instanceof 中间代码.返回语句 返回) {
+            /* M12 影子栈：必须先求值返回表达式，再弹帧，最后返回——否则表达式里抛异常时帧已被弹掉。 */
             if (返回.值() == null) {
+                if (当前函数已压帧) {
+                    输出行("cjk_frame_pop();");
+                }
                 输出行("return;");
+            } else if (当前函数已压帧 && 当前返回类型 != 类型.无) {
+                输出行("return ({ " + C类型(当前返回类型) + " _帧返回值 = "
+                        + 适配(当前返回类型, 返回.值()) + "; cjk_frame_pop(); _帧返回值; });");
             } else {
                 输出行("return " + 适配(当前返回类型, 返回.值()) + ";");
             }
         } else if (语句 instanceof 中间代码.若语句 若) {
             输出行("if (" + 表达式(若.条件()) + ")");
-            语句(若.成立());
+            生成体语句(若.成立());
             if (若.否则() != null) {
                 输出行("else");
-                语句(若.否则());
+                生成体语句(若.否则());
             }
         } else if (语句 instanceof 中间代码.对于语句 对于) {
             生成对于(对于);
         } else if (语句 instanceof 中间代码.当语句 当) {
             输出行("while (" + 表达式(当.条件()) + ")");
-            语句(当.体());
+            生成体语句(当.体());
         } else if (语句 instanceof 中间代码.做当语句 做当) {
             输出行("do");
-            语句(做当.体());
+            生成体语句(做当.体());
             输出行("while (" + 表达式(做当.条件()) + ");");
         } else if (语句 instanceof 中间代码.跳出语句) {
             输出行("break;");
@@ -792,9 +817,24 @@ public final class C生成器 {
         }
         String 条件 = 对于.条件() == null ? "" : 表达式(对于.条件());
         输出行("for (; " + 条件 + "; " + 更新 + ")");
-        语句(对于.体());
+        生成体语句(对于.体());
         缩进--;
         原样行("}");
+    }
+
+    /* M12 影子栈：控制流体若非块，强制包一层 {}。
+     * 否则 set_line 作为独立语句会夹在 if/for/while(...) 与其体之间，
+     * 成为控制流的唯一语句并劫持循环/分支（第19课 else 单语句体踩中）。 */
+    private void 生成体语句(中间代码.语句 体) {
+        if (体 instanceof 中间代码.块) {
+            语句(体);
+        } else {
+            原样行("{");
+            缩进++;
+            语句(体);
+            缩进--;
+            原样行("}");
+        }
     }
 
     private void 生成尝试(中间代码.尝试语句 尝试) {
@@ -804,6 +844,8 @@ public final class C生成器 {
         输出行("_h.prev = cjk_handler_top;");
         输出行("_h.exception = NULL;");
         输出行("cjk_handler_top = &_h;");
+        /* M12 影子栈：setjmp 前记录帧深，catch 分支 rewind 回退被 longjmp 跳过的帧。 */
+        输出行("int _帧标记 = cjk_frame_mark();");
         输出行("if (setjmp(_h.buf) == 0) {");
         缩进++;
         语句(尝试.体());
@@ -812,6 +854,7 @@ public final class C生成器 {
         缩进--;
         输出行("} else {");
         缩进++;
+        输出行("cjk_frame_rewind(_帧标记);");
         输出行("cjk_exception* _e = _h.exception;");
         输出行("cjk_handler_top = _h.prev;");
         输出行("int _caught = 0;");
@@ -2191,6 +2234,15 @@ public final class C生成器 {
     }
 
     // ================= 名字 =================
+
+    /** M12 影子栈帧名：中文可读的 "类.方法"，入口/构造等尖括号名转成中文。 */
+    private String 帧名(String 类名, String 方法名) {
+        String 显示 = 方法名;
+        if (显示.startsWith("<") && 显示.endsWith(">")) {
+            显示 = 显示.substring(1, 显示.length() - 1);
+        }
+        return C文本(类名 + "." + 显示);
+    }
 
     private String 方法C名(String 类名, 中间代码.方法 方法) {
         StringBuilder sb = new StringBuilder("_cjkf_").append(编码(类名)).append('_');
