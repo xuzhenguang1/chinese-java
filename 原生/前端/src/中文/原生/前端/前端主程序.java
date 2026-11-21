@@ -122,6 +122,14 @@ public final class 前端主程序 {
         }
     }
 
+    /** M14：从 CJC_PLATFORM 环境变量读取目标平台，默认 windows（逐字节保留既有 PE 行为）。 */
+    private static 中文.原生.后端LLVM.LLVM平台配置 当前LLVM配置() {
+        String 平台 = System.getenv("CJC_PLATFORM");
+        return "linux".equalsIgnoreCase(平台)
+                ? 中文.原生.后端LLVM.LLVM平台配置.linux()
+                : 中文.原生.后端LLVM.LLVM平台配置.windows();
+    }
+
     private static List<String> 取文件参数(String[] 参数, int 起) {
         List<String> 结果 = new ArrayList<>();
         for (int i = 起; i < 参数.length; i++) {
@@ -641,7 +649,7 @@ public final class 前端主程序 {
             return 1;
         }
         try {
-            String 源码 = 中文.原生.后端LLVM.LLVM生成器.生成(程序);
+            String 源码 = 中文.原生.后端LLVM.LLVM生成器.生成(程序, 当前LLVM配置());
             Path 输出 = Paths.get(输出IR).toAbsolutePath().normalize();
             if (输出.getParent() != null) {
                 Files.createDirectories(输出.getParent());
@@ -809,7 +817,7 @@ public final class 前端主程序 {
         }
         try {
             String 源码 = isLLVM
-                    ? 中文.原生.后端LLVM.LLVM生成器.生成(程序)
+                    ? 中文.原生.后端LLVM.LLVM生成器.生成(程序, 当前LLVM配置())
                     : 中文.原生.后端C.C生成器.生成(程序);
             Path 输出 = Paths.get(输出路径).toAbsolutePath().normalize();
             if (输出.getParent() != null) {

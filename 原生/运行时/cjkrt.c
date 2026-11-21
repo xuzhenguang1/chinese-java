@@ -92,12 +92,21 @@ void cjk_frame_print(void) {
     }
 }
 
+/* handler 布局断言：LLVM 后端按此布局发射 IR（`%cjk_handler = type { [N x i64], ptr, ptr }`），
+ * 布局变化必须同步修改 原生/后端LLVM/LLVM平台配置.java。数值来自 M14 T1 交叉编译探针实测
+ * （见 文档/原生/M14/工具链与ABI探针报告.md），禁止照搬推测。 */
 #if defined(_WIN64)
-/* LLVM 后端按此布局直接发射 IR；布局变化必须同步修改 原生\后端LLVM。 */
+/* MinGW/Win64：jmp_buf 256 字节，16 对齐。 */
 _Static_assert(sizeof(jmp_buf) == 256, "jmp_buf 布局变化：LLVM 后端需同步");
 _Static_assert(sizeof(cjk_handler) == 272, "cjk_handler 布局变化：LLVM 后端需同步");
 _Static_assert(offsetof(cjk_handler, prev) == 256, "cjk_handler.prev 偏移变化");
 _Static_assert(offsetof(cjk_handler, exception) == 264, "cjk_handler.exception 偏移变化");
+#elif defined(__linux__) || defined(CJK_PLATFORM_LINUX)
+/* musl 1.2.5 x86_64：jmp_buf 200 字节，8 对齐；实测 handler 216/prev=200/exception=208。 */
+_Static_assert(sizeof(jmp_buf) == 200, "musl jmp_buf 布局变化：LLVM 后端需同步");
+_Static_assert(sizeof(cjk_handler) == 216, "musl cjk_handler 布局变化：LLVM 后端需同步");
+_Static_assert(offsetof(cjk_handler, prev) == 200, "musl cjk_handler.prev 偏移变化");
+_Static_assert(offsetof(cjk_handler, exception) == 208, "musl cjk_handler.exception 偏移变化");
 #endif
 
 static uint16_t 空字面量[] = {'n', 'u', 'l', 'l'};

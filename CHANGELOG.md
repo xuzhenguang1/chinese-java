@@ -2,6 +2,16 @@
 
 版本与关键字表版本对齐：语言表层每变更一次关键字表，递增一个次版本号。
 
+## 未发布 · M12–M14 原生加固与 Linux ELF
+
+### 变更
+
+- M14：新增 Linux ELF 交叉编译与全量对拍。musl sysroot（Alpine CDN）+ 本机 clang/ld.lld 交叉编译；驱动新增 `-平台 windows|linux`，缓存全链路按平台分桶，产物 `.exe`/`.elf`。
+- M14：`LLVM平台配置.java` 集中 triple/datalayout/handler 布局/setjmp 签名/cjk_value ABI；ABI 数值由交叉编译探针实测（jmp_buf=200/handler=216，非推测值）；`cjkrt.c` 静态断言按平台分派，Windows 默认为零回退。
+- M14：运行时补完 Linux 分支——`文件.c` POSIX 八函数 + `realpath` + `CJK_CLS_文件路径`；`标准库.c` socket HTTP 五函数；`cjk_platform.c` 线程栈顶失败不再用哨兵。修复 Linux `网络失败()` 中文异常消息乱码。
+- M14：新增统一运行器 `运行器.ps1` + `工具/运行VM.py` + `工具/构建initramfs.py`（qemu-system-x86_64 + Alpine VM，批量 VM 一次跑完 35 课约 5 秒）；新增 `对拍ELF.ps1`、`检查调试信息Linux.ps1`、`GC压力Linux.ps1`、`网络冒烟Linux.ps1`、`对拍模块ELF.ps1`。
+- M14 实测：35 课 C/LLVM ELF 对拍 35/35 ×2；ELF DWARF 中文行号 2/2；GC 压力 4/4；socket HTTP 中文正文往返通过；Windows 全量校验零回退。报告见 `文档/原生/M14/`。新增 ADR-018，ADR 计数 17→18；`校验.ps1` 新增 8.13。
+
 ## 未发布 · M8–M11 自举一期至五期（词法、语法、语义、中间码与自举自举）
 
 关键字表仍为 v1.6（56 个英文关键字 / 121 个中文词 / 34 个类型别名），语言面未变；本次只扩原生工具链与测试。

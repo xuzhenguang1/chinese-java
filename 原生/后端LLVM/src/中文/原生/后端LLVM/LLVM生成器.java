@@ -43,8 +43,6 @@ public final class LLVM生成器 {
             "整数包装", "长整数包装", "短整数包装", "字节包装",
             "浮点包装", "双浮点包装", "布尔包装", "字符包装");
 
-    private static final String 系统行 = "x86_64-w64-windows-gnu";
-
     private record 值(类型 类型, String LLVM类型, String 文本) {
         值(类型 类型, String 文本) {
             this(类型, LLVM生成器.LLVM类型(类型), 文本);
@@ -61,6 +59,8 @@ public final class LLVM生成器 {
 
     private final 中间代码.程序 程序;
     private final 中间代码.位置信息 位置;
+    /** M14：平台配置；默认 windows 保证既有 PE 行为逐字节不变。 */
+    private final LLVM平台配置 配置;
     private final IR输出 IR = new IR输出();
     private final Map<String, 中间代码.类定义> 类表 = new LinkedHashMap<>();
     private final Map<String, Integer> 槽表 = new LinkedHashMap<>();
@@ -85,7 +85,12 @@ public final class LLVM生成器 {
     private int 标签序号;
 
     private LLVM生成器(中间代码.程序 程序) {
+        this(程序, LLVM平台配置.windows());
+    }
+
+    private LLVM生成器(中间代码.程序 程序, LLVM平台配置 配置) {
         this.程序 = 程序;
+        this.配置 = 配置;
         this.位置 = 程序.位置();
         this.源路径 = 位置 == null ? "" : 位置.源路径;
         int 斜杠 = Math.max(源路径.lastIndexOf('/'), 源路径.lastIndexOf('\\'));
@@ -102,7 +107,12 @@ public final class LLVM生成器 {
     }
 
     public static String 生成(中间代码.程序 程序) {
-        LLVM生成器 生成器 = new LLVM生成器(程序);
+        return 生成(程序, LLVM平台配置.windows());
+    }
+
+    /** M14：按平台配置生成 IR（linux 目标由 T1 探针实测值构造配置）。 */
+    public static String 生成(中间代码.程序 程序, LLVM平台配置 配置) {
+        LLVM生成器 生成器 = new LLVM生成器(程序, 配置);
         生成器.生成程序();
         return 生成器.IR.组装(生成器.模块头());
     }
@@ -181,9 +191,8 @@ public final class LLVM生成器 {
     private String 模块头() {
         return "; 由 cjc 原生后端（M6 LLVM）生成，请勿手工修改。\n"
                 + "source_filename = \"" + 转义源(源文件名) + "\"\n"
-                + "target datalayout = \"e-m:w-p270:32:32-p271:32:32-p272:64:64"
-                + "-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\n"
-                + "target triple = \"" + 系统行 + "\"\n\n";
+                + "target datalayout = \"" + 配置.数据布局中段() + "\"\n"
+                + "target triple = \"" + 配置.系统行() + "\"\n\n";
     }
 
     private void 生成程序() {
@@ -233,7 +242,7 @@ public final class LLVM生成器 {
         IR.类型定义("%cjk_class = type { i32, ptr, ptr, i32, ptr, ptr, i32, ptr }");
         IR.类型定义("%cjk_exception = type { ptr, ptr }");
         IR.类型定义("%cjk_value = type { i32, i64 }");
-        IR.类型定义("%cjk_handler = type { [32 x i64], ptr, ptr }");
+        IR.类型定义("%cjk_handler = type { " + 配置.处理器元素() + ", ptr, ptr }");
         IR.类型定义("");
     }
 
@@ -370,12 +379,16 @@ public final class LLVM生成器 {
             }
             当前类 = 类;
             当前行 = 0;
-            开始原始函数(回调名(类.名()), "void",
-                    List.of("ptr sret(%cjk_value) align 8 %ret", "ptr %self",
-                            "ptr align 8 %arg1", "ptr align 8 %arg2", "i32 %arg3"),
-                    类.名() + ".回调");
-            String 甲 = 载入值("%arg1");
-            String 乙 = 载入值("%arg2");
+            boolean 引用传递 = 配置.值用引用传递();
+            // 回调签名须与 C 侧 cjk_callback 一致：Win64 sret/byref，SysV 按值返回/传参。
+            List<String> 回调参数 = 引用传递
+                    ? List.of("ptr sret(%cjk_value) align 8 %ret", "ptr %self",
+                            "ptr align 8 %arg1", "ptr align 8 %arg2", "i32 %arg3")
+                    : List.of("ptr %self", "%cjk_value %arg1", "%cjk_value %arg2", "i32 %arg3");
+            开始原始函数(回调名(类.名()), 引用传递 ? "void" : "%cjk_value",
+                    回调参数, 类.名() + ".回调");
+            String 甲 = 引用传递 ? 载入值("%arg1") : "%arg1";
+            String 乙 = 引用传递 ? 载入值("%arg2") : "%arg2";
             StringBuilder 实参 = new StringBuilder("ptr %self");
             for (int i = 0; i < 调用方法.参数().size(); i++) {
                 String 原生 = i == 0 ? 甲 : 乙;
@@ -384,17 +397,22 @@ public final class LLVM生成器 {
                         .append(' ').append(值文本);
             }
             类型 返回 = 调用方法.返回类型();
+            String 结果值;
             if (返回 == null || 返回.同型(类型.无)) {
                 指令("call void @" + 方法名(类.名(), 调用方法) + "(" + 实参 + ")");
-                指令("store %cjk_value " + 调("cjk_v_null", "%cjk_value").文本()
-                        + ", ptr %ret, align 8");
+                结果值 = 调("cjk_v_null", "%cjk_value").文本();
             } else {
                 String 结果 = 新临时();
                 指令(结果 + " = call " + LLVM类型(返回) + " @"
                         + 方法名(类.名(), 调用方法) + "(" + 实参 + ")");
-                指令("store %cjk_value " + 到原生文本(返回, 结果) + ", ptr %ret, align 8");
+                结果值 = 到原生文本(返回, 结果);
             }
-            终结("ret void");
+            if (引用传递) {
+                指令("store %cjk_value " + 结果值 + ", ptr %ret, align 8");
+                终结("ret void");
+            } else {
+                终结("ret %cjk_value " + 结果值);
+            }
             结束函数(类型.无);
         }
     }
@@ -859,26 +877,29 @@ public final class LLVM生成器 {
      */
     private 值 调(String 函数, String 返回LLVM, 值... 参数) {
         boolean 值返回 = "%cjk_value".equals(返回LLVM);
+        boolean 引用传递 = 配置.值用引用传递();
         List<String> 类型们 = new ArrayList<>();
         StringBuilder 实参 = new StringBuilder();
-        if (值返回) {
+        if (值返回 && 引用传递) {
             类型们.add("ptr sret(%cjk_value) align 8");
         }
         for (int i = 0; i < 参数.length; i++) {
             if (i > 0) {
                 实参.append(", ");
             }
-            if ("%cjk_value".equals(参数[i].LLVM类型())) {
+            if ("%cjk_value".equals(参数[i].LLVM类型()) && 引用传递) {
+                // Win64：16 字节结构体不能按值传，走引用（与 clang 生成的 C ABI 一致）。
                 类型们.add("ptr align 8");
                 String 槽 = 新值槽();
                 指令("store %cjk_value " + 参数[i].文本() + ", ptr " + 槽 + ", align 8");
                 实参.append("ptr align 8 ").append(槽);
             } else {
+                // SysV AMD64：%cjk_value 是两个 eightbyte，按值走寄存器。
                 类型们.add(参数[i].LLVM类型());
                 实参.append(参数[i].LLVM类型()).append(' ').append(参数[i].文本());
             }
         }
-        if (值返回) {
+        if (值返回 && 引用传递) {
             IR.声明("void", 函数, 类型们);
             String 槽 = 新值槽();
             指令("call void @" + 函数 + "(ptr sret(%cjk_value) align 8 " + 槽
@@ -887,8 +908,9 @@ public final class LLVM生成器 {
             指令(结果 + " = load %cjk_value, ptr " + 槽 + ", align 8");
             return new 值(类型.错误, "%cjk_value", 结果);
         }
-        IR.声明(返回LLVM, 函数, 类型们);
-        String 调用文本 = "call " + 返回LLVM + " @" + 函数 + "(" + 实参 + ")";
+        // SysV 值返回：直接 call %cjk_value @f(...)，结果即结构体值。
+        IR.声明(值返回 ? "%cjk_value" : 返回LLVM, 函数, 类型们);
+        String 调用文本 = "call " + (值返回 ? "%cjk_value" : 返回LLVM) + " @" + 函数 + "(" + 实参 + ")";
         if ("void".equals(返回LLVM)) {
             指令(调用文本);
             return new 值(类型.无, "void", "0");
@@ -1212,15 +1234,17 @@ public final class LLVM生成器 {
     private void 尝试语句(中间代码.尝试语句 尝试) {
         确保处理器栈();
         声明影子栈();
-        IR.声明("i32", "_setjmp", List.of("ptr", "ptr"), "returns_twice");
-        IR.声明("ptr", "llvm.frameaddress.p0", List.of("i32"));
+        IR.声明("i32", 配置.setjmp函数名(), 配置.setjmp参数类型(), "returns_twice");
+        if (配置.需要帧地址()) {
+            IR.声明("ptr", "llvm.frameaddress.p0", List.of("i32"));
+        }
         /* M12 影子栈：setjmp 前记录帧深，catch 分支 rewind 回退被 longjmp 跳过的帧。 */
         String 帧标记槽 = 新临时();
         新入口临时(帧标记槽 + " = alloca i32");
         指令("store i32 " + 调("cjk_frame_mark", "i32").文本() + ", ptr " + 帧标记槽);
         String 处理器 = 新临时();
-        // MinGW 的 jmp_buf 要求 16 字节对齐（_setjmp 用 movaps 保存 XMM）。
-        新入口临时(处理器 + " = alloca %cjk_handler, align 16");
+        // 对齐来自平台配置：MinGW 16（movaps 存 XMM）/ musl 8。
+        新入口临时(处理器 + " = alloca %cjk_handler, align " + 配置.处理器对齐());
         String 捕获标志 = 新临时();
         新入口临时(捕获标志 + " = alloca i32");
         String 前一个 = 新临时();
@@ -1232,10 +1256,15 @@ public final class LLVM生成器 {
         指令(异常指针 + " = getelementptr %cjk_handler, ptr " + 处理器 + ", i32 0, i32 2");
         指令("store ptr null, ptr " + 异常指针);
         指令("store ptr " + 处理器 + ", ptr @cjk_handler_top");
-        String 帧 = 新临时();
-        指令(帧 + " = call ptr @llvm.frameaddress.p0(i32 0)");
         String 返回码 = 新临时();
-        指令(返回码 + " = call i32 @_setjmp(ptr " + 处理器 + ", ptr " + 帧 + ")");
+        if (配置.需要帧地址()) {
+            String 帧 = 新临时();
+            指令(帧 + " = call ptr @llvm.frameaddress.p0(i32 0)");
+            指令(返回码 + " = call i32 @" + 配置.setjmp函数名() + "(ptr " + 处理器 + ", ptr " + 帧 + ")");
+        } else {
+            // musl/glibc：setjmp 单参，jmp_buf 自身保存 RIP/RBP。
+            指令(返回码 + " = call i32 @" + 配置.setjmp函数名() + "(ptr " + 处理器 + ")");
+        }
         String 正常 = 新临时();
         指令(正常 + " = icmp eq i32 " + 返回码 + ", 0");
         String 体块 = 新标签("尝试");

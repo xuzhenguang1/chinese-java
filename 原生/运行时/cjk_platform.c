@@ -131,8 +131,10 @@ unsigned char *cjk_thread_stack_top(void) {
         pthread_attr_destroy(&属性);
     }
     if (基址 == NULL || 大小 == 0) {
-        char 哨兵;
-        return (unsigned char *)&哨兵 + 64u * 1024u;
+        /* T4.3：取栈信息失败时返回 NULL，由 gc.c 跳过该线程栈扫描（保守但安全）。
+         * 旧实现返回一个栈上哨兵地址+64K，可能越过真实栈顶读到野指针甚至无效页，
+         * 且编译器警告 -Wreturn-stack-address；返回 NULL 让调用方显式放弃。 */
+        return NULL;
     }
     return (unsigned char *)基址 + 大小;
 #endif

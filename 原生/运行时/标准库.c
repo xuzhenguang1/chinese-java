@@ -923,25 +923,234 @@ void cjk_http_download(cjk_string *url, cjk_object *path, int32_t line) {
 /* ---- /Windows ---- */
 
 #else /* !CJK_PLATFORM_WINDOWS */
-/* ---- Linux：网络 IO 明确中文诊断，不静默（M14 引入 socket 后实现） ---- */
-static void 网络不支持(cjk_string *url, int32_t line) {
-    cjk_string *消息 = cjk_str_concat(cjk_str_from_utf8("网络请求：Linux 平台暂不支持（M14 引入 socket 后可用）："),
-                                      url == NULL ? cjk_str_from_utf8("") : url);
-    cjk_throw(cjk_new_exception(&CJK_CLS_输入输出异常, 消息), line);
+/* ---- Linux：socket + getaddrinfo 实现 HTTP GET（musl 静态；无 TLS，https 明确诊断） ---- */
+
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <errno.h>
+
+static void 网络失败(const char *原因, cjk_string *url, int32_t line) {
+    文本缓冲 b;
+    缓冲初始化(&b);
+    /* 原因是中文 UTF-8 字面量，必须经 cjk_str_from_utf8 转 UTF-16；
+     * 不能用 缓冲追加ASCII（逐字节当 Latin-1 字符会乱码）。 */
+    缓冲追加文本(&b, cjk_str_from_utf8(原因));
+    缓冲追加文本(&b, url);
+    cjk_throw(cjk_new_exception(&CJK_CLS_输入输出异常, 缓冲成串(&b)), line);
 }
-cjk_string *cjk_http_get_text(cjk_string *url, int32_t line) { 网络不支持(url, line); return NULL; }
-int32_t cjk_http_status(cjk_string *url, int32_t line) { 网络不支持(url, line); return 0; }
-cjk_object *cjk_http_get(cjk_string *url, int32_t line) { 网络不支持(url, line); return NULL; }
+
+/* cjk_string(UTF-16) → ASCII（URL/主机/路径均为 ASCII）。 */
+static char *网址ASCII(cjk_string *s) {
+    int32_t 长 = (s == NULL) ? 0 : s->len;
+    char *r = (char *)cjk_gc_alloc((size_t)长 + 1);
+    for (int32_t i = 0; i < 长; i++) {
+        r[i] = (s->data[i] < 128) ? (char)s->data[i] : '?';
+    }
+    r[长] = 0;
+    return r;
+}
+
+/* 解析 http://主机[:端口]/路径；返回 0 成功，-1 失败（含 https 不支持）。 */
+static int32_t 解析网址(cjk_string *url, char *主机, size_t 主容量, int32_t *端口,
+                        char *路径, size_t 路容量, int32_t *安全) {
+    char *w = 网址ASCII(url);
+    int32_t 起 = 0;
+    *安全 = 0;
+    if (strncmp(w, "https://", 8) == 0) { *安全 = 1; 起 = 8; }
+    else if (strncmp(w, "http://", 7) == 0) { 起 = 7; }
+    else { return -1; }
+    if (*安全) { return -1; }  /* musl 无 TLS 栈，https 无法静态实现。 */
+    int32_t 终 = 起;
+    while (w[终] != 0 && w[终] != '/' && w[终] != ':') 终++;
+    size_t 主长 = (size_t)(终 - 起);
+    if (主长 == 0 || 主长 + 1 >= 主容量) return -1;
+    memcpy(主机, w + 起, 主长);
+    主机[主长] = 0;
+    *端口 = 80;
+    int32_t i = 终;
+    if (w[i] == ':') {
+        i++;
+        int32_t 端口值 = 0;
+        while (w[i] >= '0' && w[i] <= '9') { 端口值 = 端口值 * 10 + (w[i] - '0'); i++; }
+        if (端口值 <= 0 || 端口值 > 65535) return -1;
+        *端口 = 端口值;
+    }
+    const char *余 = w + i;
+    if (*余 == 0) { snprintf(路径, 路容量, "/"); }
+    else {
+        if (strlen(余) + 1 > 路容量) return -1;
+        strcpy(路径, 余);
+    }
+    return 0;
+}
+
+/* 把 ASCII 响应头里的 Location 值拷入 location（大小写不敏感匹配）。 */
+static void 取重定向地址(const char *数据, const char *头止, char *location, size_t 容量) {
+    location[0] = 0;
+    const char *p = 数据;
+    while (p != NULL && p < 头止) {
+        const char *行止 = strchr(p, '\n');
+        if (行止 == NULL || 行止 >= 头止) break;
+        /* "Location:" 共 9 字符，逐字符大小写不敏感比较。 */
+        static const char *关键 = "location:";
+        size_t i = 0;
+        const char *q = p;
+        while (i < 9 && q < 行止 && ((*q >= 'A' && *q <= 'Z') ? (*q + 32) : *q) == 关键[i]) { q++; i++; }
+        if (i == 9) {
+            while (q < 行止 && (*q == ' ' || *q == '\t' || *q == '\r')) q++;
+            size_t 长 = 0;
+            while (q < 行止 && *q != '\r' && 长 + 1 < 容量) { location[长++] = *q++; }
+            location[长] = 0;
+            return;
+        }
+        p = 行止 + 1;
+    }
+}
+
+/* 单次 HTTP GET：写 status/body/location。返回 0 成功，-1 网络失败（抛异常）。 */
+static int32_t HTTP一次(const char *主机, int32_t 端口, const char *路径,
+                        int32_t *状态, cjk_string **正文, cjk_string *url, int32_t line,
+                        char *location, size_t 位置容量) {
+    char 端口串[16];
+    snprintf(端口串, sizeof(端口串), "%d", 端口);
+    struct addrinfo 提示, *结果 = NULL;
+    memset(&提示, 0, sizeof(提示));
+    提示.ai_family = AF_UNSPEC;
+    提示.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(主机, 端口串, &提示, &结果) != 0 || 结果 == NULL) {
+        网络失败("无法解析主机：", url, line);
+        return -1;
+    }
+    int 套接字 = socket(结果->ai_family, 结果->ai_socktype, 结果->ai_protocol);
+    if (套接字 < 0) {
+        freeaddrinfo(结果);
+        网络失败("无法创建套接字：", url, line);
+        return -1;
+    }
+    /* 10 秒收发超时。 */
+    struct timeval 超时;
+    超时.tv_sec = 10; 超时.tv_usec = 0;
+    setsockopt(套接字, SOL_SOCKET, SO_RCVTIMEO, &超时, sizeof(超时));
+    setsockopt(套接字, SOL_SOCKET, SO_SNDTIMEO, &超时, sizeof(超时));
+    if (connect(套接字, 结果->ai_addr, 结果->ai_addrlen) != 0) {
+        close(套接字); freeaddrinfo(结果);
+        网络失败("无法连接主机：", url, line);
+        return -1;
+    }
+    freeaddrinfo(结果);
+
+    char 请求[4096];
+    int 请求长 = snprintf(请求, sizeof(请求),
+        "GET %s HTTP/1.1\r\nHost: %s:%d\r\nUser-Agent: cjc-native/1.0\r\n"
+        "Accept: */*\r\nConnection: close\r\n\r\n", 路径, 主机, 端口);
+    if (send(套接字, 请求, (size_t)请求长, 0) < 0) {
+        close(套接字);
+        网络失败("网络请求失败：", url, line);
+        return -1;
+    }
+
+    size_t 容量 = 8192, 已读 = 0;
+    char *数据 = (char *)cjk_gc_alloc(容量);
+    for (;;) {
+        if (已读 + 1 >= 容量) {
+            容量 *= 2;
+            char *新数据 = (char *)cjk_gc_alloc(容量);
+            memcpy(新数据, 数据, 已读);
+            数据 = 新数据;
+        }
+        ssize_t 本块 = recv(套接字, 数据 + 已读, 容量 - 已读 - 1, 0);
+        if (本块 < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (本块 == 0) break;
+        已读 += (size_t)本块;
+    }
+    数据[已读] = 0;
+    close(套接字);
+
+    /* 解析状态行：HTTP/1.1 200 OK → 200。 */
+    int32_t 状态码 = 0;
+    const char *空格 = strchr(数据, ' ');
+    if (空格 != NULL) 状态码 = (int32_t)atoi(空格 + 1);
+
+    /* 正文 = \r\n\r\n 之后的内容；头截止到 \r\n\r\n。 */
+    const char *头尾 = strstr(数据, "\r\n\r\n");
+    const char *正文起 = (头尾 != NULL) ? 头尾 + 4 : 数据 + 已读;
+    取重定向地址(数据, (头尾 != NULL) ? 头尾 : 数据 + 已读, location, 位置容量);
+    *状态 = 状态码;
+    *正文 = cjk_str_from_utf8(正文起);
+    return 0;
+}
+
+static void HTTP请求(cjk_string *url, int32_t *状态, cjk_string **正文, int32_t line) {
+    char 主机[512], 路径[2048];
+    int32_t 端口 = 80, 安全 = 0;
+    if (解析网址(url, 主机, sizeof(主机), &端口, 路径, sizeof(路径), &安全) != 0) {
+        if (安全) 网络失败("暂不支持 HTTPS（musl 静态链接无 TLS）：", url, line);
+        网络失败("网址无效（仅支持 http://）：", url, line);
+        return;
+    }
+    /* 跟随重定向最多 5 次，对齐 WinHTTP 的 ALWAYS 策略。 */
+    cjk_string *当前 = url;
+    for (int 次 = 0; 次 < 5; 次++) {
+        char 定位[2048];
+        if (HTTP一次(主机, 端口, 路径, 状态, 正文, 当前, line, 定位, sizeof(定位)) != 0) return;
+        if ((*状态 == 301 || *状态 == 302 || *状态 == 303 || *状态 == 307 || *状态 == 308)
+                && 定位[0] != 0) {
+            if (定位[0] == '/') {
+                /* 相对路径：沿用当前主机与端口。 */
+                if (strlen(定位) + 1 > sizeof(路径)) return;
+                strcpy(路径, 定位);
+                当前 = cjk_str_from_utf8(定位);
+            } else {
+                /* 绝对 URL：整体重新解析。 */
+                if (解析网址(cjk_str_from_utf8(定位), 主机, sizeof(主机), &端口,
+                             路径, sizeof(路径), &安全) != 0) return;
+                当前 = cjk_str_from_utf8(定位);
+            }
+            continue;
+        }
+        return;
+    }
+}
+
+cjk_string *cjk_http_get_text(cjk_string *url, int32_t line) {
+    int32_t 状态 = 0;
+    cjk_string *正文 = NULL;
+    HTTP请求(url, &状态, &正文, line);
+    return 正文 == NULL ? cjk_str_from_utf8("") : 正文;
+}
+int32_t cjk_http_status(cjk_string *url, int32_t line) {
+    int32_t 状态 = 0;
+    cjk_string *正文 = NULL;
+    HTTP请求(url, &状态, &正文, line);
+    return 状态;
+}
+cjk_object *cjk_http_get(cjk_string *url, int32_t line) {
+    响应对象 *r = (响应对象 *)cjk_gc_alloc(sizeof(响应对象));
+    r->cls = &CJK_CLS_响应;
+    r->正文 = NULL;
+    HTTP请求(url, &r->状态, &r->正文, line);
+    if (r->正文 == NULL) r->正文 = cjk_str_from_utf8("");
+    return (cjk_object *)r;
+}
 int32_t cjk_http_response_status(cjk_object *resp) {
     if (resp == NULL) { cjk_throw_message(&CJK_CLS_空指针异常, "响应为空", 0); }
-    return 0;
+    return ((响应对象 *)resp)->状态;
 }
 cjk_string *cjk_http_response_body(cjk_object *resp) {
     if (resp == NULL) { cjk_throw_message(&CJK_CLS_空指针异常, "响应为空", 0); }
-    return cjk_str_from_utf8("");
+    cjk_string *正文 = ((响应对象 *)resp)->正文;
+    return 正文 == NULL ? cjk_str_from_utf8("") : 正文;
 }
 void cjk_http_download(cjk_string *url, cjk_object *path, int32_t line) {
-    (void)path; 网络不支持(url, line);
+    cjk_string *正文 = cjk_http_get_text(url, line);
+    cjk_files_write_text_parents(path, 正文, line);
 }
 #endif /* CJK_PLATFORM_WINDOWS */
 

@@ -11,7 +11,10 @@ param(
     [switch]$无缓存,
     # M12：clang 优化级别（默认 O2 不变）；仅影响原生编译，供基准各档实测。
     [ValidateSet("O0", "O1", "O2", "O3", "Os")]
-    [string]$优化 = "O2"
+    [string]$优化 = "O2",
+    # M14：目标平台。windows=PE/Win64（默认，逐字节保留 M0–M13 行为）；linux=ELF/musl/SysV。
+    [ValidateSet("windows", "linux")]
+    [string]$平台 = "windows"
 )
 
 $ErrorActionPreference = "Continue"
@@ -21,6 +24,21 @@ chcp 65001 | Out-Null
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $根目录 = (Resolve-Path "$PSScriptRoot\..").Path
+
+# ---- M14 平台配置（一处定义，全链路引用）----
+$isLinux = $平台 -eq 'linux'
+$扩展名 = if ($isLinux) { '.elf' } else { '.exe' }
+$muslTarget = 'x86_64-linux-musl'
+$muslSysroot = Join-Path $根目录 "构建\工具链\alpine\sysroot"
+$muslLib = Join-Path $muslSysroot "usr\lib"
+# clang 交叉编译参数：Linux 需指定 target/sysroot 与平台宏；Windows 保持既有（空）。
+$平台编译参数 = if ($isLinux) {
+    # _GNU_SOURCE 同时开放 clock_gettime/_POSIX 与 pthread_getattr_np/musl GNU 扩展。
+    @("--target=$muslTarget", "--sysroot=$muslSysroot", '-DCJK_PLATFORM_LINUX', '-D_GNU_SOURCE')
+} else {
+    @()
+}
+
 $桥接 = Join-Path $PSScriptRoot "工具\词表桥接.ps1"
 $源码目录们 = @(
     (Join-Path $PSScriptRoot "前端\src"),
@@ -133,7 +151,17 @@ function 取文本哈希 {
 
 # 驱动、前端、中间表示与后端源码任一变化都会让缓存失效，避免改了编译器还复用旧产物。
 function 取工具链哈希 {
-    $文本 = 取文件哈希 $PSCommandPath
+    # 平台/target/sysroot 纳入哈希：切换平台后缓存必然失效，避免 PE/ELF 串味。
+    $文本 = 取文件哈希 $PSCommandPath + "|平台=" + $平台
+    if ($isLinux) {
+        $文本 += "|target=$muslTarget|sysroot=" + $muslSysroot
+        if (Test-Path -LiteralPath $muslSysroot) {
+            # sysroot 内 libc.a/crt*.o 变化也应让缓存失效。
+            foreach ($关键 in @('usr\lib\crt1.o', 'usr\lib\crti.o', 'usr\lib\crtn.o', 'usr\lib\libc.a')) {
+                $文本 += "|" + $关键 + ":" + (取文件哈希 (Join-Path $muslSysroot $关键))
+            }
+        }
+    }
     foreach ($目录 in $源码目录们) {
         foreach ($源 in @(Get-ChildItem $目录 -Recurse -Filter *.java -File | Sort-Object FullName)) {
             $文本 += "|" + $源.FullName + ":" + (取文件哈希 $源.FullName)
@@ -163,7 +191,8 @@ function 取运行时信息 {
 # 每个运行时 .c 按内容哈希编译一次，产物放在 构建\原生\缓存\运行时。
 function 编译运行时对象 {
     param([string]$clang, $运行时)
-    $缓存目录 = Join-Path $根目录 "构建\原生\缓存\运行时"
+    $缓存子目录 = if ($isLinux) { "运行时-linux" } else { "运行时" }
+    $缓存目录 = Join-Path $根目录 ("构建\原生\缓存\" + $缓存子目录)
     New-Item -ItemType Directory -Force $缓存目录 | Out-Null
     $对象们 = @()
     $命中 = 0
@@ -173,7 +202,7 @@ function 编译运行时对象 {
         if (Test-Path $对象) {
             $命中++
         } else {
-            $输出 = & $clang -c $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $源.FullName -o $对象 2>&1
+            $输出 = & $clang -c @平台编译参数 $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $源.FullName -o $对象 2>&1
             if ($LASTEXITCODE -ne 0) {
                 $输出 | ForEach-Object { Write-Output $_ }
                 Write-Output ("运行时编译失败：{0}" -f $源.Name)
@@ -199,8 +228,17 @@ function 链接可执行 {
             $临时对象们 += $临时对象
             $索引 = $索引 + 1
         }
-        $临时输出 = Join-Path $链接目录 "out.exe"
-        $输出 = & $clang -static $临时对象们 -lm -lwinhttp -lws2_32 -lshell32 -o $临时输出 2>&1
+        $临时输出 = Join-Path $链接目录 ("out" + $扩展名)
+        if ($isLinux) {
+            # musl 静态链接：默认 ld 只支持 PE，必须 -fuse-ld=lld；且 clang 会注入
+            # Windows crtbeginT/-lgcc，故 -nostdlib 并手动指定 musl crt1/crti/crtn + libc.a。
+            # musl 1.2.5 已把 pthread/dl/rt 并入 libc，无需额外库。
+            $输出 = & $clang --target=$muslTarget --sysroot=$muslSysroot -nostdlib -fuse-ld=lld -static `
+                (Join-Path $muslLib "crt1.o") (Join-Path $muslLib "crti.o") `
+                $临时对象们 -L$muslLib -lc (Join-Path $muslLib "crtn.o") -o $临时输出 2>&1
+        } else {
+            $输出 = & $clang -static $临时对象们 -lm -lwinhttp -lws2_32 -lshell32 -o $临时输出 2>&1
+        }
         if ($输出) {
             $输出 | ForEach-Object { [Console]::Error.WriteLine($_) }
         }
@@ -228,6 +266,7 @@ function 读取缓存状态 {
 function 写入缓存状态 {
     param([string]$状态文件, [string]$源哈希, [string]$运行时哈希, [string]$工具链哈希, [string]$输出)
     $状态 = [ordered]@{
+        平台 = $平台
         源哈希 = $源哈希
         运行时哈希 = $运行时哈希
         工具链哈希 = $工具链哈希
@@ -278,6 +317,14 @@ function 输出工具链 {
     $clang = 查找clang
 
     Write-Output "工具链："
+    Write-Output ("  目标平台：{0}（产物扩展名 {1}）" -f $平台, $扩展名)
+    if ($isLinux) {
+        if (Test-Path -LiteralPath $muslSysroot) {
+            Write-Output ("  musl sysroot：{0}" -f $muslSysroot)
+        } else {
+            Write-Output ("  musl sysroot 缺失：{0}（M14 工具链未落地）" -f $muslSysroot)
+        }
+    }
     if ($clang) {
         $版本 = (& $clang --version 2>&1 | Select-Object -First 1)
         Write-Output ("  clang：{0}（{1}）" -f $版本, $clang)
@@ -478,7 +525,7 @@ switch ($子命令) {
         New-Item -ItemType Directory -Force $C目录 | Out-Null
         $C文件 = Join-Path $C目录 ($模块 + ".c")
         if (-not $输出exe) {
-            $输出exe = Join-Path $C目录 ($模块 + ".exe")
+            $输出exe = Join-Path $C目录 ($模块 + $扩展名)
         }
         New-Item -ItemType Directory -Force ([System.IO.Path]::GetDirectoryName($输出exe)) | Out-Null
 
@@ -500,11 +547,11 @@ switch ($子命令) {
             $源哈希 = 取文件哈希 $源文件
         }
         $缓存目录 = Join-Path $根目录 "构建\原生\缓存"
-        $状态文件 = Join-Path $缓存目录 ("状态\" + $模块 + ".json")
+        $状态文件 = Join-Path $缓存目录 ("状态\" + $模块 + $(if ($isLinux) { '.linux' } else { '' }) + ".json")
 
         if (-not $无缓存) {
             $状态 = 读取缓存状态 $状态文件
-            if ($null -ne $状态 -and $状态.源哈希 -eq $源哈希 -and
+            if ($null -ne $状态 -and $状态.平台 -eq $平台 -and $状态.源哈希 -eq $源哈希 -and
                 $状态.运行时哈希 -eq $运行时.哈希 -and $状态.工具链哈希 -eq $工具链哈希 -and
                 $状态.输出 -eq $输出exe -and (Test-Path $输出exe)) {
                 Write-Output ("增量：源文件与运行时未变，跳过编译（{0}）" -f $输出exe)
@@ -535,7 +582,7 @@ switch ($子命令) {
             New-Item -ItemType Directory -Force $无缓存目录 | Out-Null
             $模块对象 = Join-Path $无缓存目录 "module.o"
             try {
-                $模块输出 = & $clang -c $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $C文件 -o $模块对象 2>&1
+                $模块输出 = & $clang -c @平台编译参数 $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $C文件 -o $模块对象 2>&1
                 $编译码 = $LASTEXITCODE
                 if ($编译码 -ne 0) {
                     $模块输出 | ForEach-Object { Write-Output $_ }
@@ -551,13 +598,13 @@ switch ($子命令) {
             }
         } else {
             $运行时对象 = 编译运行时对象 $clang $运行时
-            $模块缓存 = Join-Path $缓存目录 "模块"
+            $模块缓存 = Join-Path $缓存目录 $(if ($isLinux) { "模块-linux" } else { "模块" })
             New-Item -ItemType Directory -Force $模块缓存 | Out-Null
             $模块对象 = Join-Path $模块缓存 ("{0}-{1}.o" -f $模块, $C哈希.Substring(0, 8))
             if (Test-Path $模块对象) {
                 $模块状态 = "命中"
             } else {
-                $输出 = & $clang -c $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $C文件 -o $模块对象 2>&1
+                $输出 = & $clang -c @平台编译参数 $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $C文件 -o $模块对象 2>&1
                 if ($LASTEXITCODE -ne 0) {
                     $输出 | ForEach-Object { Write-Output $_ }
                     Write-Output "clang 编译失败（退出码 $LASTEXITCODE）。"
@@ -608,7 +655,7 @@ switch ($子命令) {
             $输出exe = @(转绝对路径 @($o))[0]
         }
         if (-not $输出exe) {
-            $输出exe = Join-Path $llvm目录 ($模块 + ".exe")
+            $输出exe = Join-Path $llvm目录 ($模块 + $扩展名)
         }
 
         $运行时 = 取运行时信息
@@ -620,11 +667,11 @@ switch ($子命令) {
             $源哈希 = 取文件哈希 $源文件
         }
         $缓存目录 = Join-Path $根目录 "构建\原生\缓存"
-        $状态文件 = Join-Path $缓存目录 ("状态\" + $模块 + ".llvm.json")
+        $状态文件 = Join-Path $缓存目录 ("状态\" + $模块 + $(if ($isLinux) { '.linux' } else { '' }) + ".llvm.json")
 
         if ($动作 -eq '编译' -and -not $无缓存) {
             $状态 = 读取缓存状态 $状态文件
-            if ($null -ne $状态 -and $状态.源哈希 -eq $源哈希 -and
+            if ($null -ne $状态 -and $状态.平台 -eq $平台 -and $状态.源哈希 -eq $源哈希 -and
                 $状态.运行时哈希 -eq $运行时.哈希 -and $状态.工具链哈希 -eq $工具链哈希 -and
                 $状态.输出 -eq $输出exe -and (Test-Path $输出exe)) {
                 Write-Output ("增量：源文件与运行时未变，跳过编译（{0}）" -f $输出exe)
@@ -633,14 +680,27 @@ switch ($子命令) {
         }
 
         确保前端已编译
-        if ($是多源) {
-            $前端参数 = @('编译模块LLVM', $根目录, $IR文件, $源文件) + @($源文件们[1..($源文件们.Count - 1)])
-            运行前端 $前端参数
+        # M14：前端 LLVM 生成器从 CJC_PLATFORM 读取目标平台配置；生成后恢复原值。
+        $原平台环境变量 = [Environment]::GetEnvironmentVariable('CJC_PLATFORM')
+        if ($isLinux) {
+            [Environment]::SetEnvironmentVariable('CJC_PLATFORM', 'linux')
         } else {
-            运行前端 @('编译LLVM', $根目录, $源文件, $IR文件)
+            [Environment]::SetEnvironmentVariable('CJC_PLATFORM', $null)
         }
-        if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
+        $前端退出码 = 0
+        try {
+            if ($是多源) {
+                $前端参数 = @('编译模块LLVM', $根目录, $IR文件, $源文件) + @($源文件们[1..($源文件们.Count - 1)])
+                运行前端 $前端参数
+            } else {
+                运行前端 @('编译LLVM', $根目录, $源文件, $IR文件)
+            }
+            $前端退出码 = $LASTEXITCODE
+        } finally {
+            [Environment]::SetEnvironmentVariable('CJC_PLATFORM', $原平台环境变量)
+        }
+        if ($前端退出码 -ne 0) {
+            exit $前端退出码
         }
         Write-Output ("已生成 LLVM IR：{0}" -f $IR文件)
         if ($动作 -eq '检查') {
@@ -659,20 +719,43 @@ switch ($子命令) {
 
         if ($无缓存) {
             Write-Output "增量：未启用缓存（-无缓存）"
-            & $clang $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -static -I $运行时.目录 $IR文件 @($运行时.源们 | ForEach-Object FullName) -lm -lwinhttp -lws2_32 -lshell32 -o $输出exe
-            if ($LASTEXITCODE -ne 0) {
-                Write-Output "clang 编译失败（退出码 $LASTEXITCODE）。"
-                exit 1
+            if ($isLinux) {
+                # Linux 无缓存：先编 IR 与运行时对象，再统一走「链接可执行」（musl 需手动 crt 顺序）。
+                $运行时对象 = 编译运行时对象 $clang $运行时
+                $无缓存目录 = Join-Path ([System.IO.Path]::GetTempPath()) ("cjc-nocache-" + [guid]::NewGuid().ToString("N"))
+                New-Item -ItemType Directory -Force $无缓存目录 | Out-Null
+                $模块对象 = Join-Path $无缓存目录 "module.o"
+                try {
+                    $模块输出 = & $clang -c @平台编译参数 $优化开关 -std=c11 -fwrapv -fno-strict-aliasing $IR文件 -o $模块对象 2>&1
+                    $编译码 = $LASTEXITCODE
+                    if ($编译码 -ne 0) {
+                        $模块输出 | ForEach-Object { Write-Output $_ }
+                    } else {
+                        $编译码 = 链接可执行 $clang $模块对象 $运行时对象 $输出exe
+                    }
+                } finally {
+                    Remove-Item -LiteralPath $无缓存目录 -Recurse -Force -ErrorAction SilentlyContinue
+                }
+                if ($编译码 -ne 0) {
+                    Write-Output "clang 编译/链接失败（退出码 $编译码）。"
+                    exit 1
+                }
+            } else {
+                & $clang $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -static -I $运行时.目录 $IR文件 @($运行时.源们 | ForEach-Object FullName) -lm -lwinhttp -lws2_32 -lshell32 -o $输出exe
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Output "clang 编译失败（退出码 $LASTEXITCODE）。"
+                    exit 1
+                }
             }
         } else {
             $运行时对象 = 编译运行时对象 $clang $运行时
-            $模块缓存 = Join-Path $缓存目录 "模块"
+            $模块缓存 = Join-Path $缓存目录 $(if ($isLinux) { "模块-linux" } else { "模块" })
             New-Item -ItemType Directory -Force $模块缓存 | Out-Null
             $模块对象 = Join-Path $模块缓存 ("{0}-{1}.ll.o" -f $模块, $IR哈希.Substring(0, 8))
             if (Test-Path $模块对象) {
                 $模块状态 = "命中"
             } else {
-                $输出 = & $clang -c $优化开关 -std=c11 -fwrapv -fno-strict-aliasing $IR文件 -o $模块对象 2>&1
+                $输出 = & $clang -c @平台编译参数 $优化开关 -std=c11 -fwrapv -fno-strict-aliasing $IR文件 -o $模块对象 2>&1
                 if ($LASTEXITCODE -ne 0) {
                     $输出 | ForEach-Object { Write-Output $_ }
                     Write-Output "clang 编译失败（退出码 $LASTEXITCODE）。"

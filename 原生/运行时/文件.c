@@ -438,14 +438,23 @@ cjk_object *cjk_files_move(cjk_object *from, cjk_object *to, int32_t line) {
 /* ==================== /Windows 实现 ==================== */
 
 #else /* !CJK_PLATFORM_WINDOWS */
-/* ==================== Linux 骨架：明确中文诊断，不静默 ====================
- * M13 不承诺 Linux 可运行文件 IO（ADR-017）：本分支提供与 Windows 侧同签名的
- * 导出函数，路径操作按 POSIX 语义（'/' 分隔）做纯字符串处理，涉及真实 IO 的
- * 函数抛"平台暂不支持"中文诊断并带行号。M14 引入 sysroot 后替换为 POSIX 实现。 */
+/* ==================== Linux 实现（UTF-8 路径，POSIX API；M14 T4.1） ====================
+ * cjk_string 内部是 UTF-16；POSIX 路径是 UTF-8。所有路径在调用 syscall 前经
+ * UTF-16→UTF-8 转换，返回路径经 cjk_str_from_utf8 转回。语义逐项对齐 Windows 侧：
+ * 去 BOM、逐行切掉 \r、异常消息格式与行号一致。分隔符 '/'。 */
 
-cjk_class CJK_CLS_输入输出异常 = {9, "输入输出异常", &CJK_CLS_异常, 0, NULL, NULL, 0, NULL};
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <limits.h>
+#include <errno.h>
 
 typedef struct cjk_path { cjk_class *cls; cjk_string *s; } cjk_path;
+
+static cjk_string *路径转文本(cjk_object *self);
+
+cjk_class CJK_CLS_文件路径 = {28, "文件路径", &CJK_CLS_对象, 0, NULL, NULL, 0, 路径转文本};
+cjk_class CJK_CLS_输入输出异常 = {9, "输入输出异常", &CJK_CLS_异常, 0, NULL, NULL, 0, NULL};
 
 static cjk_string *路径转文本(cjk_object *self) { return ((cjk_path *)self)->s; }
 
@@ -456,69 +465,309 @@ static cjk_object *路径新建(cjk_string *s) {
     return (cjk_object *)p;
 }
 
-cjk_object *cjk_path_of(int32_t n, cjk_string **parts) {
-    cjk_string *结果 = cjk_str_from_utf8("");
-    for (int32_t i = 0; i < n; i++) {
-        结果 = (i == 0) ? parts[i] : cjk_str_concat(cjk_str_concat(结果, cjk_str_from_utf8("/")), parts[i]);
-    }
-    return (cjk_object *)路径新建(结果);
-}
-cjk_string *cjk_path_to_string(cjk_object *path) { return ((cjk_path *)path)->s; }
-cjk_object *cjk_path_parent(cjk_object *path) {
-    cjk_string *s = cjk_path_to_string(path);
-    for (int32_t i = s->len - 1; i >= 0; i--) {
-        if (s->data[i] == (uint16_t)'/') {
-            return (cjk_object *)路径新建(cjk_str_substring(s, 0, i, 0));
+/* UTF-16 (cjk_string) → UTF-8 (malloc)，供 POSIX API 使用。 */
+static char *转UTF8(cjk_string *s) {
+    int32_t 长 = (s == NULL) ? 0 : s->len;
+    char *r = (char *)cjk_gc_alloc((size_t)长 * 4 + 1);
+    size_t 写 = 0;
+    for (int32_t i = 0; i < 长; i++) {
+        uint32_t c = s->data[i];
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < 长) {
+            uint32_t 低 = s->data[i + 1];
+            if (低 >= 0xDC00 && 低 <= 0xDFFF) {
+                c = 0x10000 + ((c - 0xD800) << 10) + (低 - 0xDC00);
+                i++;
+            }
+        }
+        if (c < 0x80) {
+            r[写++] = (char)c;
+        } else if (c < 0x800) {
+            r[写++] = (char)(0xC0 | (c >> 6));
+            r[写++] = (char)(0x80 | (c & 0x3F));
+        } else if (c < 0x10000) {
+            r[写++] = (char)(0xE0 | (c >> 12));
+            r[写++] = (char)(0x80 | ((c >> 6) & 0x3F));
+            r[写++] = (char)(0x80 | (c & 0x3F));
+        } else {
+            r[写++] = (char)(0xF0 | (c >> 18));
+            r[写++] = (char)(0x80 | ((c >> 12) & 0x3F));
+            r[写++] = (char)(0x80 | ((c >> 6) & 0x3F));
+            r[写++] = (char)(0x80 | (c & 0x3F));
         }
     }
-    return NULL;
-}
-cjk_object *cjk_path_absolute(cjk_object *path) { return path; }
-cjk_string *cjk_path_file_name(cjk_object *path) {
-    cjk_string *s = cjk_path_to_string(path);
-    for (int32_t i = s->len - 1; i >= 0; i--) {
-        if (s->data[i] == (uint16_t)'/') {
-            return cjk_str_substring(s, i + 1, s->len, 0);
-        }
-    }
-    return s;
+    r[写] = 0;
+    return r;
 }
 
-static void 不支持(const char *动作, cjk_object *path, int32_t line) {
-    cjk_string *消息 = cjk_str_concat(cjk_str_from_utf8(动作),
-                                      path == NULL ? cjk_str_from_utf8("") : cjk_path_to_string(path));
-    消息 = cjk_str_concat(消息, cjk_str_from_utf8("：Linux 平台文件 IO 尚未实现（M14 引入 sysroot 后支持）"));
+/* 路径规范化：折叠重复 '/'，解析 '.' 与 '..'，保留开头 '/';
+ * 与 Java Path.normalize 语义一致（不做符号链接解析）。 */
+static cjk_string *规范化(cjk_string *s) {
+    char *路径 = 转UTF8(s);
+    size_t 长 = strlen(路径);
+    char *栈 = (char *)cjk_gc_alloc(长 + 2);
+    size_t 深 = 0;
+    int 绝对 = (长 > 0 && 路径[0] == '/');
+    if (绝对) { 栈[深++] = '/'; }
+    size_t i = 0;
+    while (i < 长) {
+        while (i < 长 && 路径[i] == '/') i++;
+        size_t 起 = i;
+        while (i < 长 && 路径[i] != '/') i++;
+        size_t 段长 = i - 起;
+        if (段长 == 0 || (段长 == 1 && 路径[起] == '.')) continue;
+        if (段长 == 2 && 路径[起] == '.' && 路径[起 + 1] == '.') {
+            /* 回退一段（不越过根）。 */
+            if (深 > (绝对 ? 1u : 0u)) {
+                while (深 > (绝对 ? 1u : 0u) && 栈[深 - 1] != '/') 深--;
+                if (绝对 && 深 == 1) { /* 保持在根 */ }
+            } else if (!绝对) {
+                栈[深++] = '.'; 栈[深++] = '.'; 栈[深++] = '/';
+            }
+            continue;
+        }
+        if (深 > 0 && 栈[深 - 1] != '/') 栈[深++] = '/';
+        memcpy(栈 + 深, 路径 + 起, 段长);
+        深 += 段长;
+    }
+    if (深 == 0) { 栈[深++] = '.'; }
+    if (绝对 && 深 == 1 && 栈[0] == '/') { /* 根路径，保留 */ }
+    栈[深] = 0;
+    return cjk_str_from_utf8(栈);
+}
+
+static int32_t 是绝对路径(cjk_string *s) {
+    return (s != NULL && s->len > 0 && s->data[0] == (uint16_t)'/');
+}
+
+cjk_object *cjk_path_of(int32_t n, cjk_string **parts) {
+    if (n <= 0) return (cjk_object *)路径新建(cjk_str_from_utf8(""));
+    cjk_string *结果 = cjk_str_from_utf8("");
+    for (int32_t i = 0; i < n; i++) {
+        if (i == 0 || 是绝对路径(parts[i])) {
+            结果 = parts[i];
+        } else {
+            int32_t 长 = 结果->len;
+            cjk_string *分隔 = cjk_str_from_utf8((长 > 0 && 结果->data[长 - 1] == (uint16_t)'/') ? "" : "/");
+            结果 = cjk_str_concat(cjk_str_concat(结果, 分隔), parts[i]);
+        }
+    }
+    return (cjk_object *)路径新建(规范化(结果));
+}
+
+cjk_string *cjk_path_to_string(cjk_object *path) { return ((cjk_path *)path)->s; }
+
+cjk_object *cjk_path_parent(cjk_object *path) {
+    cjk_string *s = cjk_path_to_string(path);
+    char *路径 = 转UTF8(s);
+    size_t 长 = strlen(路径);
+    while (长 > 1 && 路径[长 - 1] == '/') 长--;
+    size_t 位 = 长;
+    while (位 > 0 && 路径[位 - 1] != '/') 位--;
+    while (位 > 1 && 路径[位 - 1] == '/') 位--;
+    if (位 == 0) return NULL;
+    if (位 == 1 && 路径[0] == '/') return (cjk_object *)路径新建(cjk_str_from_utf8("/"));
+    char 缓冲[PATH_MAX];
+    size_t 拷贝 = (位 < sizeof(缓冲) - 1) ? 位 : sizeof(缓冲) - 1;
+    memcpy(缓冲, 路径, 拷贝);
+    缓冲[拷贝] = 0;
+    return (cjk_object *)路径新建(cjk_str_from_utf8(缓冲));
+}
+
+cjk_object *cjk_path_absolute(cjk_object *path) {
+    char *路径 = 转UTF8(cjk_path_to_string(path));
+    char 缓冲[PATH_MAX];
+    /* realpath 要求路径存在；文件尚未创建时（如第27课写前打绝对路径）回退到
+     * getcwd + 规范化，保持与 Java toAbsolutePath().normalize() 一致。 */
+    if (realpath(路径, 缓冲) != NULL) {
+        return (cjk_object *)路径新建(cjk_str_from_utf8(缓冲));
+    }
+    if (路径[0] == '/') {
+        return (cjk_object *)路径新建(规范化(cjk_path_to_string(path)));
+    }
+    char 当前[PATH_MAX];
+    if (getcwd(当前, sizeof(当前)) == NULL) {
+        return (cjk_object *)路径新建(规范化(cjk_path_to_string(path)));
+    }
+    cjk_string *拼接 = cjk_str_concat(
+        cjk_str_concat(cjk_str_from_utf8(当前), cjk_str_from_utf8("/")),
+        cjk_path_to_string(path));
+    return (cjk_object *)路径新建(规范化(拼接));
+}
+
+cjk_string *cjk_path_file_name(cjk_object *path) {
+    cjk_string *s = cjk_path_to_string(path);
+    char *路径 = 转UTF8(s);
+    size_t 长 = strlen(路径);
+    while (长 > 0 && 路径[长 - 1] == '/') 长--;
+    size_t 位 = 长;
+    while (位 > 0 && 路径[位 - 1] != '/') 位--;
+    if (位 == 长) return NULL;
+    char 缓冲[PATH_MAX];
+    size_t 拷贝 = (长 - 位 < sizeof(缓冲) - 1) ? (长 - 位) : sizeof(缓冲) - 1;
+    memcpy(缓冲, 路径 + 位, 拷贝);
+    缓冲[拷贝] = 0;
+    return cjk_str_from_utf8(缓冲);
+}
+
+static void 抛IO异常(const char *前缀, cjk_object *path, int32_t line) {
+    cjk_string *消息 = cjk_str_concat(cjk_str_from_utf8(前缀),
+        (path == NULL) ? cjk_str_from_utf8("") : cjk_path_to_string(path));
     cjk_throw(cjk_new_exception(&CJK_CLS_输入输出异常, 消息), line);
 }
 
-cjk_string *cjk_files_read_text(cjk_object *path, int32_t line) { 不支持("无法读取文件：", path, line); return NULL; }
+static cjk_string *读取全部(cjk_object *path, int32_t line) {
+    char *路径 = 转UTF8(cjk_path_to_string(path));
+    FILE *f = fopen(路径, "rb");
+    if (f == NULL) { 抛IO异常("无法读取文件：", path, line); return NULL; }
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); 抛IO异常("无法读取文件：", path, line); return NULL; }
+    long 长 = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (长 < 0) 长 = 0;
+    char *缓冲 = (char *)cjk_gc_alloc((size_t)长 + 1);
+    size_t 读 = fread(缓冲, 1, (size_t)长, f);
+    fclose(f);
+    缓冲[读] = 0;
+    if (读 >= 3 && (unsigned char)缓冲[0] == 0xEF
+            && (unsigned char)缓冲[1] == 0xBB && (unsigned char)缓冲[2] == 0xBF) {
+        memmove(缓冲, 缓冲 + 3, 读 - 3);
+        缓冲[读 - 3] = 0;
+        读 -= 3;
+    }
+    (void)读;
+    return cjk_str_from_utf8(缓冲);
+}
+
+cjk_string *cjk_files_read_text(cjk_object *path, int32_t line) { return 读取全部(path, line); }
+
 cjk_object *cjk_files_write_text(cjk_object *path, cjk_string *text, int32_t line) {
-    (void)text; 不支持("无法写入文件：", path, line); return NULL;
+    char *路径 = 转UTF8(cjk_path_to_string(path));
+    FILE *f = fopen(路径, "wb");
+    if (f == NULL) { 抛IO异常("无法写入文件：", path, line); return NULL; }
+    char *数据 = 转UTF8(text);
+    size_t 长 = strlen(数据);
+    if (长 > 0) fwrite(数据, 1, 长, f);
+    fclose(f);
+    return NULL;
 }
+
+static void 建目录递归(char *路径) {
+    size_t 长 = strlen(路径);
+    for (size_t i = 1; i <= 长; i++) {
+        if (路径[i] == '/' || 路径[i] == 0) {
+            char 暂 = 路径[i];
+            路径[i] = 0;
+            mkdir(路径, 0777);
+            路径[i] = 暂;
+        }
+    }
+}
+
 cjk_object *cjk_files_create_directories(cjk_object *path, int32_t line) {
-    (void)line; (void)path; return NULL;
+    (void)line;
+    char *副本 = 转UTF8(cjk_path_to_string(path));
+    建目录递归(副本);
+    return NULL;
 }
+
 void cjk_files_write_text_parents(cjk_object *path, cjk_string *text, int32_t line) {
+    cjk_object *父 = cjk_path_parent(path);
+    if (父 != NULL) {
+        char *副本 = 转UTF8(cjk_path_to_string(父));
+        建目录递归(副本);
+    }
     cjk_files_write_text(path, text, line);
 }
+
 cjk_object *cjk_files_read_all_lines(cjk_object *path, int32_t line) {
-    不支持("无法读取文件：", path, line); return NULL;
+    cjk_string *全部 = 读取全部(path, line);
+    if (全部 == NULL) return NULL;
+    cjk_value *行 = (cjk_value *)cjk_gc_alloc(sizeof(cjk_value) * (size_t)(全部->len + 1));
+    int32_t 数 = 0, 起 = 0;
+    for (int32_t i = 0; i <= 全部->len; i++) {
+        if (i == 全部->len) {
+            if (i > 起) 行[数++] = cjk_v_str(cjk_str_substring(全部, 起, i, line));
+            break;
+        }
+        if (全部->data[i] == (uint16_t)'\n') {
+            int32_t 止 = i;
+            if (止 > 起 && 全部->data[止 - 1] == (uint16_t)'\r') 止--;
+            行[数++] = cjk_v_str(cjk_str_substring(全部, 起, 止, line));
+            起 = i + 1;
+        }
+    }
+    return cjk_list_from(数, 行);
 }
-int32_t cjk_files_exists(cjk_object *path) { (void)path; return 0; }
+
+int32_t cjk_files_exists(cjk_object *path) {
+    char *路径 = 转UTF8(cjk_path_to_string(path));
+    struct stat st;
+    return stat(路径, &st) == 0;
+}
+
 int64_t cjk_files_size(cjk_object *path, int32_t line) {
-    不支持("无法获取文件大小：", path, line); return 0;
+    char *路径 = 转UTF8(cjk_path_to_string(path));
+    struct stat st;
+    if (stat(路径, &st) != 0) { 抛IO异常("无法获取文件大小：", path, line); return 0; }
+    return (int64_t)st.st_size;
 }
+
 int32_t cjk_files_delete(cjk_object *path, int32_t line) {
-    不支持("无法删除文件：", path, line); return 0;
+    char *路径 = 转UTF8(cjk_path_to_string(path));
+    if (remove(路径) != 0) { 抛IO异常("无法删除文件：", path, line); return 0; }
+    return 1;
 }
-int32_t cjk_files_delete_if_exists(cjk_object *path, int32_t line) { (void)path; (void)line; return 0; }
+
+int32_t cjk_files_delete_if_exists(cjk_object *path, int32_t line) {
+    char *路径 = 转UTF8(cjk_path_to_string(path));
+    struct stat st;
+    if (stat(路径, &st) != 0) return 0;
+    if (remove(路径) != 0) { 抛IO异常("无法删除文件：", path, line); return 0; }
+    return 1;
+}
+
 cjk_object *cjk_files_list(cjk_object *path, int32_t line) {
-    不支持("无法列举目录：", path, line); return NULL;
+    char *路径 = 转UTF8(cjk_path_to_string(path));
+    DIR *目录 = opendir(路径);
+    if (目录 == NULL) { 抛IO异常("无法列举目录：", path, line); return NULL; }
+    cjk_object *清单 = cjk_list_new();
+    struct dirent *项;
+    while ((项 = readdir(目录)) != NULL) {
+        if (strcmp(项->d_name, ".") == 0 || strcmp(项->d_name, "..") == 0) continue;
+        size_t 基长 = strlen(路径);
+        char 全名[PATH_MAX];
+        size_t 拷贝 = 基长;
+        if (拷贝 > sizeof(全名) - 2) 拷贝 = sizeof(全名) - 2;
+        memcpy(全名, 路径, 拷贝);
+        size_t 写 = 拷贝;
+        if (写 > 0 && 全名[写 - 1] != '/') 全名[写++] = '/';
+        size_t 名长 = strlen(项->d_name);
+        if (写 + 名长 > sizeof(全名) - 1) 名长 = sizeof(全名) - 1 - 写;
+        memcpy(全名 + 写, 项->d_name, 名长);
+        全名[写 + 名长] = 0;
+        cjk_list_add(清单, cjk_v_ref(路径新建(cjk_str_from_utf8(全名))));
+    }
+    closedir(目录);
+    return 清单;
 }
+
 cjk_object *cjk_files_copy(cjk_object *from, cjk_object *to, int32_t line) {
-    不支持("无法复制文件：", from, line); (void)to; return NULL;
+    char *甲 = 转UTF8(cjk_path_to_string(from));
+    char *乙 = 转UTF8(cjk_path_to_string(to));
+    FILE *入 = fopen(甲, "rb");
+    if (入 == NULL) { 抛IO异常("无法复制文件：", from, line); return NULL; }
+    FILE *出 = fopen(乙, "wb");
+    if (出 == NULL) { fclose(入); 抛IO异常("无法复制文件：", from, line); return NULL; }
+    char 缓冲[8192];
+    size_t 读;
+    while ((读 = fread(缓冲, 1, sizeof(缓冲), 入)) > 0) fwrite(缓冲, 1, 读, 出);
+    fclose(入); fclose(出);
+    return NULL;
 }
+
 cjk_object *cjk_files_move(cjk_object *from, cjk_object *to, int32_t line) {
-    不支持("无法移动文件：", from, line); (void)to; return NULL;
+    char *甲 = 转UTF8(cjk_path_to_string(from));
+    char *乙 = 转UTF8(cjk_path_to_string(to));
+    if (rename(甲, 乙) != 0) { 抛IO异常("无法移动文件：", from, line); return NULL; }
+    return NULL;
 }
 #endif /* CJK_PLATFORM_WINDOWS */

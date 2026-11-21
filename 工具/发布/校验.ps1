@@ -676,10 +676,10 @@ if ($含原生) {
         失败项 "原生 M0 词表副本" "原生目录下存在词表副本：$($词表副本.FullName -join '；')"
     }
     $adr文件 = @(Get-ChildItem (Join-Path $root "文档\原生\ADR") -Filter "ADR-*.md" -File -ErrorAction SilentlyContinue)
-    if ($adr文件.Count -eq 17) {
-        Write-Host "原生 M0：ADR 17 份齐备" -ForegroundColor Green
+    if ($adr文件.Count -eq 18) {
+        Write-Host "原生 M0：ADR 18 份齐备" -ForegroundColor Green
     } else {
-        失败项 "原生 M0 ADR" "ADR 数量应为 17，实际 $($adr文件.Count)"
+        失败项 "原生 M0 ADR" "ADR 数量应为 18，实际 $($adr文件.Count)"
     }
 
     # 8.1) 原生 M1：35 课 Token/AST、黄金快照可重复、词法/语法/新手提示反例
@@ -1405,6 +1405,53 @@ if ($含原生) {
         }
     } else {
         Write-Host "原生 M13：多文件对拍未验证（无 cjc.ps1）" -ForegroundColor Yellow
+    }
+
+    # 8.13) 原生 M14：Linux ELF 工具链、运行器、对拍脚本、DWARF/GC/网络脚本与报告归档。
+    #       实际 ELF 对拍需 qemu VM，不纳入默认 Windows 全量校验（由各脚本 -平台 linux 单独跑）。
+    $m14报告们 = @(
+        "文档\原生\M14\spec.md",
+        "文档\原生\M14\tasks.md",
+        "文档\原生\M14\checklist.md",
+        "文档\原生\M14\工具链与ABI探针报告.md",
+        "文档\原生\M14\对拍报告.md",
+        "文档\原生\M14\基准报告.md",
+        "文档\原生\ADR\ADR-018-M14可运行ELF范围.md"
+    )
+    $m14缺报告 = @($m14报告们 | Where-Object { -not (Test-Path (Join-Path $root $_)) })
+    if ($m14缺报告.Count -eq 0) {
+        Write-Host "原生 M14：方案/探针/对拍/基准报告与 ADR-018 齐备" -ForegroundColor Green
+    } else {
+        失败项 "原生 M14 报告" "缺少：$($m14缺报告 -join '；')"
+    }
+    $探针报告 = Join-Path $root "文档\原生\M14\工具链与ABI探针报告.md"
+    if ((Test-Path $探针报告) -and
+        ((Get-Content $探针报告 -Raw -Encoding UTF8) -match '200')) {
+        Write-Host "原生 M14：ABI 探针实测值已落地（jmp_buf=200）" -ForegroundColor Green
+    } else {
+        失败项 "原生 M14 ABI 探针" "探针报告缺少实测值"
+    }
+    $m14脚本们 = @(
+        "原生\测试\运行器.ps1",
+        "原生\测试\对拍ELF.ps1",
+        "原生\测试\检查调试信息Linux.ps1",
+        "原生\测试\GC压力Linux.ps1",
+        "原生\测试\网络冒烟Linux.ps1",
+        "原生\测试\工具\构建initramfs.py",
+        "原生\测试\工具\运行VM.py"
+    )
+    $m14缺脚本 = @($m14脚本们 | Where-Object { -not (Test-Path (Join-Path $root $_)) })
+    if ($m14缺脚本.Count -eq 0) {
+        Write-Host "原生 M14：ELF 运行器与对拍/调试/GC/网络脚本齐备" -ForegroundColor Green
+    } else {
+        失败项 "原生 M14 脚本" "缺少：$($m14缺脚本 -join '；')"
+    }
+    $sysroot存在 = Test-Path (Join-Path $root "构建\工具链\alpine\sysroot\usr\lib\libc.a")
+    $qemu存在 = Test-Path (Join-Path $root "构建\工具链\qemu\qemu-system-x86_64.exe")
+    if ($sysroot存在 -and $qemu存在) {
+        Write-Host "原生 M14：musl sysroot 与 qemu-system 工具链就位" -ForegroundColor Green
+    } else {
+        失败项 "原生 M14 工具链" "musl sysroot 或 qemu-system 缺失"
     }
 
     运行 "原生补丁编译" {
