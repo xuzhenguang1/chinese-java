@@ -11,7 +11,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-chcp 65001 | Out-Null
+# chcp 仅存在于 Windows；Linux/macOS 的 pwsh 无此命令（M17 双矩阵 CI 修复）。
+if ($env:OS -eq "Windows_NT") { chcp 65001 | Out-Null }
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $root = (Resolve-Path "$PSScriptRoot\..\..").Path

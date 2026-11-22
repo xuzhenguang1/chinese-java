@@ -3,7 +3,8 @@
 #   .\cjc.ps1 检查 示例
 #   .\cjc.ps1 编译 示例 -d 输出
 #   .\cjc.ps1 编译 示例 -d 输出 --表 工具\cjc\关键字表.txt
-chcp 65001 | Out-Null
+# chcp 仅存在于 Windows；Linux/macOS 的 pwsh 无此命令（M17 双矩阵 CI 修复）。
+if ($env:OS -eq "Windows_NT") { chcp 65001 | Out-Null }
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 # 原生子命令转发到原生\驱动.ps1（首个参数为「原生」时），不与 Java 转译链路混用。
 if ($args.Count -gt 0 -and $args[0] -eq '原生') {
