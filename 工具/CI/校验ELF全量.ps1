@@ -7,7 +7,7 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
-chcp 65001 | Out-Null
+if ($env:OS -eq "Windows_NT") { chcp 65001 | Out-Null }
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 # 同进程清代理（PS5.1 大小写双份代理会导致 Start-Process 失败）。

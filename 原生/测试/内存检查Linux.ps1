@@ -7,7 +7,7 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
-chcp 65001 | Out-Null
+if ($env:OS -eq "Windows_NT") { chcp 65001 | Out-Null }
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 

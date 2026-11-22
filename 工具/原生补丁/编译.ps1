@@ -3,7 +3,7 @@
 #       不改动 javac 其余逻辑，因此英文源码行为不变。
 # 锁定版本：本补丁基于 JDK 25.0.2 的 src.zip 生成，升级 JDK 后需重新执行本脚本。
 
-chcp 65001 | Out-Null
+if ($env:OS -eq "Windows_NT") { chcp 65001 | Out-Null }
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 # 版本锁定检查：补丁源文件取自 JDK 25 的 src.zip

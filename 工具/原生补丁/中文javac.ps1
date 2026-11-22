@@ -4,7 +4,7 @@
 #        .\中文javac.ps1 -cp 标准库\target\cjc-stdlib-0.3.0.jar -d 输出 示例\标准库演示.java
 # 说明：源码统一按 UTF-8 读取，传其他编码会提示并忽略；-d 缺省为当前目录。
 
-chcp 65001 | Out-Null
+if ($env:OS -eq "Windows_NT") { chcp 65001 | Out-Null }
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $root = (Resolve-Path "$PSScriptRoot\..\..").Path

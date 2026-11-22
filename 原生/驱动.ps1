@@ -34,7 +34,7 @@ if ($内存检查) {
         [Console]::Error.WriteLine("提示：-内存检查 仅在 -平台 linux 生效，Windows 已忽略（改用 GC 压力用例）。")
     }
 }
-chcp 65001 | Out-Null
+if ($env:OS -eq "Windows_NT") { chcp 65001 | Out-Null }
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $根目录 = (Resolve-Path "$PSScriptRoot\..").Path

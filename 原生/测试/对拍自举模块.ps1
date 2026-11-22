@@ -13,7 +13,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-chcp 65001 | Out-Null
+if ($env:OS -eq "Windows_NT") { chcp 65001 | Out-Null }
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $类目录 = Join-Path $根目录 "构建\原生\前端\classes"

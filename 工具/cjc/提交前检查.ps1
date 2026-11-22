@@ -5,7 +5,7 @@
 #
 # 该脚本只做检查，不修改文件；发现 CJK001/CJK002 时以非 0 退出，阻断提交。
 $ErrorActionPreference = "Stop"
-chcp 65001 | Out-Null
+if ($env:OS -eq "Windows_NT") { chcp 65001 | Out-Null }
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $root = (Resolve-Path "$PSScriptRoot\..\..").Path
