@@ -51,6 +51,8 @@ public final class 前端主程序 {
                 case "语法" -> System.exit(语法(词表数据, 取文件参数(参数, 2)));
                 case "语法树" -> System.exit(打印语法树(词表数据, 取文件参数(参数, 2), null));
                 case "语义" -> System.exit(语义(词表数据, 取文件参数(参数, 2)));
+                case "语义模块" -> System.exit(语义模块(根目录, 词表数据, 参数));
+                case "中间模块" -> System.exit(中间模块(根目录, 词表数据, 参数));
                 case "快照" -> {
                     if (参数.length < 3) {
                         显示用法();
@@ -786,6 +788,91 @@ public final class 前端主程序 {
             return null;
         }
         return 程序;
+    }
+
+    // ---------- M18 F2-A：跨文件语义/MIR 参考命令（复用分析模块，不改语义分析器） ----------
+
+    /** M18：把 <入口> <其他源...> 解析为路径列表（入口在前，不排序）。 */
+    private static List<Path> 模块路径列表(Path 根目录, String[] 参数) {
+        List<Path> 结果 = new ArrayList<>();
+        for (int i = 2; i < 参数.length; i++) {
+            Path 路径 = Paths.get(参数[i]);
+            if (!路径.isAbsolute()) {
+                路径 = 根目录.resolve(路径).normalize();
+            }
+            结果.add(路径);
+        }
+        return 结果;
+    }
+
+    /** M18 语义模块：共享类表分析后按单文件语义命令同格式输出速览与诊断。 */
+    private static int 语义模块(Path 根目录, 词表 词表, String[] 参数) throws IOException {
+        if (参数.length < 3) {
+            显示用法();
+            return 2;
+        }
+        List<Path> 路径列表 = 模块路径列表(根目录, 参数);
+        诊断 诊断 = new 诊断();
+        Map<语法树.节点, Integer> 合并行号 = new java.util.HashMap<>();
+        java.util.List<语义分析器.模块单元> 单元们 = new java.util.ArrayList<>();
+        for (Path 路径 : 路径列表) {
+            模块解析结果 解析 = 解析模块源(根目录, 路径, 词表, 诊断);
+            if (解析 == null) {
+                System.out.println("汇总|0|0|0|0");
+                return 0;
+            }
+            合并行号.putAll(解析.行号());
+            单元们.add(new 语义分析器.模块单元(解析.单元(), 路径.getFileName().toString()));
+        }
+        new 语义分析器(词表, 诊断, 合并行号, 相对化(根目录, 路径列表.get(0)))
+                .分析模块(单元们, 路径列表.get(0).getFileName().toString());
+
+        List<String> 类行 = new ArrayList<>();
+        List<String> 字段行 = new ArrayList<>();
+        List<String> 方法行 = new ArrayList<>();
+        List<String> 诊断行 = new ArrayList<>();
+        for (语义分析器.模块单元 单元 : 单元们) {
+            for (语法树.类型声明 声明 : 单元.单元().类型()) {
+                收集速览(词表, 声明, null, 类行, 字段行, 方法行);
+            }
+            if (单元.单元().类型().isEmpty()) {
+                收集脚本速览(单元.文件名(), 类行, 方法行);
+            }
+        }
+        for (诊断.项 一条 : 诊断.全部()) {
+            if (!"语义".equals(一条.码())) {
+                continue;
+            }
+            诊断行.add("诊断|" + 一条.行() + "|" + 一条.列() + "|"
+                    + 转义分词字段(一条.码()) + "|" + 转义分词字段(一条.消息()));
+        }
+        类行.sort(Comparator.naturalOrder());
+        字段行.sort(Comparator.naturalOrder());
+        方法行.sort(Comparator.naturalOrder());
+        类行.forEach(System.out::println);
+        字段行.forEach(System.out::println);
+        方法行.forEach(System.out::println);
+        诊断行.forEach(System.out::println);
+        System.out.println("汇总|" + 单元们.size() + "|" + 类行.size()
+                + "|" + 方法行.size() + "|" + 诊断行.size());
+        return 0;
+    }
+
+    /** M18 中间模块：共享类表分析产出一个 MIR 程序，无 // 文件名分段前缀。 */
+    private static int 中间模块(Path 根目录, 词表 词表, String[] 参数) throws IOException {
+        if (参数.length < 3) {
+            显示用法();
+            return 2;
+        }
+        List<Path> 路径列表 = 模块路径列表(根目录, 参数);
+        诊断 诊断 = new 诊断();
+        中间代码.程序 程序 = 分析模块程序(根目录, 路径列表, 词表, 诊断, 路径列表.get(0));
+        if (程序 == null) {
+            return 1;
+        }
+        System.out.print(中间打印器.打印(程序));
+        System.out.println();
+        return 0;
     }
 
     /** M13：多文件 → 一个 C/LLVM 输出（isLLVM 选择后端）。 */

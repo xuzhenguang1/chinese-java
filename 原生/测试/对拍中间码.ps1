@@ -64,9 +64,10 @@ if ($课程.Count -eq 35 -and $教程差.Count -eq 0) {
 
 # 3) 快照对拍：自举逐文件产物 vs 原生\测试\MIR快照
 $黄金 = Join-Path $根目录 "原生\测试\MIR快照"
-# 自举前端自身的基线快照由第 4 项单独对拍，不参与教程快照循环。
+# 只纳入 35 课教程快照；自举前端自身的当前基线由第 4 项单独对拍，
+# M18 冻结的历史基线（自举前端.历史.mir.txt）只读对照，均不参与教程快照循环。
 $基准文件 = @(Get-ChildItem $黄金 -Filter *.mir.txt -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -ne '自举前端.mir.txt' })
+    Where-Object { $_.Name -match '^第.*课.*\.mir\.txt$' })
 $快照差 = @()
 foreach ($基准 in $基准文件) {
     $名 = $基准.Name -replace '\.mir\.txt$', ''

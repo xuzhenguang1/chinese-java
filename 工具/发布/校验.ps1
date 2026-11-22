@@ -676,10 +676,10 @@ if ($含原生) {
         失败项 "原生 M0 词表副本" "原生目录下存在词表副本：$($词表副本.FullName -join '；')"
     }
     $adr文件 = @(Get-ChildItem (Join-Path $root "文档\原生\ADR") -Filter "ADR-*.md" -File -ErrorAction SilentlyContinue)
-    if ($adr文件.Count -eq 20) {
-        Write-Host "原生 M0：ADR 20 份齐备" -ForegroundColor Green
+    if ($adr文件.Count -eq 21) {
+        Write-Host "原生 M0：ADR 21 份齐备" -ForegroundColor Green
     } else {
-        失败项 "原生 M0 ADR" "ADR 数量应为 20，实际 $($adr文件.Count)"
+        失败项 "原生 M0 ADR" "ADR 数量应为 21，实际 $($adr文件.Count)"
     }
 
     # 8.1) 原生 M1：35 课 Token/AST、黄金快照可重复、词法/语法/新手提示反例
@@ -1366,8 +1366,9 @@ if ($含原生) {
     # 8.10) 原生 M11：自举自举第二阶不动点
     $不动点输出 = 捕获输出 { & "$root\原生\测试\对拍自举不动点.ps1" -根目录 $root }
     $不动点码 = $LASTEXITCODE
-    if ($不动点码 -eq 0 -and $不动点输出.Contains("自举不动点：通过")) {
-        Write-Host "原生 M11：自举不动点逐字节一致" -ForegroundColor Green
+    if ($不动点码 -eq 0 -and $不动点输出.Contains("自举不动点：通过") -and
+        $不动点输出.Contains("通过 3 / 共 3 项")) {
+        Write-Host "原生 M11：自举不动点逐字节一致（自身 MIR + 175 组 + M18 跨文件三方，共 3 项）" -ForegroundColor Green
     } else {
         失败项 "原生 M11 自举不动点" "对拍失败（退出码 $不动点码）" $不动点输出
     }
@@ -1592,6 +1593,48 @@ if ($含原生) {
         Write-Host "原生 M17：内存检查旗标、模糊断言、路径参数化、CI 双矩阵与 SHA256 校验接线就位" -ForegroundColor Green
     } else {
         失败项 "原生 M17 接线" "内存检查/模糊断言/路径参数化/CI 双矩阵/SHA256 校验接线缺失"
+    }
+
+    # 8.17) 原生 M18：跨文件自举不动点（两阶段分析 + 双输入 + 三方对拍 + 基线迁移）。
+    $m18文件们 = @(
+        "文档\原生\ADR\ADR-021-跨文件自举不动点.md",
+        "文档\原生\M18\spec.md",
+        "文档\原生\M18\tasks.md",
+        "文档\原生\M18\checklist.md",
+        "文档\原生\M18\对拍报告.md",
+        "原生\测试\自举多文件样例\依赖清单.txt",
+        "原生\测试\MIR快照\自举前端.历史.mir.txt",
+        "原生\测试\自举多文件快照\参考.语义模块.txt",
+        "原生\测试\自举多文件快照\参考.中间模块.txt",
+        "原生\测试\对拍自举模块.ps1"
+    )
+    $m18缺 = @($m18文件们 | Where-Object { -not (Test-Path (Join-Path $root $_)) })
+    if ($m18缺.Count -eq 0) {
+        Write-Host "原生 M18：ADR-021、M18 文档、专用样例、黄金快照与历史 MIR 基线齐备" -ForegroundColor Green
+    } else {
+        失败项 "原生 M18 文件" ("缺少：" + ($m18缺 -join "、"))
+    }
+    # 接线静态检查：自举模块命令双分支、参考侧命令、exe 自读清单分支、两阶段方法。
+    $自举文本18 = [System.IO.File]::ReadAllText((Join-Path $root "原生\自举\自举前端.java"), [System.Text.Encoding]::UTF8)
+    $参考文本18 = [System.IO.File]::ReadAllText((Join-Path $root "原生\前端\src\中文\原生\前端\前端主程序.java"), [System.Text.Encoding]::UTF8)
+    $不动点文本18 = [System.IO.File]::ReadAllText((Join-Path $root "原生\测试\对拍自举不动点.ps1"), [System.Text.Encoding]::UTF8)
+    $m18接线OK = ($自举文本18 -match '命令\.相等\("语义模块"\)') -and ($自举文本18 -match '命令\.相等\("中间模块"\)') -and
+        ($自举文本18 -match '参数\[2\]\.相等\("-清单"\)') -and ($自举文本18 -match '检查模块\(') -and
+        ($自举文本18 -match '中间模块\(') -and
+        ($参考文本18 -match 'case "语义模块"') -and ($参考文本18 -match 'case "中间模块"') -and
+        ($不动点文本18 -match '共 3 项') -and ($不动点文本18 -match '跨文件三方')
+    if ($m18接线OK) {
+        Write-Host "原生 M18：自举模块双命令、exe 自读清单、参考侧命令与不动点 3 项断言接线就位" -ForegroundColor Green
+    } else {
+        失败项 "原生 M18 接线" "模块命令/-清单/参考命令/不动点 3 项接线缺失"
+    }
+    # 跨文件三方实跑：A/B/参考逐字节 + 双输入 + 负例 + 黄金快照。
+    $m18跨输出 = 捕获输出 { & "$root\原生\测试\对拍自举模块.ps1" -根目录 $root }
+    $m18跨码 = $LASTEXITCODE
+    if ($m18跨码 -eq 0 -and $m18跨输出.Contains("跨文件自举对拍：通过")) {
+        Write-Host "原生 M18：跨文件三方对拍 A==B==参考（含双输入与三条负例）" -ForegroundColor Green
+    } else {
+        失败项 "原生 M18 跨文件对拍" "对拍失败（退出码 $m18跨码）" $m18跨输出
     }
 
     运行 "原生补丁编译" {

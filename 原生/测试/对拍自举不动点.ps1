@@ -7,7 +7,8 @@
 #   B = 用标准编译命令从同一份自举源码独立重新编译出的 exe（...-B.exe）
 # 断言：
 #   1) B 对自身源码产出的 MIR == 参考基线 == A 对自身源码产出的 MIR；
-#   2) B 跑教程 01–35 的词表/分词/语法/语义/中间码输出与 A 逐字节一致。
+#   2) B 跑教程 01–35 的词表/分词/语法/语义/中间码输出与 A 逐字节一致；
+#   3) M18：A/B 对专用多文件样例的 语义模块/中间模块 输出与 JVM 参考逐字节一致。
 # 不比较 exe 二进制哈希（链接时间戳不稳定），只比较 MIR 文本与运行输出。
 # 用法：.\原生\测试\对拍自举不动点.ps1 [-根目录 <仓库根>]
 
@@ -26,6 +27,9 @@ $exeA = Join-Path $工作 "自举前端.exe"
 $exeB = Join-Path $工作 "自举前端-B.exe"
 $基线 = Join-Path $根目录 "原生\测试\MIR快照\自举前端.mir.txt"
 $教程 = Join-Path $根目录 "教程"
+$类目录 = Join-Path $根目录 "构建\原生\前端\classes"
+$主类 = "中文.原生.前端.前端主程序"
+$样例目录 = Join-Path $根目录 "原生\测试\自举多文件样例"
 
 New-Item -ItemType Directory -Force $工作 | Out-Null
 
@@ -102,8 +106,34 @@ if ($课程.Count -eq 35 -and $差异.Count -eq 0) {
     记录失败 ("教程输出：{0} 课 / {1} 组比对 / 差异 {2} 条（{3}）" -f $课程.Count, $比对数, $差异.Count, ($差异 | Select-Object -First 5 | ForEach-Object { $_ }) -join '；')
 }
 
-Write-Output ("自举不动点检查：通过 {0} / 共 2 项" -f $script:通过)
-if ($script:失败.Count -gt 0 -or $script:通过 -ne 2) {
+# 3) M18：跨文件三方一致（A/B 自举 exe == JVM 参考），含语义模块与中间模块。
+$样例入口 = Join-Path $样例目录 "06主程序.java"
+$样例其他 = @(Get-ChildItem $样例目录 -Filter "*.java" -File |
+    Where-Object { $_.FullName -ne $样例入口 } | Sort-Object Name | ForEach-Object { $_.FullName })
+$样例源 = @($样例入口) + @($样例其他)
+$跨文件差异 = @()
+foreach ($命令 in @('语义模块', '中间模块')) {
+    $参考参 = @($命令, $根目录) + $样例源
+    $参考出 = @(& java "-Dstdout.encoding=UTF-8" "-Dstderr.encoding=UTF-8" -cp $类目录 $主类 @参考参 2>$null)
+    $a出 = @(& $exeA $命令 $根目录 $样例源 2>$null)
+    $b出 = @(& $exeB $命令 $根目录 $样例源 2>$null)
+    $归一 = { param($行们) ($行们 -join "`n") -replace "`r`n", "`n" }
+    $参考文 = & $归一 $参考出
+    $a文 = & $归一 $a出
+    $b文 = & $归一 $b出
+    if ($a文 -cne $参考文 -or $b文 -cne $参考文) {
+        $跨文件差异 += "$命令 三方不一致"
+    }
+}
+if ($跨文件差异.Count -eq 0) {
+    Write-Output "跨文件三方：A==B==参考（语义模块 + 中间模块，6 文件专用样例）"
+    $script:通过++
+} else {
+    记录失败 ("跨文件三方：" + ($跨文件差异 -join "；"))
+}
+
+Write-Output ("自举不动点检查：通过 {0} / 共 3 项" -f $script:通过)
+if ($script:失败.Count -gt 0 -or $script:通过 -ne 3) {
     Write-Output ("失败：" + ($script:失败 -join "；"))
     exit 1
 }
