@@ -14,5 +14,14 @@ if ($args.Count -gt 0 -and $args[0] -eq '原生') {
     & "$PSScriptRoot\原生\驱动.ps1" @剩余
     exit $LASTEXITCODE
 }
+# M15：依赖子命令转发到 依赖清单.java（source-file 模式），与 Java 转译链路解耦。
+if ($args.Count -gt 0 -and $args[0] -eq '依赖') {
+    $剩余 = @()
+    if ($args.Count -gt 1) {
+        $剩余 = $args[1..($args.Count - 1)]
+    }
+    java "-Dfile.encoding=UTF-8" "-Dstdout.encoding=UTF-8" "-Dstderr.encoding=UTF-8" "$PSScriptRoot\工具\cjc\依赖清单.java" @剩余
+    exit $LASTEXITCODE
+}
 java "-Dstdout.encoding=UTF-8" "-Dstderr.encoding=UTF-8" "-Dcjc.home=$PSScriptRoot" "$PSScriptRoot\工具\cjc\Cjc.java" @args
 exit $LASTEXITCODE

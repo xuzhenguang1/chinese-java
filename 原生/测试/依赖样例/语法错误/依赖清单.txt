@@ -1,0 +1,5 @@
+包名 测试.语法错
+版本 one.point.zero
+入口 src/主.java
+源目录 src
+胡说八道 参数

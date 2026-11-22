@@ -676,10 +676,10 @@ if ($含原生) {
         失败项 "原生 M0 词表副本" "原生目录下存在词表副本：$($词表副本.FullName -join '；')"
     }
     $adr文件 = @(Get-ChildItem (Join-Path $root "文档\原生\ADR") -Filter "ADR-*.md" -File -ErrorAction SilentlyContinue)
-    if ($adr文件.Count -eq 18) {
-        Write-Host "原生 M0：ADR 18 份齐备" -ForegroundColor Green
+    if ($adr文件.Count -eq 19) {
+        Write-Host "原生 M0：ADR 19 份齐备" -ForegroundColor Green
     } else {
-        失败项 "原生 M0 ADR" "ADR 数量应为 18，实际 $($adr文件.Count)"
+        失败项 "原生 M0 ADR" "ADR 数量应为 19，实际 $($adr文件.Count)"
     }
 
     # 8.1) 原生 M1：35 课 Token/AST、黄金快照可重复、词法/语法/新手提示反例
@@ -1452,6 +1452,32 @@ if ($含原生) {
         Write-Host "原生 M14：musl sysroot 与 qemu-system 工具链就位" -ForegroundColor Green
     } else {
         失败项 "原生 M14 工具链" "musl sysroot 或 qemu-system 缺失"
+    }
+
+    # 8.14) 原生 M15：包管理——中文 DSL 解析器、依赖命令、驱动依赖哈希、脚手架清单与对拍脚本、文档归档。
+    $m15文件们 = @(
+        "文档\原生\ADR\ADR-019-M15包管理范围.md",
+        "文档\原生\M15\spec.md",
+        "文档\原生\M15\tasks.md",
+        "文档\原生\M15\checklist.md",
+        "文档\原生\M15\对拍报告.md",
+        "工具\cjc\依赖清单.java",
+        "原生\测试\对拍包管理.ps1",
+        "示例工程\依赖清单.txt"
+    )
+    $m15缺文件 = @($m15文件们 | Where-Object { -not (Test-Path (Join-Path $root $_)) })
+    if ($m15缺文件.Count -eq 0) {
+        Write-Host "原生 M15：ADR-019、DSL 解析器、对拍脚本与报告齐备" -ForegroundColor Green
+    } else {
+        失败项 "原生 M15 文件" "缺少：$($m15缺文件 -join '；')"
+    }
+    $驱动文本8 = Get-Content (Join-Path $root "原生\驱动.ps1") -Raw -Encoding UTF8
+    $cjc文本8 = Get-Content (Join-Path $root "cjc.ps1") -Raw -Encoding UTF8
+    if ($驱动文本8 -match '取依赖哈希' -and $驱动文本8 -match '依赖哈希' -and
+        $cjc文本8 -match "依赖清单.java") {
+        Write-Host "原生 M15：驱动依赖哈希与 cjc 依赖子命令分派就位" -ForegroundColor Green
+    } else {
+        失败项 "原生 M15 接线" "驱动依赖哈希或 cjc 依赖分派缺失"
     }
 
     运行 "原生补丁编译" {

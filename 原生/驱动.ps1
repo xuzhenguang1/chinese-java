@@ -14,7 +14,9 @@ param(
     [string]$优化 = "O2",
     # M14：目标平台。windows=PE/Win64（默认，逐字节保留 M0–M13 行为）；linux=ELF/musl/SysV。
     [ValidateSet("windows", "linux")]
-    [string]$平台 = "windows"
+    [string]$平台 = "windows",
+    # M15：依赖清单路径（可选）。给定时其闭包哈希并入缓存键，改依赖即触发重编。
+    [string]$清单
 )
 
 $ErrorActionPreference = "Continue"
@@ -170,6 +172,30 @@ function 取工具链哈希 {
     return 取文本哈希 $文本
 }
 
+# M15：计算依赖清单闭包哈希（调用 依赖清单.java 的 哈希 子命令）。
+# 无清单时返回空串；清单解析失败时直接退出 2，避免静默复用旧产物。
+function 取依赖哈希 {
+    param([string]$清单路径)
+    if ([string]::IsNullOrWhiteSpace($清单路径)) {
+        return ""
+    }
+    $绝对 = @(转绝对路径 @($清单路径))[0]
+    if (-not (Test-Path $绝对)) {
+        Write-Output "依赖清单不存在：$绝对"
+        exit 2
+    }
+    $java源 = Join-Path $根目录 "工具\cjc\依赖清单.java"
+    # 经 UTF-8 文件中转，避免 Windows PowerShell 5.1 捕获 java stdout 时的中文路径乱码。
+    $临时 = Join-Path $根目录 "构建\原生\缓存\依赖哈希.tmp"
+    New-Item -ItemType Directory -Force (Split-Path $临时) | Out-Null
+    $原始 = & java "-Dfile.encoding=UTF-8" $java源 "哈希" $绝对 $临时 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Output ($原始 -join [Environment]::NewLine)
+        exit 2
+    }
+    return (Get-Content $临时 -Raw -Encoding UTF8).Trim()
+}
+
 function 取运行时信息 {
     $运行时 = Join-Path $PSScriptRoot "运行时"
     $源们 = @(Get-ChildItem $运行时 -Filter *.c -File | Sort-Object Name)
@@ -270,6 +296,8 @@ function 写入缓存状态 {
         源哈希 = $源哈希
         运行时哈希 = $运行时哈希
         工具链哈希 = $工具链哈希
+        # M15：依赖清单闭包哈希（无清单时为空串，既有路径零影响）。
+        依赖哈希 = if ($script:依赖哈希) { $script:依赖哈希 } else { "" }
         输出 = $输出
         时间 = (Get-Date -Format o)
     }
@@ -503,7 +531,9 @@ switch ($子命令) {
             exit 2
         }
         # M13：编译接受 <源文件...>；第一个为入口。多源走"编译模块"共享分析。
-        $源文件们 = @(转绝对路径 @($参数[1..($参数.Count - 1)]))
+        # 过滤空/纯空白位置参数：PowerShell 5.1 把中间的空数组 @() 展开成一个空串。
+        $源参数 = @($参数[1..($参数.Count - 1)] | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $源文件们 = @(转绝对路径 @($源参数))
         if ($源文件们.Count -lt 1) {
             显示用法
             exit 2
@@ -539,6 +569,11 @@ switch ($子命令) {
 
         $运行时 = 取运行时信息
         $工具链哈希 = 取工具链哈希
+        # M15：依赖清单闭包哈希并入缓存键（改依赖即触发重编）。无清单时为空串，行为不变。
+        $script:依赖哈希 = 取依赖哈希 $清单
+        if ($script:依赖哈希) {
+            $工具链哈希 = $工具链哈希 + "|依赖=" + $script:依赖哈希
+        }
         if ($是多源) {
             # 聚合哈希：任一被引用源文件变化都让缓存失效。
             $聚合 = ($源文件们 | ForEach-Object { 取文件哈希 $_ }) -join ''
@@ -636,7 +671,8 @@ switch ($子命令) {
             exit 2
         }
         # M13：llvm 编译接受 <源文件...>，第一个为入口；多源走"编译模块LLVM"。
-        $源文件们 = @(转绝对路径 @($参数[2..($参数.Count - 1)]))
+        $源参数 = @($参数[2..($参数.Count - 1)] | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $源文件们 = @(转绝对路径 @($源参数))
         $源文件 = $源文件们[0]
         $是多源 = $源文件们.Count -gt 1
         foreach ($源 in $源文件们) {
@@ -660,6 +696,11 @@ switch ($子命令) {
 
         $运行时 = 取运行时信息
         $工具链哈希 = 取工具链哈希
+        # M15：依赖清单闭包哈希并入缓存键（改依赖即触发重编）。无清单时为空串，行为不变。
+        $script:依赖哈希 = 取依赖哈希 $清单
+        if ($script:依赖哈希) {
+            $工具链哈希 = $工具链哈希 + "|依赖=" + $script:依赖哈希
+        }
         if ($是多源) {
             $聚合 = ($源文件们 | ForEach-Object { 取文件哈希 $_ }) -join ''
             $源哈希 = 取文本哈希 $聚合
