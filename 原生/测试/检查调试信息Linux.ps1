@@ -12,10 +12,15 @@ chcp 65001 | Out-Null
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $cjc = Join-Path $根目录 "cjc.ps1"
-$readelf = "C:\msys64\mingw64\bin\readelf.exe"
+# M17 E3：优先用 CJK_READELF 环境变量（Linux CI 用系统 readelf），
+# 未设置时回退本机 MSYS2 路径（零回退）；也尝试 PATH 中的 readelf。
+$readelf = if ($env:CJK_READELF) { $env:CJK_READELF } else { "C:\msys64\mingw64\bin\readelf.exe" }
 if (-not (Test-Path $readelf)) {
-    Write-Output "缺少 readelf：$readelf"
-    exit 2
+    $系统命令 = Get-Command readelf -ErrorAction SilentlyContinue
+    if ($系统命令) { $readelf = $系统命令.Source } else {
+        Write-Output "缺少 readelf：$readelf（可用 CJK_READELF 指定）"
+        exit 2
+    }
 }
 
 $工作目录 = Join-Path $根目录 "构建\原生\DWARF断言Linux"

@@ -676,10 +676,10 @@ if ($含原生) {
         失败项 "原生 M0 词表副本" "原生目录下存在词表副本：$($词表副本.FullName -join '；')"
     }
     $adr文件 = @(Get-ChildItem (Join-Path $root "文档\原生\ADR") -Filter "ADR-*.md" -File -ErrorAction SilentlyContinue)
-    if ($adr文件.Count -eq 19) {
-        Write-Host "原生 M0：ADR 19 份齐备" -ForegroundColor Green
+    if ($adr文件.Count -eq 20) {
+        Write-Host "原生 M0：ADR 20 份齐备" -ForegroundColor Green
     } else {
-        失败项 "原生 M0 ADR" "ADR 数量应为 19，实际 $($adr文件.Count)"
+        失败项 "原生 M0 ADR" "ADR 数量应为 20，实际 $($adr文件.Count)"
     }
 
     # 8.1) 原生 M1：35 课 Token/AST、黄金快照可重复、词法/语法/新手提示反例
@@ -1549,6 +1549,49 @@ if ($含原生) {
         Write-Host "原生 M16：浮点已知差异全部可追溯" -ForegroundColor Green
     } else {
         失败项 "原生 M16 已知差异" ($差异锚点问题 -join "；")
+    }
+
+    # 8.16) 原生 M17：质量体系（模糊测试 + 内存检查 + 双矩阵 CI + 白名单治理接线）。
+    $m17文件们 = @(
+        "文档\原生\ADR\ADR-020-M17质量体系闭环.md",
+        "文档\原生\M17\spec.md",
+        "文档\原生\M17\tasks.md",
+        "文档\原生\M17\checklist.md",
+        "文档\原生\M17\对拍报告.md",
+        "原生\测试\模糊.ps1",
+        "原生\测试\内存检查Linux.ps1",
+        "工具\CI\准备ELF资产.py",
+        "工具\CI\校验ELF全量.ps1"
+    )
+    $m17缺 = @($m17文件们 | Where-Object { -not (Test-Path (Join-Path $root $_)) })
+    if ($m17缺.Count -eq 0) {
+        Write-Host "原生 M17：ADR-020、模糊/内存检查脚本与 M17 文档齐备" -ForegroundColor Green
+    } else {
+        失败项 "原生 M17 文件" ("缺少：" + ($m17缺 -join "、"))
+    }
+    # 接线静态检查：驱动内存检查旗标、模糊 CJK 断言、路径参数化、CI 双矩阵、M14 SHA256 表。
+    $驱动文本17 = [System.IO.File]::ReadAllText((Join-Path $root "原生\驱动.ps1"), [System.Text.Encoding]::UTF8)
+    $模糊文本17 = [System.IO.File]::ReadAllText((Join-Path $root "原生\测试\模糊.ps1"), [System.Text.Encoding]::UTF8)
+    $vm文本17 = [System.IO.File]::ReadAllText((Join-Path $root "原生\测试\工具\运行VM.py"), [System.Text.Encoding]::UTF8)
+    $m14文本17 = [System.IO.File]::ReadAllText((Join-Path $root "文档\原生\M14\工具链与ABI探针报告.md"), [System.Text.Encoding]::UTF8)
+    $ci文本17 = [System.IO.File]::ReadAllText((Join-Path $root ".github\workflows\校验.yml"), [System.Text.Encoding]::UTF8)
+    $elf全量文本17 = [System.IO.File]::ReadAllText((Join-Path $root "工具\CI\校验ELF全量.ps1"), [System.Text.Encoding]::UTF8)
+    $m17接线OK = ($驱动文本17 -match '内存检查') -and ($驱动文本17 -match '内存检查模式') -and
+        ($模糊文本17 -match 'CJK\\d\{3\}') -and
+        ($vm文本17 -match 'CJK_QEMU') -and ($vm文本17 -match 'CJK_ALPINE') -and
+        ($m14文本17 -match 'SHA256')
+    # 批次二接线：双矩阵、Actions cache、现场下载校验、环境变量注入、ELF 全量脚本串接。
+    $m17CI接线OK = ($ci文本17 -match 'windows-latest') -and ($ci文本17 -match 'ubuntu-latest') -and
+        ($ci文本17 -match 'actions/cache@v4') -and
+        ($ci文本17 -match '准备ELF资产\.py') -and ($ci文本17 -match '校验ELF全量\.ps1') -and
+        ($ci文本17 -match 'CJK_QEMU') -and ($ci文本17 -match 'CJK_READELF') -and
+        ($elf全量文本17 -match '对拍ELF\.ps1') -and ($elf全量文本17 -match '对拍模块ELF\.ps1') -and
+        ($elf全量文本17 -match '检查调试信息Linux\.ps1') -and
+        ($elf全量文本17 -match '内存检查Linux\.ps1')
+    if ($m17接线OK -and $m17CI接线OK) {
+        Write-Host "原生 M17：内存检查旗标、模糊断言、路径参数化、CI 双矩阵与 SHA256 校验接线就位" -ForegroundColor Green
+    } else {
+        失败项 "原生 M17 接线" "内存检查/模糊断言/路径参数化/CI 双矩阵/SHA256 校验接线缺失"
     }
 
     运行 "原生补丁编译" {

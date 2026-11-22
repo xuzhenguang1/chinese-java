@@ -1,5 +1,6 @@
-# 全量校验：与本地 `.\工具\发布\校验.ps1` 相同（不含原生补丁路线 B）。
-# 原生补丁与 JDK 内部源码绑定，托管 runner 上没有对应的 src.zip，留在本地用 `-含原生` 回归。
+# 双矩阵校验（M17）：Windows 跑非原生全量；Ubuntu 另跑 ELF 全量对拍。
+# 原生补丁路线 B 依赖 JDK 内部 src.zip，CI 不跑，留在本地用 `-含原生` 回归。
+# ELF 资产（qemu/Alpine/musl）按 M14 报告的 URL + SHA256 现场下载并 cache，不入库二进制。
 name: 校验
 
 on:
@@ -10,8 +11,13 @@ on:
 
 jobs:
   check:
-    name: 校验
-    runs-on: windows-latest
+    name: 校验 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    timeout-minutes: 60
     steps:
       - name: 检出源码
         uses: actions/checkout@v4
@@ -22,6 +28,38 @@ jobs:
           distribution: temurin
           java-version: '25'
 
-      - name: 全量校验
+      - name: 全量校验（非原生）
         shell: pwsh
         run: .\工具\发布\校验.ps1
+
+      # ---------------- Ubuntu 专有：ELF 全量对拍 ----------------
+      - name: 安装 ELF 工具链（clang / qemu / python3）
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang lld qemu-system-x86 python3
+
+      - name: 缓存 ELF 运行资产
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: 构建/工具链/alpine
+          key: elf-assets-musl1.2.5-kernel6.6.142-rootfs3.20.3-v1
+
+      - name: 下载并校验 ELF 资产
+        if: runner.os == 'Linux'
+        run: python3 工具/CI/准备ELF资产.py
+
+      - name: 设置 ELF 运行器环境变量
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          echo "CJK_QEMU=$(command -v qemu-system-x86_64)" >> $GITHUB_ENV
+          echo "CJK_KERNEL=$GITHUB_WORKSPACE/构建/工具链/alpine/boot/vmlinuz-virt" >> $GITHUB_ENV
+          echo "CJK_ALPINE=$GITHUB_WORKSPACE/构建/工具链/alpine" >> $GITHUB_ENV
+          echo "CJK_READELF=$(command -v readelf)" >> $GITHUB_ENV
+
+      - name: ELF 全量对拍（C/LLVM + 模块 + DWARF + GC + 网络 + 内存检查）
+        if: runner.os == 'Linux'
+        shell: pwsh
+        run: ./工具/CI/校验ELF全量.ps1

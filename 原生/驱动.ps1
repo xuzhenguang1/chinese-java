@@ -16,12 +16,24 @@ param(
     [ValidateSet("windows", "linux")]
     [string]$平台 = "windows",
     # M15：依赖清单路径（可选）。给定时其闭包哈希并入缓存键，改依赖即触发重编。
-    [string]$清单
+    [string]$清单,
+    # M17：内存检查（仅 linux 生效）。注入 ASan 编译/链接参数，并并入工具链哈希隔离缓存。
+    # ASan 不可用时按 ADR-020 的阶梯降级，本旗标保持"尽力检测"语义，不作为硬门槛。
+    [switch]$内存检查
 )
 
 $ErrorActionPreference = "Continue"
 # clang 优化开关：-优化 <档> 展开为 "-O<档>"（Os 保持 "-Os"）。
 $优化开关 = if ($优化 -eq "Os") { "-Os" } else { "-$优化" }
+# M17：内存检查开关。仅在 linux 平台生效；Windows 给中文提示后忽略（不影响既有路径）。
+$启用内存检查 = $false
+if ($内存检查) {
+    if ($平台 -eq 'linux') {
+        $启用内存检查 = $true
+    } else {
+        [Console]::Error.WriteLine("提示：-内存检查 仅在 -平台 linux 生效，Windows 已忽略（改用 GC 压力用例）。")
+    }
+}
 chcp 65001 | Out-Null
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -39,6 +51,43 @@ $平台编译参数 = if ($isLinux) {
     @("--target=$muslTarget", "--sysroot=$muslSysroot", '-DCJK_PLATFORM_LINUX', '-D_GNU_SOURCE')
 } else {
     @()
+}
+
+# ---- M17 内存检查模式（ASan 优先，runtime 缺失时降级静态分析）----
+# ADR-020 E1：musl 全静态 + 自建 GC 场景下，clang 需有 x86_64-unknown-linux-musl 的
+# libclang_rt.asan*.a 才能链接 ASan；本机 msys clang 通常不含该 runtime，故实测探测。
+$内存检查模式 = "none"   # none | asan | analyze
+$asan编译参数 = @()
+$asan链接参数 = @()
+if ($启用内存检查) {
+    # 内联探测 clang（查找clang 函数此时尚未定义，避免前向引用）。
+    $探测clang = $null
+    foreach ($候选 in @("C:\msys64\mingw64\bin\clang.exe")) {
+        if (Test-Path $候选) { $探测clang = $候选; break }
+    }
+    if (-not $探测clang) {
+        $探测命令 = Get-Command clang -ErrorAction SilentlyContinue
+        if ($探测命令) { $探测clang = $探测命令.Source }
+    }
+    $有asan运行时 = $false
+    if ($探测clang) {
+        $资源目录 = (& $探测clang -print-resource-dir 2>$null).Trim()
+        if ($资源目录 -and (Test-Path $资源目录)) {
+            # 查找 musl/linux target 的 asan 静态运行时（不同 clang 版本名略有差异）。
+            $asan库们 = @(Get-ChildItem (Join-Path $资源目录 "lib") -Filter "libclang_rt.asan*.a" -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match 'linux|musl' })
+            if ($asan库们.Count -gt 0) { $有asan运行时 = $true }
+        }
+    }
+    if ($有asan运行时) {
+        $内存检查模式 = "asan"
+        $asan编译参数 = @('-fsanitize=address', '-fno-omit-frame-pointer', '-O1')
+        $asan链接参数 = @('-fsanitize=address')
+        Write-Host "内存检查：ASan 运行时可用，采用 ASan 模式（ADR-020 阶梯 A）。"
+    } else {
+        $内存检查模式 = "analyze"
+        Write-Host "内存检查：musl ASan 运行时缺失，降级为 Clang 静态分析（ADR-020 阶梯 B）。"
+    }
 }
 
 $桥接 = Join-Path $PSScriptRoot "工具\词表桥接.ps1"
@@ -155,6 +204,8 @@ function 取文本哈希 {
 function 取工具链哈希 {
     # 平台/target/sysroot 纳入哈希：切换平台后缓存必然失效，避免 PE/ELF 串味。
     $文本 = 取文件哈希 $PSCommandPath + "|平台=" + $平台
+    # M17：内存检查开关纳入哈希，避免 ASan 产物与普通产物串缓存。
+    $文本 += "|内存检查=" + $(if ($启用内存检查) { "1" } else { "0" })
     if ($isLinux) {
         $文本 += "|target=$muslTarget|sysroot=" + $muslSysroot
         if (Test-Path -LiteralPath $muslSysroot) {
@@ -228,7 +279,7 @@ function 编译运行时对象 {
         if (Test-Path $对象) {
             $命中++
         } else {
-            $输出 = & $clang -c @平台编译参数 $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $源.FullName -o $对象 2>&1
+            $输出 = & $clang -c @平台编译参数 @asan编译参数 $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $源.FullName -o $对象 2>&1
             if ($LASTEXITCODE -ne 0) {
                 $输出 | ForEach-Object { Write-Output $_ }
                 Write-Output ("运行时编译失败：{0}" -f $源.Name)
@@ -259,7 +310,7 @@ function 链接可执行 {
             # musl 静态链接：默认 ld 只支持 PE，必须 -fuse-ld=lld；且 clang 会注入
             # Windows crtbeginT/-lgcc，故 -nostdlib 并手动指定 musl crt1/crti/crtn + libc.a。
             # musl 1.2.5 已把 pthread/dl/rt 并入 libc，无需额外库。
-            $输出 = & $clang --target=$muslTarget --sysroot=$muslSysroot -nostdlib -fuse-ld=lld -static `
+            $输出 = & $clang --target=$muslTarget --sysroot=$muslSysroot -nostdlib -fuse-ld=lld -static @asan链接参数 `
                 (Join-Path $muslLib "crt1.o") (Join-Path $muslLib "crti.o") `
                 $临时对象们 -L$muslLib -lc (Join-Path $muslLib "crtn.o") -o $临时输出 2>&1
         } else {
@@ -608,6 +659,26 @@ switch ($子命令) {
         $C文本 = [System.IO.File]::ReadAllText($C文件, [System.Text.Encoding]::UTF8)
         $C哈希 = 取文本哈希 $C文本
 
+        # M17 E1 阶梯 B：ASan 不可用时对生成的 C 与运行时 C 跑 clang 静态分析。
+        # 告警写入报告文件（避免刷屏），stderr 只给一行摘要；不改变编译/链接流程，产物照常可运行（不设硬门槛）。
+        if ($内存检查模式 -eq "analyze") {
+            $分析工作目录 = Join-Path $根目录 "构建\原生\静态分析"
+            New-Item -ItemType Directory -Force $分析工作目录 | Out-Null
+            $分析报告 = Join-Path $根目录 "构建\原生\静态分析报告.txt"
+            $所有告警 = @()
+            $分析目标们 = @($C文件) + @($运行时.源们 | ForEach-Object FullName)
+            foreach ($分析目标 in $分析目标们) {
+                if (-not (Test-Path $分析目标)) { continue }
+                $唯一名 = [guid]::NewGuid().ToString("N") + ".plist"
+                $plist路径 = Join-Path $分析工作目录 $唯一名
+                $分析结果 = & $clang --analyze $分析目标 -I $运行时.目录 -o $plist路径 2>&1
+                if ($分析结果) { $所有告警 += @($分析结果) }
+            }
+            $告警文件们 = @($所有告警 | Where-Object { "($_)" -match 'warning:' })
+            [System.IO.File]::WriteAllLines($分析报告, [string[]]$所有告警, (New-Object System.Text.UTF8Encoding($false)))
+            [Console]::Error.WriteLine("内存检查：Clang 静态分析完成，潜在告警 $($告警文件们.Count) 条（详见 构建\原生\静态分析报告.txt）。")
+        }
+
         if ($无缓存) {
             Write-Output "增量：未启用缓存（-无缓存）"
             # 与缓存分支共用「链接可执行」以绕开 clang/ld 对中文路径的 ANSI 解读：
@@ -617,7 +688,7 @@ switch ($子命令) {
             New-Item -ItemType Directory -Force $无缓存目录 | Out-Null
             $模块对象 = Join-Path $无缓存目录 "module.o"
             try {
-                $模块输出 = & $clang -c @平台编译参数 $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $C文件 -o $模块对象 2>&1
+                $模块输出 = & $clang -c @平台编译参数 @asan编译参数 $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $C文件 -o $模块对象 2>&1
                 $编译码 = $LASTEXITCODE
                 if ($编译码 -ne 0) {
                     $模块输出 | ForEach-Object { Write-Output $_ }
@@ -639,7 +710,7 @@ switch ($子命令) {
             if (Test-Path $模块对象) {
                 $模块状态 = "命中"
             } else {
-                $输出 = & $clang -c @平台编译参数 $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $C文件 -o $模块对象 2>&1
+                $输出 = & $clang -c @平台编译参数 @asan编译参数 $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $C文件 -o $模块对象 2>&1
                 if ($LASTEXITCODE -ne 0) {
                     $输出 | ForEach-Object { Write-Output $_ }
                     Write-Output "clang 编译失败（退出码 $LASTEXITCODE）。"
@@ -767,7 +838,7 @@ switch ($子命令) {
                 New-Item -ItemType Directory -Force $无缓存目录 | Out-Null
                 $模块对象 = Join-Path $无缓存目录 "module.o"
                 try {
-                    $模块输出 = & $clang -c @平台编译参数 $优化开关 -std=c11 -fwrapv -fno-strict-aliasing $IR文件 -o $模块对象 2>&1
+                    $模块输出 = & $clang -c @平台编译参数 @asan编译参数 $优化开关 -std=c11 -fwrapv -fno-strict-aliasing $IR文件 -o $模块对象 2>&1
                     $编译码 = $LASTEXITCODE
                     if ($编译码 -ne 0) {
                         $模块输出 | ForEach-Object { Write-Output $_ }
@@ -796,7 +867,7 @@ switch ($子命令) {
             if (Test-Path $模块对象) {
                 $模块状态 = "命中"
             } else {
-                $输出 = & $clang -c @平台编译参数 $优化开关 -std=c11 -fwrapv -fno-strict-aliasing $IR文件 -o $模块对象 2>&1
+                $输出 = & $clang -c @平台编译参数 @asan编译参数 $优化开关 -std=c11 -fwrapv -fno-strict-aliasing $IR文件 -o $模块对象 2>&1
                 if ($LASTEXITCODE -ne 0) {
                     $输出 | ForEach-Object { Write-Output $_ }
                     Write-Output "clang 编译失败（退出码 $LASTEXITCODE）。"

@@ -16,6 +16,20 @@
 - 用途：提供 `x86_64-linux-musl` sysroot；**实际用本机 clang 23.1.5 + ld.lld 配该 sysroot 交叉编译**（gcc 是 Linux 二进制、Windows 不能直接跑）。
 - 链接实测：`-nostdlib -static` + 手动 `crt1.o/crti.o/crtn.o` + `-lc` 即可静态链接并跑通；musl 1.2.5 已把 pthread/dl/rt/mcrypt 等并入 `libc.a`（对应 `libpthread.a` 等为 8 字节空归档），**无需 -lpthread/-lrt/-ldl**。
 
+### 资产完整性校验表（M17 补记，2026-11-22）
+
+> CI 与本机共用同一套下载资产；下表 SHA256 由本机已下载文件实测（`sha256sum`），是 CI 下载后完整性校验的**唯一数据源**。字节数与上方来源描述一致。
+
+| 资产 | 下载 URL（见上文） | 字节数 | SHA256 |
+| --- | --- | --- | --- |
+| `linux-virt.apk` | Alpine v3.20 main/x86_64 | 38546857 | `0d84e30c04c52426b0bf10b01616c45f7d0c5384a59552e4c4a6caeb13a3f6e7` |
+| `boot/vmlinuz-virt`（apk 解包后） | 从 `linux-virt.apk` 提取 | 10867712 | `d341acf38aca9f9af67641e3241ef1075c0368a59774485fa076f271182e8c00` |
+| `alpine-minirootfs-3.20.3-x86_64.tar.gz` | Alpine v3.20 releases/x86_64 | 3490290 | `d4e6fd67dcf75e40c451560ac7265166c2b72a0f38ddc9aae756a7de3d1efa0c` |
+| `musl-dev-1.2.5-r4.apk` | Alpine v3.20 main/x86_64 | 3437930 | `e9cca1709f3a740976f22cc27b825261de062d97e7de2d08c41243017c389338` |
+| `musl-1.2.5-r4.apk` | Alpine v3.20 main/x86_64 | 408411 | `b255cdcf4f64eb301f4dbd40d1fbdc0fcb021613b3f0d124a41eeff62e2bc7d8` |
+
+> 说明：CI 下载的是 `.apk` / `.tar.gz`（表中前四/五行），校验下载文件 SHA256 后，从 `linux-virt.apk` 解包出 `vmlinuz-virt`（其 SHA256 见第二行，供解包结果二次校验）。musl sysroot 由 `musl-dev.apk` 解压，链接实测见 §1 上文。
+
 ### qemu 运行器（方案偏差）
 
 - 原方案假设"Windows 版 qemu-user（`qemu-x86_64.exe`）"经实测**不存在**：

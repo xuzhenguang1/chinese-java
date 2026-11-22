@@ -5,14 +5,19 @@ VM 跑完 poweroff 自动退出；超时则 kill。输出原样写 stdout（UTF-
 
 用法: python 运行VM.py <initrd.gz> <输出文件> [超时秒=180]
 依赖 ASCII junction: E:\cjk-qemu, E:\cjk-alpine（qemu 打不开中文路径）。
+
+M17（E3）：以下三项支持环境变量覆盖，供 Linux CI 使用；未设置时回退本机 E: junction，零回退：
+  CJK_QEMU   = qemu-system-x86_64 可执行文件
+  CJK_KERNEL = vmlinuz-virt 内核
+  CJK_ALPINE = Alpine 资产目录（initrd 会被临时拷到此处）
 """
 import os
 import sys
 import subprocess
 
-QEMU = r"E:\cjk-qemu\qemu-system-x86_64.exe"
-KERNEL = r"E:\cjk-alpine\boot\vmlinuz-virt"
-ALPINE = r"E:\cjk-alpine"
+QEMU = os.environ.get("CJK_QEMU", r"E:\cjk-qemu\qemu-system-x86_64.exe")
+KERNEL = os.environ.get("CJK_KERNEL", r"E:\cjk-alpine\boot\vmlinuz-virt")
+ALPINE = os.environ.get("CJK_ALPINE", r"E:\cjk-alpine")
 
 
 def main():

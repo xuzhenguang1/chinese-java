@@ -54,10 +54,17 @@ foreach ($elf in $可执行) {
 }
 if ($有效.Count -eq 0) { Write-Output "运行器：Linux 模式需要至少一个 ELF"; exit 2 }
 
-$asciiQemu = "E:\cjk-qemu\qemu-system-x86_64.exe"
-$asciiAlpine = "E:\cjk-alpine"
-if (-not (Test-Path $asciiQemu) -or -not (Test-Path (Join-Path $asciiAlpine "boot\vmlinuz-virt"))) {
-    Write-Output "运行器：ASCII junction 缺失（E:\cjk-qemu / E:\cjk-alpine），无法启动 VM"
+# M17 E3：支持 CJK_QEMU / CJK_KERNEL / CJK_ALPINE 环境变量覆盖（Linux CI）；
+# 未设置时回退本机 E: junction，零回退。运行VM.py 读取同名环境变量。
+$asciiQemu = if ($env:CJK_QEMU) { $env:CJK_QEMU } else { "E:\cjk-qemu\qemu-system-x86_64.exe" }
+$asciiAlpine = if ($env:CJK_ALPINE) { $env:CJK_ALPINE } else { "E:\cjk-alpine" }
+$内核路径 = if ($env:CJK_KERNEL) { $env:CJK_KERNEL } else { (Join-Path $asciiAlpine "boot\vmlinuz-virt") }
+# 环境变量覆盖时，把这些值同步给运行VM.py（子进程继承）。
+if ($env:CJK_QEMU) { $env:CJK_QEMU = $asciiQemu }
+if ($env:CJK_ALPINE) { $env:CJK_ALPINE = $asciiAlpine }
+if ($env:CJK_KERNEL) { $env:CJK_KERNEL = $内核路径 }
+if (-not (Test-Path $asciiQemu) -or -not (Test-Path $内核路径)) {
+    Write-Output "运行器：qemu/kernel 缺失（$asciiQemu / $内核路径），无法启动 VM"
     exit 2
 }
 
