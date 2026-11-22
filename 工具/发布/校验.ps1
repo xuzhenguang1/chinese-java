@@ -1480,6 +1480,77 @@ if ($含原生) {
         失败项 "原生 M15 接线" "驱动依赖哈希或 cjc 依赖分派缺失"
     }
 
+    # 8.15) 原生 M16：语义兼容实证——ADR-007 修订、浮点边界用例、对拍脚本、已知差异登记与白名单治理。
+    $m16文件们 = @(
+        "文档\原生\M16\spec.md",
+        "文档\原生\M16\tasks.md",
+        "文档\原生\M16\checklist.md",
+        "文档\原生\M16\对拍报告.md",
+        "原生\测试\对拍浮点.ps1",
+        "原生\测试\浮点已知差异.txt"
+    )
+    $m16缺文件 = @($m16文件们 | Where-Object { -not (Test-Path (Join-Path $root $_)) })
+    $浮点用例 = @(Get-ChildItem (Join-Path $root "原生\测试\浮点边界") -Filter "浮*.java" -File -ErrorAction SilentlyContinue)
+    if ($m16缺文件.Count -eq 0 -and $浮点用例.Count -gt 0) {
+        Write-Host "原生 M16：ADR-007、$($浮点用例.Count) 组浮点边界用例、对拍脚本与报告齐备" -ForegroundColor Green
+    } else {
+        失败项 "原生 M16 文件" "缺少：$($m16缺文件 -join '；')；浮点用例数 $($浮点用例.Count)"
+    }
+    $adr007文本 = Get-Content (Join-Path $root "文档\原生\ADR\ADR-007-语义兼容与差异白名单.md") -Raw -Encoding UTF8
+    if ($adr007文本 -match '已知限制' -and $adr007文本 -match 'ADR-007:随机源' -and
+        $adr007文本 -match 'ADR-007:浮点边界') {
+        Write-Host "原生 M16：ADR-007「已知限制」与锚点齐备" -ForegroundColor Green
+    } else {
+        失败项 "原生 M16 ADR-007" "已知限制小节或锚点缺失"
+    }
+    # 白名单治理：每条正则前须有 # 依据锚点：ADR-007:<标识>，且锚点在 ADR-007 正文存在。
+    $白名单路径 = Join-Path $root "原生\测试\差异白名单.txt"
+    $白名单治理问题 = @()
+    if (Test-Path $白名单路径) {
+        $白名单行们 = @(Get-Content $白名单路径 -Encoding UTF8)
+        $正则行数 = @($白名单行们 | Where-Object { $_.Trim() -ne "" -and -not $_.TrimStart().StartsWith("#") }).Count
+        $锚点注释 = @($白名单行们 | Where-Object { $_ -match '依据锚点：ADR-007:' })
+        if ($正则行数 -ne $锚点注释.Count) {
+            $白名单治理问题 += "白名单 $正则行数 条正则，但依据锚点注释 $($锚点注释.Count) 条（须一一对应）"
+        }
+        foreach ($注 in $锚点注释) {
+            if ($注 -match 'ADR-007:([A-Za-z0-9\u4e00-\u9fa5]+)') {
+                $锚 = $Matches[1]
+                if ($adr007文本 -notmatch [regex]::Escape("ADR-007:" + $锚)) {
+                    $白名单治理问题 += "锚点 ADR-007:$锚 在 ADR-007 正文不存在"
+                }
+            }
+        }
+    } else {
+        $白名单治理问题 += "差异白名单.txt 缺失"
+    }
+    if ($白名单治理问题.Count -eq 0) {
+        Write-Host "原生 M16：白名单治理通过（每条可追溯到 ADR-007 锚点）" -ForegroundColor Green
+    } else {
+        失败项 "原生 M16 白名单治理" ($白名单治理问题 -join "；")
+    }
+    # 浮点已知差异每条 | 后的锚点须在 ADR-007 存在。
+    $已知差异路径 = Join-Path $root "原生\测试\浮点已知差异.txt"
+    $差异锚点问题 = @()
+    if (Test-Path $已知差异路径) {
+        foreach ($行 in @(Get-Content $已知差异路径 -Encoding UTF8)) {
+            if ($行.Trim() -eq "" -or $行.TrimStart().StartsWith("#")) { continue }
+            if ($行 -match '\|\s*(ADR-007:[A-Za-z0-9\u4e00-\u9fa5]+)') {
+                $锚 = $Matches[1]
+                if ($adr007文本 -notmatch [regex]::Escape($锚)) {
+                    $差异锚点问题 += "已知差异锚点 $锚 在 ADR-007 正文不存在"
+                }
+            } else {
+                $差异锚点问题 += "已知差异行缺少锚点：$行"
+            }
+        }
+    }
+    if ($差异锚点问题.Count -eq 0) {
+        Write-Host "原生 M16：浮点已知差异全部可追溯" -ForegroundColor Green
+    } else {
+        失败项 "原生 M16 已知差异" ($差异锚点问题 -join "；")
+    }
+
     运行 "原生补丁编译" {
         & "$root\工具\原生补丁\编译.ps1"
     }
