@@ -40,13 +40,13 @@ if ($env:OS -eq "Windows_NT") { chcp 65001 | Out-Null }
 $根目录 = (Resolve-Path "$PSScriptRoot\..").Path
 
 # ---- M14 平台配置（一处定义，全链路引用）----
-$isLinux = $平台 -eq 'linux'
-$扩展名 = if ($isLinux) { '.elf' } else { '.exe' }
+$目标Linux = $平台 -eq 'linux'
+$扩展名 = if ($目标Linux) { '.elf' } else { '.exe' }
 $muslTarget = 'x86_64-linux-musl'
 $muslSysroot = Join-Path $根目录 "构建\工具链\alpine\sysroot"
 $muslLib = Join-Path $muslSysroot "usr\lib"
 # clang 交叉编译参数：Linux 需指定 target/sysroot 与平台宏；Windows 保持既有（空）。
-$平台编译参数 = if ($isLinux) {
+$平台编译参数 = if ($目标Linux) {
     # _GNU_SOURCE 同时开放 clock_gettime/_POSIX 与 pthread_getattr_np/musl GNU 扩展。
     @("--target=$muslTarget", "--sysroot=$muslSysroot", '-DCJK_PLATFORM_LINUX', '-D_GNU_SOURCE')
 } else {
@@ -206,7 +206,7 @@ function 取工具链哈希 {
     $文本 = 取文件哈希 $PSCommandPath + "|平台=" + $平台
     # M17：内存检查开关纳入哈希，避免 ASan 产物与普通产物串缓存。
     $文本 += "|内存检查=" + $(if ($启用内存检查) { "1" } else { "0" })
-    if ($isLinux) {
+    if ($目标Linux) {
         $文本 += "|target=$muslTarget|sysroot=" + $muslSysroot
         if (Test-Path -LiteralPath $muslSysroot) {
             # sysroot 内 libc.a/crt*.o 变化也应让缓存失效。
@@ -268,7 +268,7 @@ function 取运行时信息 {
 # 每个运行时 .c 按内容哈希编译一次，产物放在 构建\原生\缓存\运行时。
 function 编译运行时对象 {
     param([string]$clang, $运行时)
-    $缓存子目录 = if ($isLinux) { "运行时-linux" } else { "运行时" }
+    $缓存子目录 = if ($目标Linux) { "运行时-linux" } else { "运行时" }
     $缓存目录 = Join-Path $根目录 ("构建\原生\缓存\" + $缓存子目录)
     New-Item -ItemType Directory -Force $缓存目录 | Out-Null
     $对象们 = @()
@@ -306,7 +306,7 @@ function 链接可执行 {
             $索引 = $索引 + 1
         }
         $临时输出 = Join-Path $链接目录 ("out" + $扩展名)
-        if ($isLinux) {
+        if ($目标Linux) {
             # musl 静态链接：默认 ld 只支持 PE，必须 -fuse-ld=lld；且 clang 会注入
             # Windows crtbeginT/-lgcc，故 -nostdlib 并手动指定 musl crt1/crti/crtn + libc.a。
             # musl 1.2.5 已把 pthread/dl/rt 并入 libc，无需额外库。
@@ -397,7 +397,7 @@ function 输出工具链 {
 
     Write-Output "工具链："
     Write-Output ("  目标平台：{0}（产物扩展名 {1}）" -f $平台, $扩展名)
-    if ($isLinux) {
+    if ($目标Linux) {
         if (Test-Path -LiteralPath $muslSysroot) {
             Write-Output ("  musl sysroot：{0}" -f $muslSysroot)
         } else {
@@ -633,7 +633,7 @@ switch ($子命令) {
             $源哈希 = 取文件哈希 $源文件
         }
         $缓存目录 = Join-Path $根目录 "构建\原生\缓存"
-        $状态文件 = Join-Path $缓存目录 ("状态\" + $模块 + $(if ($isLinux) { '.linux' } else { '' }) + ".json")
+        $状态文件 = Join-Path $缓存目录 ("状态\" + $模块 + $(if ($目标Linux) { '.linux' } else { '' }) + ".json")
 
         if (-not $无缓存) {
             $状态 = 读取缓存状态 $状态文件
@@ -704,7 +704,7 @@ switch ($子命令) {
             }
         } else {
             $运行时对象 = 编译运行时对象 $clang $运行时
-            $模块缓存 = Join-Path $缓存目录 $(if ($isLinux) { "模块-linux" } else { "模块" })
+            $模块缓存 = Join-Path $缓存目录 $(if ($目标Linux) { "模块-linux" } else { "模块" })
             New-Item -ItemType Directory -Force $模块缓存 | Out-Null
             $模块对象 = Join-Path $模块缓存 ("{0}-{1}.o" -f $模块, $C哈希.Substring(0, 8))
             if (Test-Path $模块对象) {
@@ -779,7 +779,7 @@ switch ($子命令) {
             $源哈希 = 取文件哈希 $源文件
         }
         $缓存目录 = Join-Path $根目录 "构建\原生\缓存"
-        $状态文件 = Join-Path $缓存目录 ("状态\" + $模块 + $(if ($isLinux) { '.linux' } else { '' }) + ".llvm.json")
+        $状态文件 = Join-Path $缓存目录 ("状态\" + $模块 + $(if ($目标Linux) { '.linux' } else { '' }) + ".llvm.json")
 
         if ($动作 -eq '编译' -and -not $无缓存) {
             $状态 = 读取缓存状态 $状态文件
@@ -794,7 +794,7 @@ switch ($子命令) {
         确保前端已编译
         # M14：前端 LLVM 生成器从 CJC_PLATFORM 读取目标平台配置；生成后恢复原值。
         $原平台环境变量 = [Environment]::GetEnvironmentVariable('CJC_PLATFORM')
-        if ($isLinux) {
+        if ($目标Linux) {
             [Environment]::SetEnvironmentVariable('CJC_PLATFORM', 'linux')
         } else {
             [Environment]::SetEnvironmentVariable('CJC_PLATFORM', $null)
@@ -831,7 +831,7 @@ switch ($子命令) {
 
         if ($无缓存) {
             Write-Output "增量：未启用缓存（-无缓存）"
-            if ($isLinux) {
+            if ($目标Linux) {
                 # Linux 无缓存：先编 IR 与运行时对象，再统一走「链接可执行」（musl 需手动 crt 顺序）。
                 $运行时对象 = 编译运行时对象 $clang $运行时
                 $无缓存目录 = Join-Path ([System.IO.Path]::GetTempPath()) ("cjc-nocache-" + [guid]::NewGuid().ToString("N"))
@@ -861,7 +861,7 @@ switch ($子命令) {
             }
         } else {
             $运行时对象 = 编译运行时对象 $clang $运行时
-            $模块缓存 = Join-Path $缓存目录 $(if ($isLinux) { "模块-linux" } else { "模块" })
+            $模块缓存 = Join-Path $缓存目录 $(if ($目标Linux) { "模块-linux" } else { "模块" })
             New-Item -ItemType Directory -Force $模块缓存 | Out-Null
             $模块对象 = Join-Path $模块缓存 ("{0}-{1}.ll.o" -f $模块, $IR哈希.Substring(0, 8))
             if (Test-Path $模块对象) {

@@ -52,7 +52,8 @@ function 规范参数([object[]]$参数们) {
 }
 
 function 写参数文件([object[]]$参数们) {
-    $路径 = Join-Path $env:TEMP ("cjc-args-" + [guid]::NewGuid().ToString('N') + ".txt")
+    # Linux pwsh 无 $env:TEMP（为 null），用跨平台 API 取临时目录。
+    $路径 = Join-Path ([System.IO.Path]::GetTempPath()) ("cjc-args-" + [guid]::NewGuid().ToString('N') + ".txt")
     [System.IO.File]::WriteAllLines($路径, [string[]]$参数们, (New-Object System.Text.UTF8Encoding($false)))
     $env:CJC_ARGS_FILE = $路径
     return $路径

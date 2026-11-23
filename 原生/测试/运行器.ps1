@@ -68,7 +68,7 @@ if (-not (Test-Path $asciiQemu) -or -not (Test-Path $内核路径)) {
     exit 2
 }
 
-$临时 = Join-Path $env:TEMP ("cjk_runner_" + [guid]::NewGuid().ToString("N"))
+$临时 = Join-Path ([System.IO.Path]::GetTempPath()) ("cjk_runner_" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force $临时 | Out-Null
 $initrd = Join-Path $临时 "initrd.gz"
 $raw = Join-Path $临时 "vmraw.txt"
