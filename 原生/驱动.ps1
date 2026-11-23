@@ -73,9 +73,13 @@ if ($启用内存检查) {
     if ($探测clang) {
         $资源目录 = (& $探测clang -print-resource-dir 2>$null).Trim()
         if ($资源目录 -and (Test-Path $资源目录)) {
-            # 查找 musl/linux target 的 asan 静态运行时（不同 clang 版本名略有差异）。
+            # 只认 musl target 的 asan 运行时（路径含 musl，如 .../lib/x86_64-unknown-linux-musl/）。
+            # 不能放宽到 'linux'：clang 自带的 lib/linux/libclang_rt.asan-x86_64.a 是 glibc 版，
+            # 依赖 _DYNAMIC/_Unwind_*/gnu_get_libc_version 等动态符号，与本链 musl -static
+            # -nostdlib 链接不兼容（CI 上实测 undefined symbol）。glibc 版一律视为不可用，
+            # 走 ADR-020 阶梯 B 静态分析。
             $asan库们 = @(Get-ChildItem (Join-Path $资源目录 "lib") -Filter "libclang_rt.asan*.a" -Recurse -ErrorAction SilentlyContinue |
-                Where-Object { $_.FullName -match 'linux|musl' })
+                Where-Object { $_.DirectoryName -match 'musl' -or $_.Name -match 'musl' })
             if ($asan库们.Count -gt 0) { $有asan运行时 = $true }
         }
     }
