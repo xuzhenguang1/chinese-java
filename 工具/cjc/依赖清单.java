@@ -246,8 +246,18 @@ public class 依赖清单 {
         System.out.println("说明：给出输出文件时结果写入该文件（UTF-8），避免 Windows 控制台中文路径乱码。");
     }
 
+    /** M17 CI 修复④：与 Cjc.java 同源的参数文件协议，绕开命令行中文解码。 */
+    private static String[] 读参数文件(String[] args) throws IOException {
+        String 路径 = System.getenv("CJC_ARGS_FILE");
+        if (路径 == null || 路径.isEmpty()) return args;
+        Path p = Paths.get(路径);
+        if (!Files.isRegularFile(p)) return args;
+        return Files.readAllLines(p, StandardCharsets.UTF_8).toArray(new String[0]);
+    }
+
     public static void main(String[] args) {
         try {
+            args = 读参数文件(args);
             if (args.length < 2) {
                 用法();
                 System.exit(2);

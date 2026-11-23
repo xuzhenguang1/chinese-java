@@ -241,11 +241,18 @@ $targets = @(
     @{ Path = $tmPath; Text = $tmNew }
 )
 
+# CI 修复：ConvertTo-Json 的换行与缩进在 Windows PowerShell 5.1 与 pwsh 7 之间
+# 不同（CRLF/LF、缩进），且无 .gitattributes 时 git 会按平台改写换行。比对时去掉全部
+# 空白字符，只比非空白内容——同一份数据的空白差异不影响同步判定，内容真变了仍会检出。
+# 写文件仍按原样，避免无谓的全文件 diff。
+function 归一内容([string]$文本) {
+    return ($文本 -replace '\s', '')
+}
 if ($检查) {
     $dirty = $false
     foreach ($target in $targets) {
         $current = if (Test-Path $target.Path) { Read-Utf8 $target.Path } else { '' }
-        if ($current -ne $target.Text) {
+        if ((归一内容 $current) -cne (归一内容 $target.Text)) {
             Write-Host "不一致：$($target.Path)"
             $dirty = $true
         }

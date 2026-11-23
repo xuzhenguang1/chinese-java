@@ -192,7 +192,26 @@ public class Cjc {
         return args[index];
     }
 
+    /**
+     * M17 CI 修复④：从 UTF-8 参数文件读回真实参数，彻底绕开 en-US Windows 上 JVM
+     * 用系统 ANSI 解码命令行参数导致的中文命令/路径变 ??。命令行只传 ASCII 的文件名，
+     * 真实参数由 cjc.ps1 写入 CJC_ARGS_FILE 指向的文件（UTF-8、每行一个参数）。
+     * 环境变量不存在时（本机直接 java 调用）行为完全不变。
+     */
+    private static String[] 读参数文件(String[] args) throws IOException {
+        String 路径 = System.getenv("CJC_ARGS_FILE");
+        if (路径 == null || 路径.isEmpty()) {
+            return args;
+        }
+        java.nio.file.Path p = java.nio.file.Paths.get(路径);
+        if (!Files.isRegularFile(p)) {
+            return args;
+        }
+        return Files.readAllLines(p, StandardCharsets.UTF_8).toArray(new String[0]);
+    }
+
     public static void main(String[] args) throws IOException {
+        args = 读参数文件(args);
         if (args.length == 0) {
             usage();
             System.exit(2);
