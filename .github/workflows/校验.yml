@@ -28,6 +28,17 @@ jobs:
           distribution: temurin
           java-version: '25'
 
+      # en-US 的 Windows runner 上 JVM 用系统 ANSI 解码命令行参数，中文类名/路径变 ??。
+      # sun.jnu.encoding 只能由系统区域决定（-D / JAVA_TOOL_OPTIONS 均无效），
+      # 启用系统级 UTF-8（Beta: UTF-8）后新启动的 java 进程按 UTF-8 解码命令行。
+      - name: 启用 Windows 系统 UTF-8（JVM 命令行中文解码）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage' -Name 'ACP' -Value '65001'
+          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage' -Name 'OEMCP' -Value '65001'
+          Write-Host "ACP=$((Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage').ACP)"
+
       - name: 全量校验（非原生）
         shell: pwsh
         run: .\工具\发布\校验.ps1

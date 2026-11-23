@@ -254,6 +254,17 @@ if ($检查) {
         $current = if (Test-Path $target.Path) { Read-Utf8 $target.Path } else { '' }
         if ((归一内容 $current) -cne (归一内容 $target.Text)) {
             Write-Host "不一致：$($target.Path)"
+            # CI 诊断：打印归一后首个差异位置与两侧上下文，便于定位跨平台换行/内容差异。
+            $a = 归一内容 $current
+            $b = 归一内容 $target.Text
+            $n = [Math]::Min($a.Length, $b.Length)
+            $idx = -1
+            for ($k = 0; $k -lt $n; $k++) { if ($a[$k] -cne $b[$k]) { $idx = $k; break } }
+            if ($idx -lt 0) { $idx = $n }
+            $起 = [Math]::Max(0, $idx - 40)
+            Write-Host "  差异位置=$idx 长度 current=$($a.Length) target=$($b.Length)"
+            Write-Host "  current: ...$($a.Substring($起, [Math]::Min(80, $a.Length - $起)))"
+            Write-Host "  target : ...$($b.Substring($起, [Math]::Min(80, $b.Length - $起)))"
             $dirty = $true
         }
     }
