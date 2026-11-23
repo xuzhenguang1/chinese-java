@@ -47,14 +47,14 @@
 - [x] F2 Actions cache `构建/工具链/alpine`，key `elf-assets-musl1.2.5-kernel6.6.142-rootfs3.20.3-v1` 含资产版本。
 - [x] F3 `校验.yml` 双矩阵（windows-latest + ubuntu-latest，JDK 25）；两 job 跑非原生 `校验.ps1`，Ubuntu job 另跑 ELF 全量对拍 + DWARF（系统 readelf）。**口径修正**：`-含原生` 依赖 JDK 内部 `src.zip`，仍留本地，已写入 ADR-020。
 - [x] F4 job `timeout-minutes: 60`；`运行VM.py` 单课超时可配；串口日志由 VM 运行器原样输出。
-- [ ] F5 CI 两 job 均绿：配置已就绪，但需推送后在 GitHub Actions 实跑回写结果，本机未冒称已绿。
+- [x] F5 CI 两 job 均绿：GitHub Actions run `45173797419`（workflow_dispatch）`✓ 校验 (windows-latest)` 2m15s + `✓ 校验 (ubuntu-latest)` 12m1s，Ubuntu job 的 ELF 全量对拍（35 课 C/LLVM + 多文件模块 + DWARF 2/2 + GC 4/4 + 网络 + 内存检查 4/4）全绿。实跑前经 6 轮跨平台修复（CI 修复④⑤⑥⑦⑧⑨⑩，见对拍报告 §5.3）。
 - [x] F6 资产版本与 M14 报告一致（含新补 SHA256），CI 与本机共用打包/VM/对拍脚本；8.16 静态断言覆盖矩阵、cache、资产脚本与全量脚本接线。
-- [ ] F7 【提交②：双矩阵 CI】待用户确认后执行；本轮两批改动同在工作区，未自行提交。
+- [x] F7 双矩阵 CI 及后续跨平台修复均已提交推送（`e792735`…`c4ac4f5`）；run `45173797419` 两 job 全绿。
 
 ## 全局红线
 
 - [ ] G1 ASan 断言未设成不可降级硬门槛；降级边界写进 ADR-020。
 - [ ] G2 本地模拟未通过前未改 CI 配置（E4）。
-- [ ] G3 每批收尾 `校验.ps1 -含原生` 均退出码 0，本机零回退。
+- [x] G3 每批收尾 `校验.ps1 -含原生` 均退出码 0，本机零回退；本轮 CI 修复后本地 `校验.ps1` 再次退出码 0（脚手架 exe 严格验收通过）。
 - [ ] G4 无二进制资产入库；`构建/` 保持忽略。
 - [ ] G5 所有中文 .ps1 带 UTF-8 BOM。
