@@ -343,6 +343,24 @@ public final class LLVM生成器 {
             文.append(", ptr ").append(转文本 == null ? "null" : "@" + 转文本钩子名(名));
             IR.声明全局(文.append(" }").toString());
         }
+        // M19 G2：为带包类保留旧简单名符号 alias（过渡期到 M22 收官清理）。
+        // 无包类（35 课）不含 $，不生成别名，快照零回退。
+        for (中间代码.类定义 类 : 程序.类()) {
+            String 旧名 = 旧简单名(类.名());
+            if (旧名 != null) {
+                IR.声明全局("@" + 描述符名(旧名) + " = alias %cjk_class, ptr @"
+                        + 描述符名(类.名()) + " ; M19 旧符号别名");
+            }
+        }
+    }
+
+    /** M19：取带包类名的旧简单名（去掉包前缀，保留嵌套 $ 链）；无包类返回 null。
+     *  带包类名含 '.'（如 演示.甲$工具）；纯嵌套类名（如 外部$内部）无 '.'，不生成别名。 */
+    private static String 旧简单名(String 类名) {
+        int 点 = 类名.indexOf('.');
+        int 美元 = 类名.indexOf('$');
+        return 点 >= 0 && 美元 > 点 && 美元 < 类名.length() - 1
+                ? 类名.substring(美元 + 1) : null;
     }
 
     private void 生成钩子(中间代码.类定义 类, 中间代码.方法 方法) {

@@ -133,7 +133,31 @@ public final class C生成器 {
             输出.append("typedef struct ").append(结构体名(类.名()))
                     .append(' ').append(结构体名(类.名())).append(";\n");
         }
-        输出.append('\n');
+        // M19 G2：为带包类保留旧简单名符号别名（过渡期到 M22 收官清理）。
+        // 无包类（35 课）不含 $，不生成别名，快照零回退。
+        boolean 有别名 = false;
+        for (中间代码.类定义 类 : 程序.类()) {
+            String 旧名 = 旧简单名(类.名());
+            if (旧名 != null) {
+                输出.append("#define ").append(结构体名(旧名))
+                        .append(' ').append(结构体名(类.名())).append(" /* M19 旧符号别名 */\n");
+                输出.append("#define ").append(描述符名(旧名))
+                        .append(' ').append(描述符名(类.名())).append(" /* M19 旧符号别名 */\n");
+                有别名 = true;
+            }
+        }
+        if (有别名) {
+            输出.append('\n');
+        }
+    }
+
+    /** M19：取带包类名的旧简单名（去掉包前缀，保留嵌套 $ 链）；无包类返回 null。
+     *  带包类名含 '.'（如 演示.甲$工具）；纯嵌套类名（如 外部$内部）无 '.'，不生成别名。 */
+    private static String 旧简单名(String 类名) {
+        int 点 = 类名.indexOf('.');
+        int 美元 = 类名.indexOf('$');
+        return 点 >= 0 && 美元 > 点 && 美元 < 类名.length() - 1
+                ? 类名.substring(美元 + 1) : null;
     }
 
     private void 声明函数() {
