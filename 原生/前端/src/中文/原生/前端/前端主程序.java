@@ -393,7 +393,7 @@ public final class 前端主程序 {
                         + 转义分词字段(一条.码()) + "|" + 转义分词字段(一条.消息()));
             }
             for (语法树.类型声明 声明 : 输入.单元().类型()) {
-                收集速览(词表, 声明, null, 类行, 字段行, 方法行);
+                收集速览(词表, 声明, null, 输入.单元().包名(), 类行, 字段行, 方法行);
             }
             if (输入.单元().类型().isEmpty()) {
                 收集脚本速览(输入.文件().名称(), 类行, 方法行);
@@ -414,7 +414,14 @@ public final class 前端主程序 {
     /** 按 AST 声明输出一个类型的符号速览；嵌套类型名用 `$` 连接。 */
     private static void 收集速览(词表 词表, 语法树.类型声明 声明, String 外部名,
             List<String> 类行, List<String> 字段行, List<String> 方法行) {
-        String 全名 = 外部名 == null ? 声明.名() : 外部名 + "$" + 声明.名();
+        收集速览(词表, 声明, 外部名, "", 类行, 字段行, 方法行);
+    }
+
+    /** M19：带包名的速览——顶层类拼 `包名$类名`（默认包不变）。 */
+    private static void 收集速览(词表 词表, 语法树.类型声明 声明, String 外部名, String 包名,
+            List<String> 类行, List<String> 字段行, List<String> 方法行) {
+        String 全名 = 外部名 != null ? 外部名 + "$" + 声明.名()
+                : (包名 == null || 包名.isEmpty() ? 声明.名() : 包名 + "$" + 声明.名());
         String 英文种类 = 词表.中文到英文.getOrDefault(声明.种类(), 声明.种类());
         boolean 是接口 = 英文种类.equals("interface");
         String 父 = 声明.父类() == null || "对象".equals(声明.父类().名())
@@ -423,7 +430,7 @@ public final class 前端主程序 {
         int 方法数 = 0;
         for (语法树.成员 成员 : 声明.成员()) {
             if (成员 instanceof 语法树.类型声明 内嵌) {
-                收集速览(词表, 内嵌, 全名, 类行, 字段行, 方法行);
+                收集速览(词表, 内嵌, 全名, 包名, 类行, 字段行, 方法行);
             } else if (成员 instanceof 语法树.字段声明 字段) {
                 boolean 静态 = 是接口 || 字段.修饰符().contains("static");
                 boolean 只读 = 是接口 || 字段.修饰符().contains("final");
@@ -833,7 +840,7 @@ public final class 前端主程序 {
         List<String> 诊断行 = new ArrayList<>();
         for (语义分析器.模块单元 单元 : 单元们) {
             for (语法树.类型声明 声明 : 单元.单元().类型()) {
-                收集速览(词表, 声明, null, 类行, 字段行, 方法行);
+                收集速览(词表, 声明, null, 单元.单元().包名(), 类行, 字段行, 方法行);
             }
             if (单元.单元().类型().isEmpty()) {
                 收集脚本速览(单元.文件名(), 类行, 方法行);
