@@ -35,6 +35,9 @@ class (\S+) is public, should be declared in a file named	公有类「{1}」必�
 array required, but (\S+) found	「{1:类型}」不是数组，不能用「[下标]」取值	确认它声明成了数组，例如「整数[] 分数」。
 package (\S+) does not exist	包「{1}」不存在	检查包名拼写与目录结构；Maven 工程需要先加依赖。
 class file for (\S+) not found	找不到类文件「{1}」	检查 -cp 类路径或依赖是否齐全。
+constructor ([^ ]+) in class [^ ]+ cannot be applied to given types	构造器 {1}应用到给定类型	检查「新建」后面的参数个数与类型。
+is not abstract and does not override abstract method ([^ (]+)	抽象方法{1}	实现该方法，或把类声明成「抽象」。
+cannot be dereferenced	无法取消引用	检查该变量的类型：只有对象才能用「.」访问成员。
 no suitable constructor found for (.+)	没有匹配的构造器：{1}	检查「新建」后面的参数个数与类型。
 cannot be applied to given types|^no suitable method found	方法调用的参数不匹配	检查参数个数、顺序与类型；构造器参数也要一一对应。
 bad operand types for binary operator '(.+)'	运算符「{1}」不能用于这些类型	检查两侧类型；拼接文本前先转成字符串。

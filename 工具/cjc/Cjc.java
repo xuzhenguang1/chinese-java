@@ -412,7 +412,7 @@ public class Cjc {
         StringBuilder sb = new StringBuilder();
         sb.append("# 原生构建：在本项目根目录执行 .\\构建.ps1，产出 target\\应用.exe（M15 清单驱动）\n");
         sb.append("$ErrorActionPreference = \"Stop\"\n");
-        sb.append("chcp 65001 | Out-Null\n");
+        sb.append("if ($env:OS -eq \"Windows_NT\") { chcp 65001 | Out-Null }\n");
         sb.append("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n");
         sb.append(仓库行).append("\n");
         sb.append("$cjc = Join-Path $仓库 \"cjc.ps1\"\n");
