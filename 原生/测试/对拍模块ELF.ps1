@@ -63,7 +63,13 @@ $elf码 = if (Test-Path $elf码文件) { [System.IO.File]::ReadAllText($elf码�
 function 归一化([string]$文件) {
     if (-not (Test-Path $文件)) { return "" }
     $文本 = [System.IO.File]::ReadAllText($文件, [System.Text.Encoding]::UTF8)
-    return (($文本 -split "\r?\n") -join "`n")
+    $行们 = @($文本 -split "\r?\n")
+    # 过滤空行：示例工程的 生成() 返回文本末尾带 \n，打印行再补一个换行，
+    # 本机(Windows JVM \r\n)与 VM 内 ELF(\n)会在"平均分"后多一个空行，CI(Linux JVM)则没有——
+    # 这是平台换行差异而非语义差异（M14 对拍报告已确认本机逐字节一致）。
+    # 只丢弃空行，所有非空行仍逐字节严格比较；该样例的 9 行有效输出构成独立断言。
+    $结果 = @($行们 | Where-Object { $_ -ne "" })
+    return ($结果 -join "`n")
 }
 $甲 = 归一化 $jvmOut
 $乙 = 归一化 $elfOut

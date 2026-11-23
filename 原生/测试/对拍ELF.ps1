@@ -122,10 +122,12 @@ function 读文本($文件) {
 }
 # 路径行归一化：JVM 绝对路径与 ELF POSIX 绝对路径统一成项目根相对路径。
 function 归一路径行($行) {
-    # JVM: E:\xiadujava\构建\... → 构建/...；ELF: /构建/... → 构建/...
-    $结果 = $行 -replace '[A-Za-z]:\\xiadujava\\?', ''
-    $结果 = $结果 -replace '\\', '/'
-    $结果 = $结果 -replace '(?<=[：:])/', ''
+    # 目标：把"写入成功：<绝对路径>"里冒号后的绝对路径统一成"构建/..."相对形式。
+    # 平台差异：本机 JVM 是 E:\xiadujava\构建\...；CI(Linux) JVM 是
+    # /home/runner/work/chinese-java/chinese-java/构建/...；VM 内 ELF 是 /构建/...。
+    # 统一先把 \ 换 /，再用正则吃掉冒号后到"构建/"为止的任意绝对前缀。
+    $结果 = $行 -replace '\\', '/'
+    $结果 = $结果 -replace '([：:])/?(?:[^：:\s|]*/)*?(构建/)', '$1$2'
     return $结果
 }
 function 归一化($文件) {
