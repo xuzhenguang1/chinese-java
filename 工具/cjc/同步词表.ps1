@@ -204,7 +204,12 @@ foreach ($类名 in $糖['白名单']) {
 $completionNew = ($补全 | ConvertTo-Json -Depth 5) + $nl
 
 # ---- 5. 生成高亮正则文件 ----
-$sortedWords = @($pairs | ForEach-Object { $_.Word } | Sort-Object @{ Expression = { $_.Length }; Descending = $true }, @{ Expression = { $_ }; Descending = $false })
+# CI 修复⑥：Sort-Object 的默认 culture 排序在 Windows PowerShell 5.1 与 pwsh 7
+# 对中文的 collation 不同，导致高亮正则里同长度词顺序跨平台漂移。改用码点(ordinal)排序：
+# 先按长度降序，同长按每个字符的 Unicode 码点拼成的十六进制串升序（culture 无关）。
+$sortedWords = @($pairs | ForEach-Object { $_.Word } | Sort-Object `
+    @{ Expression = { $_.Length }; Descending = $true }, `
+    @{ Expression = { (([char[]]$_ | ForEach-Object { '{0:x8}' -f [int]$_ }) -join '') }; Descending = $false })
 $regex = '(?<!\p{L})(' + ($sortedWords -join '|') + ')(?!\p{L})'
 $jsonRegex = $regex.Replace('\', '\\')
 $tmNew = @"

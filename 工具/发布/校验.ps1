@@ -545,8 +545,11 @@ if (-not (Get-Command mvn -ErrorAction SilentlyContinue)) {
     Write-Error "找不到 mvn，无法运行标准库测试"
     exit 2
 }
-运行 "标准库 mvn test" {
-    & mvn -q -f "$root\标准库\pom.xml" test
+# CI 修复⑦：用 package 而非 test——test 阶段不产出 jar，后续示例依赖
+# 标准库\target\cjc-stdlib-*.jar，先前本机恰好有历史 jar 掩盖了这个缺陷，CI 上 jar 从未生成。
+# package 包含 test 阶段且会打包出 jar，保证下游示例在干净 CI 环境也能编译。
+运行 "标准库 mvn package" {
+    & mvn -q -f "$root\标准库\pom.xml" package
 }
 
 # 4) 语法糖冒烟：脚本模式与 入口
