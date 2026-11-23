@@ -172,6 +172,10 @@ public final class 语义分析器 {
     private int 合成序号;
     private final java.util.Set<String> 类型参数名 = new java.util.HashSet<>();
     private String 文件名 = "程序";
+    /* M19：当前编译单元包名（顶层类名前缀），空串表示默认包。 */
+    private String 当前包名 = "";
+    /* M19：顶层类简单名 → 带包全名的索引（G3 保证简单名唯一）。 */
+    private final Map<String, String> 简单名到全名 = new java.util.LinkedHashMap<>();
     /* M13：内建类注册的显式守护（替代原 !类表.isEmpty()，避免用户类先入表时漏注册）。 */
     private boolean 内建类已注册 = false;
 
@@ -221,6 +225,9 @@ public final class 语义分析器 {
      */
     public 中间代码.程序 分析模块(java.util.List<模块单元> 单元们, String 入口文件名) {
         try {
+            /* ---- M19：预扫描所有单元的顶层类名，先建好 简单名→全名 索引。
+                    否则 pass1 收集某类时转类型引用了尚未收集的其他包类会断链。 ---- */
+            预扫描顶层类名(单元们);
             /* ---- pass1：注册声明 ---- */
             注册内建类();
             for (模块单元 项 : 单元们) {
@@ -261,7 +268,8 @@ public final class 语义分析器 {
                     continue; // 通配导入：不逐类校验
                 }
                 String 末段 = 名.substring(名.lastIndexOf('.') + 1);
-                if (类表.containsKey(末段) || 是内置类型名(末段)
+                if (类表.containsKey(末段) || 简单名到全名.containsKey(末段)
+                        || 是内置类型名(末段)
                         || 包装类名.contains(末段) || 标准库类名.contains(末段)) {
                     continue;
                 }
@@ -328,7 +336,7 @@ public final class 语义分析器 {
         if (名 == null || 名.isEmpty()) {
             return;
         }
-        if (类表.containsKey(名) || 是内置类型名(名) || 包装类名.contains(名)
+        if (类表.containsKey(名) || 简单名到全名.containsKey(名) || 是内置类型名(名) || 包装类名.contains(名)
                 || 标准库类名.contains(名) || 类型参数全集.contains(名)
                 || "对象".equals(名) || "__值".equals(名)) {
             return;
@@ -383,6 +391,7 @@ public final class 语义分析器 {
 
     private void 收集(编译单元 单元) {
         注册内建类();
+        当前包名 = 单元.包名() == null ? "" : 单元.包名();
         收集声明(单元);
         if (单元.类型().isEmpty()) {
             类符号 脚本 = new 类符号(文件名);
@@ -393,9 +402,22 @@ public final class 语义分析器 {
         }
     }
 
+    /** M19：预扫描全部单元的顶层类名建立 简单名→带包全名 索引（G3 保证简单名唯一）。 */
+    private void 预扫描顶层类名(java.util.List<模块单元> 单元们) {
+        for (模块单元 项 : 单元们) {
+            String 包 = 项.单元().包名() == null ? "" : 项.单元().包名();
+            for (类型声明 声明 : 项.单元().类型()) {
+                String 简单 = 声明.名();
+                String 全名 = 包.isEmpty() ? 简单 : 包 + "$" + 简单;
+                简单名到全名.put(简单, 全名);
+            }
+        }
+    }
+
     /** M13 模块 pass1：仅注册类型声明（含字段/方法/构造器符号），不注册内建类、不做脚本兜底。 */
     private void 收集声明(编译单元 单元) {
         for (类型声明 声明 : 单元.类型()) {
+            当前包名 = 单元.包名() == null ? "" : 单元.包名();
             收集类(声明, null);
         }
     }
@@ -435,10 +457,17 @@ public final class 语义分析器 {
         if (!是接口 && !是枚举 && !是记录 && !英文种类.equals("class")) {
             不支持("「" + 声明.种类() + "」类型");
         }
-        String 名 = 外部 == null ? 声明.名() : 外部.名 + "$" + 声明.名();
+        String 简单名 = 声明.名();
+        // M19：顶层类拼包名前缀（默认包不变）；嵌套类沿用 外部$名，不重复拼包。
+        String 名 = 外部 == null
+                ? (当前包名.isEmpty() ? 简单名 : 当前包名 + "$" + 简单名)
+                : 外部.名 + "$" + 简单名;
+        if (外部 == null && !当前包名.isEmpty()) {
+            简单名到全名.put(简单名, 名);
+        }
         类符号 已有 = 类表.get(名);
         if (已有 != null && !已有.隐式) {
-            失败("重复的类名「" + 声明.名() + "」。");
+            失败("重复的类名「" + 简单名 + "」。");
         }
         类符号 类 = new 类符号(名);
         类.是接口 = 是接口;
@@ -3202,11 +3231,9 @@ public final class 语义分析器 {
                     基础 = 类表.get(名).类型;
                 } else {
                     String 扁平 = 查找类名(名);
-                    if (类表.containsKey(扁平)) {
-                        基础 = 类表.get(扁平).类型;
-                    } else {
-                        基础 = 类型.类类型(名);
-                    }
+                    // M19：规范化全名即类型名——即便类尚未收集（pass1 引用后置类），
+                    // 也必须用全名构造，否则形参会停留在简单名导致方法匹配断裂。
+                    基础 = 类表.containsKey(扁平) ? 类表.get(扁平).类型 : 类型.类类型(扁平);
                 }
             }
         }
@@ -3297,7 +3324,7 @@ public final class 语义分析器 {
         return 条件;
     }
 
-    /** 解析简单类名：当前类自身、外层类、公有类表。 */
+    /** 解析简单类名：当前类自身、外层类、M19 简单名索引、公有类表。 */
     private String 查找类名(String 名) {
         if (类表.containsKey(名)) {
             return 名;
@@ -3307,6 +3334,12 @@ public final class 语义分析器 {
             if (类表.containsKey(扁平)) {
                 return 扁平;
             }
+        }
+        // M19：带包顶层类的简单名引用（如 演示.模型 包的「学生」）。
+        // G3 保证模块内简单类名唯一，故索引至多一个命中；命中即返回带包全名。
+        String 全名 = 简单名到全名.get(名);
+        if (全名 != null) {
+            return 全名;
         }
         if ("文本".equals(名) || "字符串".equals(名)) {
             return 名;
