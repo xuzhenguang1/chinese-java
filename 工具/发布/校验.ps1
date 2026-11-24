@@ -692,10 +692,10 @@ if ($含原生) {
         失败项 "原生 M0 词表副本" "原生目录下存在词表副本：$($词表副本.FullName -join '；')"
     }
     $adr文件 = @(Get-ChildItem (Join-Path $root "文档\原生\ADR") -Filter "ADR-*.md" -File -ErrorAction SilentlyContinue)
-    if ($adr文件.Count -eq 21) {
-        Write-Host "原生 M0：ADR 21 份齐备" -ForegroundColor Green
+    if ($adr文件.Count -eq 22) {
+        Write-Host "原生 M0：ADR 22 份齐备" -ForegroundColor Green
     } else {
-        失败项 "原生 M0 ADR" "ADR 数量应为 21，实际 $($adr文件.Count)"
+        失败项 "原生 M0 ADR" "ADR 数量应为 22，实际 $($adr文件.Count)"
     }
 
     # 8.1) 原生 M1：35 课 Token/AST、黄金快照可重复、词法/语法/新手提示反例
@@ -1651,6 +1651,81 @@ if ($含原生) {
         Write-Host "原生 M18：跨文件三方对拍 A==B==参考（含双输入与三条负例）" -ForegroundColor Green
     } else {
         失败项 "原生 M18 跨文件对拍" "对拍失败（退出码 $m18跨码）" $m18跨输出
+    }
+
+    # 8.18) 原生 M19：符号冲突根治（全限定类名进 MIR + G1 后端实证 + G2 旧别名 + G3 端到端仍拦下）。
+    $m19文件们 = @(
+        "文档\原生\ADR\ADR-022-M19符号冲突根治.md",
+        "文档\原生\M19\spec.md",
+        "文档\原生\M19\tasks.md",
+        "文档\原生\M19\checklist.md",
+        "文档\原生\M19\对拍报告.md",
+        "原生\测试\后端同名类测试.java"
+    )
+    $m19缺 = @($m19文件们 | Where-Object { -not (Test-Path (Join-Path $root $_)) })
+    if ($m19缺.Count -eq 0) {
+        Write-Host "原生 M19：ADR-022、M19 文档四件套与后端同名类单测齐备" -ForegroundColor Green
+    } else {
+        失败项 "原生 M19 文件" ("缺少：" + ($m19缺 -join "、"))
+    }
+    # 接线静态检查：两侧前端拼包、两后端 G2 旧别名注入、单测全名 hex 断言。
+    $m19语义文本 = [System.IO.File]::ReadAllText((Join-Path $root "原生\中间表示\src\中文\原生\中间\语义分析器.java"), [System.Text.Encoding]::UTF8)
+    $m19自举文本 = [System.IO.File]::ReadAllText((Join-Path $root "原生\自举\自举前端.java"), [System.Text.Encoding]::UTF8)
+    $m19C文本 = [System.IO.File]::ReadAllText((Join-Path $root "原生\后端C\src\中文\原生\后端C\C生成器.java"), [System.Text.Encoding]::UTF8)
+    $m19LLVM文本 = [System.IO.File]::ReadAllText((Join-Path $root "原生\后端LLVM\src\中文\原生\后端LLVM\LLVM生成器.java"), [System.Text.Encoding]::UTF8)
+    $m19单测文本 = [System.IO.File]::ReadAllText((Join-Path $root "原生\测试\后端同名类测试.java"), [System.Text.Encoding]::UTF8)
+    $m19接线OK = ($m19语义文本 -match '当前包名') -and ($m19语义文本 -match '简单名到全名') -and
+        ($m19自举文本 -match '包名前缀') -and ($m19自举文本 -match '简单名到全名') -and
+        ($m19C文本 -match '旧简单名') -and ($m19C文本 -match 'M19 旧符号别名') -and
+        ($m19LLVM文本 -match '旧简单名') -and ($m19LLVM文本 -match 'M19 旧符号别名') -and
+        ($m19单测文本 -match '同名类符号不同') -and ($m19单测文本 -match '符号含各自包名编码')
+    if ($m19接线OK) {
+        Write-Host "原生 M19：两侧前端拼包、C/LLVM 旧别名、单测全名 hex 断言接线就位" -ForegroundColor Green
+    } else {
+        失败项 "原生 M19 接线" "前端拼包/旧别名/单测断言接线缺失"
+    }
+    # 能力层实证：自包含编译 4 模块 + 单测到临时目录，实跑断言 C/LLVM 双后端符号不同（10/0）。
+    $m19类目录 = 新建临时目录 "M19校验\同名类"
+    $m19源码 = @()
+    foreach ($m19目录名 in @("前端\src", "中间表示\src", "后端C\src", "后端LLVM\src")) {
+        $m19源码 += @(Get-ChildItem (Join-Path $root "原生\$m19目录名") -Recurse -Filter *.java -File)
+    }
+    $m19编译输出 = 捕获输出 {
+        & javac -encoding UTF-8 -d $m19类目录 ($m19源码.FullName + (Join-Path $root "原生\测试\后端同名类测试.java"))
+    }
+    $m19编译码 = $LASTEXITCODE
+    if ($m19编译码 -ne 0) {
+        失败项 "原生 M19 单测编译" "javac 退出码 $m19编译码" $m19编译输出
+    } else {
+        $m19单测输出 = 捕获输出 { & java -cp $m19类目录 "后端同名类测试" }
+        $m19单测码 = $LASTEXITCODE
+        # 用纯 ASCII 标记断言（中文经 PowerShell 捕获会乱码），并确认退出码为 0。
+        if ($m19单测码 -eq 0 -and $m19单测输出 -match 'M19_BACKEND_RESULT_PASS=10_FAIL=0') {
+            Write-Host "原生 M19：后端同名类单测 10/10（C/LLVM 双后端全名 hex 符号不同）" -ForegroundColor Green
+        } else {
+            失败项 "原生 M19 后端单测" "同名类单测失败（退出码 $m19单测码）" $m19单测输出
+        }
+    }
+    # 策略层 G3：端到端同名类仍被中文诊断拦下（参考侧语义反例 01，零回退）。
+    $m19负例输出 = 捕获输出 { & "$root\cjc.ps1" 原生 语义 (Join-Path $root "原生\测试\反例语义\反例01重复类名.java") }
+    $m19负例码 = $LASTEXITCODE
+    if ($m19负例码 -eq 0 -and $m19负例输出 -match '重复的类名') {
+        Write-Host "原生 M19：G3 端到端同名类仍被中文诊断拦下（策略零回退）" -ForegroundColor Green
+    } else {
+        失败项 "原生 M19 G3 诊断" "同名类未被拦下（退出码 $m19负例码）" $m19负例输出
+    }
+    # 快照零回退：冻结基线与新基线并存（文件存在性断言，逐字节实跑由 8.17/不动点覆盖）。
+    $m19快照们 = @(
+        "原生\测试\MIR快照\自举前端.mir.txt",
+        "原生\测试\MIR快照\自举前端.M19.mir.txt",
+        "原生\测试\MIR快照\自举前端.M18.mir.txt",
+        "原生\测试\MIR快照\自举前端.历史.mir.txt"
+    )
+    $m19快照缺 = @($m19快照们 | Where-Object { -not (Test-Path (Join-Path $root $_)) })
+    if ($m19快照缺.Count -eq 0) {
+        Write-Host "原生 M19：MIR 新基线/M19 冻结/M18 冻结/历史基线四份并存（快照零回退）" -ForegroundColor Green
+    } else {
+        失败项 "原生 M19 快照" ("缺少：" + ($m19快照缺 -join "、"))
     }
 
     运行 "原生补丁编译" {

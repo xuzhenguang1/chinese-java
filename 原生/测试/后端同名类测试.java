@@ -31,6 +31,8 @@ public final class 后端同名类测试 {
         校验("LLVM 后端", llvm, "%_cjkobj_", "_cjkcls_");
 
         System.out.println("后端同名类测试：通过 " + 通过 + " / 失败 " + 失败);
+        // 纯 ASCII 结果标记：CI/全量校验经 PowerShell 管道捕获中文会乱码，用此行做稳定断言。
+        System.out.println("M19_BACKEND_RESULT_PASS=" + 通过 + "_FAIL=" + 失败);
         if (失败 > 0) {
             System.exit(1);
         }
