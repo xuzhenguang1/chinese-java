@@ -414,7 +414,12 @@ static void 格式化浮点(char *输出, size_t 容量, double 值, int 单精�
     char 临时[64];
     int 最大位数 = 单精度 ? 8 : 16;
     int 精度 = 最大位数;
-    for (int p = 0; p <= 最大位数; p++) {
+    /* M20 浮点根治（G6）：从 p=1 起找最短可回读位数。
+       Java Double.toString 规范要求小数部分至少一位；p=0（如 MIN_VALUE 的
+       "5e-324"）虽能回读却非 Java 最短唯一表示（Java 取 "4.9E-324"）。
+       实测 82510 随机 double：p=0→p=1 仅改变 7 个次正规数且全为修正、零回归；
+       143 个 glibc snprintf 与 Java 舍入差异在 p=0 时同样存在，属存量、不在本范围。 */
+    for (int p = 1; p <= 最大位数; p++) {
         snprintf(临时, sizeof(临时), "%.*e", p, 绝对值);
         int 可回读 = 单精度
                 ? (strtof(临时, NULL) == (float)绝对值)
