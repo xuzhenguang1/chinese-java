@@ -60,6 +60,18 @@ public final class C生成器 {
     /** M12 影子栈：当前函数体是否已压帧（决定是否 emit pop）。 */
     private boolean 当前函数已压帧 = false;
 
+    /* ===== M20 泛型单态化（G4）基础层 =====
+     * 特化实例 = (原始类名, 实参列表)。仅对「类型封闭」的泛型类特化：
+     * 未实现接口、未作父类、未被向上转型——此类实例不会经 vtable 调用，
+     * 故可生成独立 struct/方法并静态路由，不冲击 M19 符号编码与 vtable/descriptor。
+     * 非封闭泛型类退回擦除路径，符合 ADR-023「成本过高形态保留擦除回退」。 */
+    /** 原始类名 -> 该类的实参实例列表（去重、保序）。 */
+    private final Map<String, List<List<类型>>> 特化实例 = new LinkedHashMap<>();
+    /** 当前正在生成的特化实例的实参（空表示擦除/原始类）。 */
+    private List<类型> 当前特化实参 = List.of();
+    /** 表达式求值时期望的目标类型（用于菱形 new 反推实参），仅在其存续期内有效。 */
+    private 类型 期望类型 = null;
+
     private C生成器(中间代码.程序 程序) {
         this.程序 = 程序;
         this.位置 = 程序.位置();
@@ -68,6 +80,7 @@ public final class C生成器 {
             类表.put(类.名(), 类);
         }
         收集槽();
+        收集特化实例();
     }
 
     public static String 生成(中间代码.程序 程序) {
@@ -84,6 +97,210 @@ public final class C生成器 {
                 }
                 槽表.putIfAbsent(槽键(方法), 槽表.size());
             }
+        }
+    }
+
+    /** M20：扫描程序，收集每个泛型类的实参实例（仅类型封闭类）。 */
+    private void 收集特化实例() {
+        for (中间代码.类定义 类 : 程序.类()) {
+            if (!是封闭泛型类(类.名())) {
+                continue;
+            }
+            for (中间代码.字段定义 字段 : 类.字段()) {
+                收集类型实参(字段.类型());
+            }
+            for (中间代码.方法 方法 : 类.构造器()) {
+                收集方法实参(方法);
+            }
+            for (中间代码.方法 方法 : 类.方法()) {
+                收集方法实参(方法);
+            }
+        }
+        // 使用点：变量声明/读取/字段读/调用接收者的类型实参（含其他类对本类的实例化）
+        for (中间代码.类定义 类 : 程序.类()) {
+            for (中间代码.方法 方法 : 类.构造器()) {
+                if (方法.体() != null) {
+                    收集语句实参(方法.体());
+                }
+            }
+            for (中间代码.方法 方法 : 类.方法()) {
+                if (方法.体() != null) {
+                    收集语句实参(方法.体());
+                }
+            }
+        }
+    }
+
+    /** M20：泛型类是否类型封闭——不被继承、不实现接口、未出现在父类/接口引用中。 */
+    private boolean 是封闭泛型类(String 类名) {
+        中间代码.类定义 类 = 类表.get(类名);
+        if (类 == null || 类.接口() != null && !类.接口().isEmpty()) {
+            return false;
+        }
+        for (中间代码.类定义 其他 : 程序.类()) {
+            if (类名.equals(其他.父类())) {
+                return false;
+            }
+            if (其他.接口() != null && 其他.接口().contains(类名)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void 收集方法实参(中间代码.方法 方法) {
+        if (方法.返回类型() != null) {
+            收集类型实参(方法.返回类型());
+        }
+        for (中间代码.参数 参数 : 方法.参数()) {
+            收集类型实参(参数.类型());
+        }
+        if (方法.体() != null) {
+            收集语句实参(方法.体());
+        }
+    }
+
+    private void 收集类型实参(类型 t) {
+        if (t == null) {
+            return;
+        }
+        if (t.是类() && !t.实参.isEmpty() && 类表.containsKey(t.类名)) {
+            登记实例(t.类名, t.实参);
+        }
+        for (类型 项 : t.实参) {
+            收集类型实参(项);
+        }
+        if (t.是数组()) {
+            收集类型实参(t.元素);
+        }
+    }
+
+    private void 登记实例(String 类名, List<类型> 实参) {
+        List<List<类型>> 表 = 特化实例.computeIfAbsent(类名, k -> new ArrayList<>());
+        for (List<类型> 已有 : 表) {
+            if (同型列表(已有, 实参)) {
+                return;
+            }
+        }
+        表.add(List.copyOf(实参));
+    }
+
+    private static boolean 同型列表(List<类型> 甲, List<类型> 乙) {
+        if (甲.size() != 乙.size()) {
+            return false;
+        }
+        for (int i = 0; i < 甲.size(); i++) {
+            if (!甲.get(i).同型(乙.get(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void 收集语句实参(中间代码.语句 语句) {
+        if (语句 instanceof 中间代码.块 块) {
+            for (中间代码.语句 子 : 块.语句()) {
+                收集语句实参(子);
+            }
+        } else if (语句 instanceof 中间代码.局部变量语句 局部) {
+            收集类型实参(局部.类型());
+            if (局部.初值() != null) {
+                收集表达式实参(局部.初值());
+            }
+        } else if (语句 instanceof 中间代码.表达式语句 表) {
+            收集表达式实参(表.值());
+        } else if (语句 instanceof 中间代码.返回语句 返回) {
+            if (返回.值() != null) {
+                收集表达式实参(返回.值());
+            }
+        } else if (语句 instanceof 中间代码.若语句 若) {
+            收集表达式实参(若.条件());
+            收集语句实参(若.成立());
+            if (若.否则() != null) {
+                收集语句实参(若.否则());
+            }
+        } else if (语句 instanceof 中间代码.对于语句 对) {
+            if (对.初始化() != null) {
+                收集语句实参(对.初始化());
+            }
+            if (对.条件() != null) {
+                收集表达式实参(对.条件());
+            }
+            for (中间代码.表达式 更 : 对.更新()) {
+                收集表达式实参(更);
+            }
+            收集语句实参(对.体());
+        } else if (语句 instanceof 中间代码.当语句 当) {
+            收集表达式实参(当.条件());
+            收集语句实参(当.体());
+        } else if (语句 instanceof 中间代码.做当语句 做当) {
+            收集语句实参(做当.体());
+            收集表达式实参(做当.条件());
+        } else if (语句 instanceof 中间代码.尝试语句 尝试) {
+            收集语句实参(尝试.体());
+            for (中间代码.捕获子句 捕 : 尝试.捕获()) {
+                收集语句实参(捕.体());
+            }
+            if (尝试.兜底() != null) {
+                收集语句实参(尝试.兜底());
+            }
+        } else if (语句 instanceof 中间代码.抛出语句 抛) {
+            收集表达式实参(抛.值());
+        }
+    }
+
+    private void 收集表达式实参(中间代码.表达式 表达式) {
+        if (表达式 == null) {
+            return;
+        }
+        收集类型实参(取类型(表达式));
+        if (表达式 instanceof 中间代码.字段读 读) {
+            收集表达式实参(读.接收者());
+        } else if (表达式 instanceof 中间代码.数组读 读) {
+            收集表达式实参(读.数组());
+            收集表达式实参(读.下标());
+        } else if (表达式 instanceof 中间代码.数组长度 长) {
+            收集表达式实参(长.数组());
+        } else if (表达式 instanceof 中间代码.二元 二) {
+            收集表达式实参(二.左());
+            收集表达式实参(二.右());
+        } else if (表达式 instanceof 中间代码.一元 一) {
+            收集表达式实参(一.操作数());
+        } else if (表达式 instanceof 中间代码.三目 三) {
+            收集表达式实参(三.条件());
+            收集表达式实参(三.真());
+            收集表达式实参(三.假());
+        } else if (表达式 instanceof 中间代码.强制转换 转) {
+            收集表达式实参(转.操作数());
+        } else if (表达式 instanceof 中间代码.赋值 赋) {
+            收集表达式实参(赋.左());
+            收集表达式实参(赋.右());
+        } else if (表达式 instanceof 中间代码.调用 调) {
+            if (调.接收者() != null) {
+                收集表达式实参(调.接收者());
+            }
+            for (中间代码.表达式 实 : 调.实参()) {
+                收集表达式实参(实);
+            }
+        } else if (表达式 instanceof 中间代码.新建对象 新) {
+            for (中间代码.表达式 实 : 新.实参()) {
+                收集表达式实参(实);
+            }
+        } else if (表达式 instanceof 中间代码.新建数组 新) {
+            收集类型实参(新.元素类型());
+            if (新.长度() != null) {
+                收集表达式实参(新.长度());
+            }
+            for (中间代码.表达式 实 : 新.初值()) {
+                收集表达式实参(实);
+            }
+        } else if (表达式 instanceof 中间代码.实例判断 判) {
+            收集表达式实参(判.值());
+        } else if (表达式 instanceof 中间代码.顺序表达式 顺) {
+            for (中间代码.语句 前 : 顺.前奏()) {
+                收集语句实参(前);
+            }
+            收集表达式实参(顺.结果());
         }
     }
 
@@ -133,6 +350,13 @@ public final class C生成器 {
             输出.append("typedef struct ").append(结构体名(类.名()))
                     .append(' ').append(结构体名(类.名())).append(";\n");
         }
+        // M20：为类型封闭泛型类的每个实参实例声明特化 struct。
+        for (Map.Entry<String, List<List<类型>>> 项 : 特化实例.entrySet()) {
+            for (List<类型> 实参 : 项.getValue()) {
+                String 名 = 特化结构体名(项.getKey(), 实参);
+                输出.append("typedef struct ").append(名).append(' ').append(名).append(";\n");
+            }
+        }
         // M19 G2：为带包类保留旧简单名符号别名（过渡期到 M22 收官清理）。
         // 无包类（35 课）不含 $，不生成别名，快照零回退。
         boolean 有别名 = false;
@@ -162,33 +386,55 @@ public final class C生成器 {
 
     private void 声明函数() {
         for (中间代码.类定义 类 : 程序.类()) {
-            for (中间代码.方法 方法 : 类.构造器()) {
-                输出.append("static void ").append(构造器C名(类.名(), 方法))
-                        .append('(').append(参数列表(方法, true)).append(");\n");
-            }
-            for (中间代码.方法 方法 : 类.方法()) {
-                if (方法.体() == null) {
-                    continue;
-                }
-                输出.append("static ").append(C类型(方法.返回类型())).append(' ')
-                        .append(方法C名(类.名(), 方法)).append('(')
-                        .append(参数列表(方法, !方法.静态())).append(");\n");
-            }
-            if (类.构造器().isEmpty()) {
-                输出.append("static cjk_object* ").append(新建C名(类.名(), null))
-                        .append("(void);\n");
-            } else {
-                for (中间代码.方法 方法 : 类.构造器()) {
-                    输出.append("static cjk_object* ").append(新建C名(类.名(), 方法))
-                            .append('(').append(参数列表(方法, false)).append(");\n");
+            当前类 = 类;
+            当前特化实参 = List.of();
+            声明函数组(类);
+            List<List<类型>> 实例表 = 特化实例.get(类.名());
+            if (实例表 != null) {
+                for (List<类型> 实参 : 实例表) {
+                    当前特化实参 = 实参;
+                    声明函数组(类);
                 }
             }
+            当前特化实参 = List.of();
             if (类.枚举()) {
                 输出.append("static cjk_object* ").append(按名C名(类.名()))
                         .append("(cjk_string* 名, int32_t 行);\n");
             }
         }
+        当前类 = null;
         输出.append('\n');
+    }
+
+    /** 声明某个类在当前特化上下文下的一组函数原型。 */
+    private void 声明函数组(中间代码.类定义 类) {
+        boolean 特化 = !当前特化实参.isEmpty();
+        for (中间代码.方法 方法 : 类.构造器()) {
+            String 名 = 特化 ? 特化方法C名(类.名(), 方法, 当前特化实参) : 构造器C名(类.名(), 方法);
+            输出.append("static void ").append(名)
+                    .append('(').append(参数列表(方法, true)).append(");\n");
+        }
+        for (中间代码.方法 方法 : 类.方法()) {
+            if (方法.体() == null) {
+                continue;
+            }
+            String 名 = 特化 ? 特化方法C名(类.名(), 方法, 当前特化实参) : 方法C名(类.名(), 方法);
+            输出.append("static ").append(当前C类型(方法.返回类型())).append(' ')
+                    .append(名).append('(')
+                    .append(参数列表(方法, !方法.静态())).append(");\n");
+        }
+        if (类.构造器().isEmpty()) {
+            String 名 = 特化 ? "_cjknew_" + 编码(类.名()) + 特化后缀(当前特化实参) + "_void"
+                    : 新建C名(类.名(), null);
+            输出.append("static cjk_object* ").append(名).append("(void);\n");
+        } else {
+            for (中间代码.方法 方法 : 类.构造器()) {
+                String 名 = 特化 ? "_cjknew_" + 编码(类.名()) + 特化后缀(当前特化实参) + "_"
+                        + 参数签名(参数类型(方法)) : 新建C名(类.名(), 方法);
+                输出.append("static cjk_object* ").append(名)
+                        .append('(').append(参数列表(方法, false)).append(");\n");
+            }
+        }
     }
 
     /**
@@ -314,8 +560,15 @@ public final class C生成器 {
 
     /** 表达式适配到目标形参/变量类型。 */
     private String 适配(类型 目标, 中间代码.表达式 实参) {
+        // M20：在当前特化上下文中把目标/源里的 __值 替换为实参类型，跳过 box/unbox。
+        if (!当前特化实参.isEmpty()) {
+            目标 = 替换泛型(目标, 当前特化实参);
+        }
         String c = 表达式(实参);
         类型 源 = 取类型(实参);
+        if (!当前特化实参.isEmpty()) {
+            源 = 替换泛型(源, 当前特化实参);
+        }
         if (目标 == null || 源 == null) {
             return c;
         }
@@ -468,32 +721,46 @@ public final class C生成器 {
 
     private void 定义结构体() {
         for (中间代码.类定义 类 : 程序.类()) {
-            String 名 = 结构体名(类.名());
-            输出.append("struct ").append(名).append(" {\n");
-            输出.append("    cjk_class* cls;\n");
-            List<中间代码.类定义> 祖先 = new ArrayList<>();
-            中间代码.类定义 当前 = 父类定义(类);
-            while (当前 != null) {
-                祖先.add(0, 当前);
-                当前 = 父类定义(当前);
+            生成结构体(结构体名(类.名()), 类, List.of());
+        }
+        // M20：为类型封闭泛型类生成特化 struct（__值 字段替换为实参类型）。
+        for (Map.Entry<String, List<List<类型>>> 项 : 特化实例.entrySet()) {
+            中间代码.类定义 类 = 类表.get(项.getKey());
+            if (类 == null) {
+                continue;
             }
-            Set<String> 已有 = new LinkedHashSet<>();
-            for (中间代码.类定义 项 : 祖先) {
-                for (中间代码.字段定义 字段 : 项.字段()) {
-                    if (已有.add(字段.名())) {
-                        输出.append("    ").append(C类型(字段.类型())).append(' ')
-                                .append(字段名(字段.名())).append(";\n");
-                    }
-                }
+            for (List<类型> 实参 : 项.getValue()) {
+                生成结构体(特化结构体名(项.getKey(), 实参), 类, 实参);
             }
-            for (中间代码.字段定义 字段 : 类.字段()) {
+        }
+    }
+
+    /** 生成一份结构体定义；实参非空时把 __值 字段替换为对应实参类型。 */
+    private void 生成结构体(String 名, 中间代码.类定义 类, List<类型> 实参) {
+        输出.append("struct ").append(名).append(" {\n");
+        输出.append("    cjk_class* cls;\n");
+        List<中间代码.类定义> 祖先 = new ArrayList<>();
+        中间代码.类定义 当前 = 父类定义(类);
+        while (当前 != null) {
+            祖先.add(0, 当前);
+            当前 = 父类定义(当前);
+        }
+        Set<String> 已有 = new LinkedHashSet<>();
+        for (中间代码.类定义 项 : 祖先) {
+            for (中间代码.字段定义 字段 : 项.字段()) {
                 if (已有.add(字段.名())) {
-                    输出.append("    ").append(C类型(字段.类型())).append(' ')
+                    输出.append("    ").append(C类型M(字段.类型(), 实参)).append(' ')
                             .append(字段名(字段.名())).append(";\n");
                 }
             }
-            输出.append("};\n\n");
         }
+        for (中间代码.字段定义 字段 : 类.字段()) {
+            if (已有.add(字段.名())) {
+                输出.append("    ").append(C类型M(字段.类型(), 实参)).append(' ')
+                        .append(字段名(字段.名())).append(";\n");
+            }
+        }
+        输出.append("};\n\n");
     }
 
     private void 生成静态全局() {
@@ -629,21 +896,18 @@ public final class C生成器 {
     private void 定义函数() {
         for (中间代码.类定义 类 : 程序.类()) {
             当前类 = 类;
-            for (中间代码.方法 方法 : 类.构造器()) {
-                生成构造器(类, 方法);
-            }
-            if (类.构造器().isEmpty()) {
-                生成新建(类, null);
-            } else {
-                for (中间代码.方法 方法 : 类.构造器()) {
-                    生成新建(类, 方法);
+            List<List<类型>> 实例表 = 特化实例.get(类.名());
+            // 原始（擦除）版本：保留供 vtable/多态与未特化调用点使用。
+            当前特化实参 = List.of();
+            生成函数组(类);
+            // M20：每个特化实例再生成一套（特化 struct/方法签名，跳过 box/unbox）。
+            if (实例表 != null) {
+                for (List<类型> 实参 : 实例表) {
+                    当前特化实参 = 实参;
+                    生成函数组(类);
                 }
             }
-            for (中间代码.方法 方法 : 类.方法()) {
-                if (方法.体() != null) {
-                    生成方法(类, 方法);
-                }
-            }
+            当前特化实参 = List.of();
             if (类.枚举()) {
                 生成按名(类);
             }
@@ -651,9 +915,30 @@ public final class C生成器 {
         }
     }
 
+    /** 生成某个类在「当前特化实参」下的一组构造器/新建/方法。 */
+    private void 生成函数组(中间代码.类定义 类) {
+        for (中间代码.方法 方法 : 类.构造器()) {
+            生成构造器(类, 方法);
+        }
+        if (类.构造器().isEmpty()) {
+            生成新建(类, null);
+        } else {
+            for (中间代码.方法 方法 : 类.构造器()) {
+                生成新建(类, 方法);
+            }
+        }
+        for (中间代码.方法 方法 : 类.方法()) {
+            if (方法.体() != null) {
+                生成方法(类, 方法);
+            }
+        }
+    }
+
     private void 生成构造器(中间代码.类定义 类, 中间代码.方法 方法) {
+        boolean 特化 = !当前特化实参.isEmpty();
+        String 名 = 特化 ? 特化方法C名(类.名(), 方法, 当前特化实参) : 构造器C名(类.名(), 方法);
         StringBuilder 声明 = new StringBuilder("static void ")
-                .append(构造器C名(类.名(), 方法)).append('(').append(参数列表(方法, true)).append(") {\n");
+                .append(名).append('(').append(参数列表(方法, true)).append(") {\n");
         输出.append(声明);
         缩进++;
         当前类 = 类;
@@ -663,7 +948,11 @@ public final class C生成器 {
     }
 
     private void 生成新建(中间代码.类定义 类, 中间代码.方法 构造器) {
-        输出.append("static cjk_object* ").append(新建C名(类.名(), 构造器)).append('(');
+        boolean 特化 = !当前特化实参.isEmpty();
+        String 名 = 特化 ? "_cjknew_" + 编码(类.名()) + 特化后缀(当前特化实参) + "_"
+                + (构造器 == null ? "void" : 参数签名(参数类型(构造器)))
+                : 新建C名(类.名(), 构造器);
+        输出.append("static cjk_object* ").append(名).append('(');
         if (构造器 == null || 构造器.参数().isEmpty()) {
             输出.append("void");
         } else {
@@ -671,10 +960,12 @@ public final class C生成器 {
         }
         输出.append(") {\n");
         缩进++;
+        String 结构 = 特化 ? 特化结构体名(类.名(), 当前特化实参) : 结构体名(类.名());
         输出行("cjk_object* 对象 = cjk_new_object(" + 描述符(类.名())
-                + ", sizeof(" + 结构体名(类.名()) + "));");
+                + ", sizeof(" + 结构 + "));");
         if (构造器 != null) {
-            StringBuilder 调用 = new StringBuilder(构造器C名(类.名(), 构造器)).append("(对象");
+            String 构造名 = 特化 ? 特化方法C名(类.名(), 构造器, 当前特化实参) : 构造器C名(类.名(), 构造器);
+            StringBuilder 调用 = new StringBuilder(构造名).append("(对象");
             for (中间代码.参数 参数 : 构造器.参数()) {
                 调用.append(", ").append(变量名(参数.名()));
             }
@@ -686,13 +977,15 @@ public final class C生成器 {
     }
 
     private void 生成方法(中间代码.类定义 类, 中间代码.方法 方法) {
-        输出.append("/* ").append(类.名()).append('.').append(方法.名()).append(" */\n");
-        输出.append("static ").append(C类型(方法.返回类型())).append(' ')
-                .append(方法C名(类.名(), 方法)).append('(')
+        boolean 特化 = !当前特化实参.isEmpty();
+        输出.append("/* ").append(类.名()).append('.').append(方法.名())
+                .append(特化 ? 特化后缀(当前特化实参) : "").append(" */\n");
+        输出.append("static ").append(当前C类型(方法.返回类型())).append(' ')
+                .append(特化 ? 特化方法C名(类.名(), 方法, 当前特化实参) : 方法C名(类.名(), 方法)).append('(')
                 .append(参数列表(方法, !方法.静态())).append(") {\n");
         缩进++;
         当前类 = 类;
-        当前返回类型 = 方法.返回类型();
+        当前返回类型 = 替换泛型(方法.返回类型(), 当前特化实参);
         /* M12 影子栈：方法入口压帧；返回语句弹帧（见 语句() 的返回分支）。 */
         输出行("cjk_frame_push(" + 帧名(类.名(), 方法.名()) + ", 0);");
         当前函数已压帧 = true;
@@ -775,8 +1068,11 @@ public final class C生成器 {
             缩进--;
             原样行("}");
         } else if (语句 instanceof 中间代码.局部变量语句 局部) {
+            类型 保存期望 = 期望类型;
+            期望类型 = 局部.类型();
             输出行(C类型(局部.类型()) + " " + 变量名(局部.名()) + " = "
                     + (局部.初值() == null ? 零值(局部.类型()) : 适配(局部.类型(), 局部.初值())) + ";");
+            期望类型 = 保存期望;
         } else if (语句 instanceof 中间代码.表达式语句 表达式语句) {
             输出行(表达式(表达式语句.值()) + ";");
         } else if (语句 instanceof 中间代码.返回语句 返回) {
@@ -996,7 +1292,11 @@ public final class C生成器 {
         if (声明类 == null) {
             throw new 生成异常("M4 暂不支持：找不到字段「" + 读.名() + "」的声明类");
         }
-        String 接收 = "((" + 结构体名(声明类.名()) + "*)cjk_null_check((cjk_object*)("
+        // M20：优先用当前特化上下文（泛型类方法体内）；否则用接收者类型的实参。
+        List<类型> 实参 = !当前特化实参.isEmpty() ? 当前特化实参
+                : (接收类型.是类() ? 接收类型.实参 : List.of());
+        String 结构 = 实参.isEmpty() ? 结构体名(声明类.名()) : 特化结构体名(声明类.名(), 实参);
+        String 接收 = "((" + 结构 + "*)cjk_null_check((cjk_object*)("
                 + 表达式(读.接收者()) + "), " + 当前行 + "))";
         return 接收 + "->" + 字段名(读.名());
     }
@@ -1107,6 +1407,20 @@ public final class C生成器 {
                 中间代码.方法 目标 = 查找方法(起始, 调用.名(), 实参类型(调用.实参()), false);
                 if (目标 == null) {
                     throw new 生成异常("M4 暂不支持：找不到实例方法「" + 调用.名() + "」");
+                }
+                // M20：接收者静态类型带实参且已特化 -> 直接调特化函数（跳过 vtable 与 box/unbox）。
+                List<类型> 特化实 = 可用特化实参(接收类型);
+                if (特化实 != null) {
+                    List<类型> 保存 = 当前特化实参;
+                    当前特化实参 = 特化实;
+                    String 接收 = "((cjk_object*)cjk_null_check((cjk_object*)(" + 表达式(调用.接收者())
+                            + "), " + 当前行 + "))";
+                    StringBuilder sb = new StringBuilder(特化方法C名(起始, 目标, 特化实)).append('(').append(接收);
+                    for (int i = 0; i < 调用.实参().size(); i++) {
+                        sb.append(", ").append(适配(目标.参数().get(i).类型(), 调用.实参().get(i)));
+                    }
+                    当前特化实参 = 保存;
+                    return sb.append(')').toString();
                 }
                 String 接收 = "((cjk_object*)cjk_null_check((cjk_object*)(" + 表达式(调用.接收者())
                         + "), " + 当前行 + "))";
@@ -1904,7 +2218,46 @@ public final class C生成器 {
                     ? "NULL" : 表达式(新建对象.实参().get(0));
             return "((cjk_object*)cjk_new_exception(&CJK_CLS_" + 新建对象.类名() + ", " + 消息 + "))";
         }
+        // M20：菱形 new 的实参从期望类型反推；命中特化实例则调特化 new。
+        List<类型> 实 = null;
+        if (期望类型 != null && 期望类型.是类() && 同型类名(期望类型.类名, 新建对象.类名())) {
+            实 = 可用特化实参(期望类型);
+        }
+        if (实 == null) {
+            实 = 可用特化实参(新建对象.类型());
+        }
+        if (实 != null) {
+            List<类型> 保存 = 当前特化实参;
+            当前特化实参 = 实;
+            String 结果 = 新建调用(新建对象.类名(), 新建对象.实参(), 实);
+            当前特化实参 = 保存;
+            return 结果;
+        }
         return 新建调用(新建对象.类名(), 新建对象.实参());
+    }
+
+    private static boolean 同型类名(String 甲, String 乙) {
+        return 甲 != null && 乙 != null && (甲.equals(乙) || 甲.endsWith("$" + 乙) || 乙.endsWith("$" + 甲));
+    }
+
+    /** 特化版新建调用：函数名带实参后缀，形参按实参适配。 */
+    private String 新建调用(String 类名, List<中间代码.表达式> 实参, List<类型> 特化实) {
+        List<类型> 实参类型 = 实参类型(实参);
+        中间代码.方法 构造器 = 选构造器(类名, 实参类型);
+        String 名 = "_cjknew_" + 编码(类名) + 特化后缀(特化实) + "_"
+                + (构造器 == null ? "void" : 参数签名(参数类型(构造器)));
+        StringBuilder sb = new StringBuilder(名).append('(');
+        for (int i = 0; i < 实参.size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+            if (构造器 != null && i < 构造器.参数().size()) {
+                sb.append(适配(构造器.参数().get(i).类型(), 实参.get(i)));
+            } else {
+                sb.append(表达式(实参.get(i)));
+            }
+        }
+        return sb.append(')').toString();
     }
 
     private String 新建调用(String 类名, List<中间代码.表达式> 实参) {
@@ -1952,7 +2305,7 @@ public final class C生成器 {
     }
 
     private String 转文本(中间代码.表达式 表达式, String 已生成) {
-        类型 值类型 = 取类型(表达式);
+        类型 值类型 = 特化表达式类型(表达式);
         if (是泛型值(值类型) || 是包装类(值类型)) {
             return "cjk_value_to_string(cjk_unbox_value(" + 已生成 + ", " + 当前行 + "))";
         }
@@ -2330,13 +2683,18 @@ public final class C生成器 {
         return "_f_" + 编码(名);
     }
 
+    /** M20：在当前特化上下文下求 C 类型（未特化时等同 C类型）。 */
+    private String 当前C类型(类型 t) {
+        return C类型M(t, 当前特化实参);
+    }
+
     private String 参数列表(中间代码.方法 方法, boolean 实例) {
         List<String> 项 = new ArrayList<>();
         if (实例) {
             项.add("cjk_object* self");
         }
         for (中间代码.参数 参数 : 方法.参数()) {
-            项.add(C类型(参数.类型()) + " " + 变量名(参数.名()));
+            项.add(当前C类型(参数.类型()) + " " + 变量名(参数.名()));
         }
         return 项.isEmpty() ? "void" : String.join(", ", 项);
     }
@@ -2381,6 +2739,101 @@ public final class C生成器 {
             i += Character.charCount(码点);
         }
         return sb.toString();
+    }
+
+    /* ===== M20 泛型单态化：类型替换与特化命名 ===== */
+
+    /** 推断表达式在特化后的真实类型：调用表达式的返回类型按其接收者实参替换。 */
+    private 类型 特化表达式类型(中间代码.表达式 表达式) {
+        类型 t = 取类型(表达式);
+        if (!当前特化实参.isEmpty()) {
+            return 替换泛型(t, 当前特化实参);
+        }
+        if (表达式 instanceof 中间代码.调用 调 && 调.接收者() != null) {
+            List<类型> 实 = 可用特化实参(取类型(调.接收者()));
+            if (实 != null) {
+                return 替换泛型(t, 实);
+            }
+        }
+        return t;
+    }
+
+    /** 接收者类型若带实参且该实例已登记特化，返回实参；否则 null（走擦除）。 */
+    private List<类型> 可用特化实参(类型 接收类型) {
+        if (接收类型 == null || !接收类型.是类() || 接收类型.实参.isEmpty()) {
+            return null;
+        }
+        List<List<类型>> 表 = 特化实例.get(接收类型.类名);
+        if (表 == null) {
+            return null;
+        }
+        for (List<类型> 实参 : 表) {
+            if (同型列表(实参, 接收类型.实参)) {
+                return 实参;
+            }
+        }
+        return null;
+    }
+
+    /** 实参列表的稳定后缀（用于 struct/函数名），如 [文本,整数] -> sStr_i32。 */
+    private static String 特化后缀(List<类型> 实参) {
+        if (实参 == null || 实参.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder("_m");
+        for (类型 t : 实参) {
+            sb.append('_').append(类型码(t));
+        }
+        return sb.toString();
+    }
+
+    /** 把类型中的类型变量 __值 按实参顺序替换（n 元泛型按出现顺序）。 */
+    private static 类型 替换泛型(类型 t, List<类型> 实参, int[] 游标) {
+        if (t == null || t.实参 == null) {
+            return t;
+        }
+        if (t.是类() && 泛型值名.equals(t.类名) && 游标[0] < 实参.size()) {
+            return 实参.get(游标[0]++);
+        }
+        if (t.是数组()) {
+            return 类型.数组(替换泛型(t.元素, 实参, 游标));
+        }
+        if (t.是类() && !t.实参.isEmpty()) {
+            List<类型> 新实参 = new ArrayList<>();
+            for (类型 项 : t.实参) {
+                新实参.add(替换泛型(项, 实参, 游标));
+            }
+            return 类型.类类型(t.类名, 新实参);
+        }
+        return t;
+    }
+
+    private static 类型 替换泛型(类型 t, List<类型> 实参) {
+        if (实参 == null || 实参.isEmpty()) {
+            return t;
+        }
+        return 替换泛型(t, 实参, new int[]{0});
+    }
+
+    /** 替换 __值 后的 C 类型；不命中特化时等同 C类型。 */
+    private static String C类型M(类型 t, List<类型> 实参) {
+        return C类型(替换泛型(t, 实参));
+    }
+
+    private static String 特化结构体名(String 类名, List<类型> 实参) {
+        return "_cjkobj_" + 编码(类名) + 特化后缀(实参);
+    }
+
+    private String 特化方法C名(String 类名, 中间代码.方法 方法, List<类型> 实参) {
+        StringBuilder sb = new StringBuilder("_cjkf_").append(编码(类名)).append('_');
+        if (方法.名().equals("<入口>")) {
+            return sb.append("entry").toString();
+        }
+        sb.append(编码(方法.名()));
+        for (中间代码.参数 参数 : 方法.参数()) {
+            sb.append('_').append(类型码(替换泛型(参数.类型(), 实参)));
+        }
+        return sb.append(特化后缀(实参)).toString();
     }
 
     private static String C类型(类型 类型) {
