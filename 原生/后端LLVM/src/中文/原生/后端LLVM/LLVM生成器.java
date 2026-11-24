@@ -84,6 +84,14 @@ public final class LLVM生成器 {
     private int 临时序号;
     private int 标签序号;
 
+    /* ===== M20 泛型单态化（G4）基础层：与 C 后端对称 ===== */
+    /** 原始类名 -> 实参实例列表（仅类型封闭类）。 */
+    private final Map<String, List<List<类型>>> 特化实例 = new LinkedHashMap<>();
+    /** 当前正在生成的特化实例实参（空表示擦除/原始类）。 */
+    private List<类型> 当前特化实参 = List.of();
+    /** 表达式求值时期望的目标类型（菱形 new 反推实参）。 */
+    private 类型 期望类型 = null;
+
     private LLVM生成器(中间代码.程序 程序) {
         this(程序, LLVM平台配置.windows());
     }
@@ -103,6 +111,7 @@ public final class LLVM生成器 {
             类表.put(类.名(), 类);
         }
         收集槽();
+        收集特化实例();
         收集字段();
     }
 
@@ -125,6 +134,309 @@ public final class LLVM生成器 {
                 }
                 槽表.putIfAbsent(槽键(方法), 槽表.size());
             }
+        }
+    }
+
+    /* ===== M20 泛型单态化：实例收集（与 C 后端对称） ===== */
+    private void 收集特化实例() {
+        for (中间代码.类定义 类 : 程序.类()) {
+            if (!是封闭泛型类(类.名())) {
+                continue;
+            }
+            for (中间代码.字段定义 字段 : 类.字段()) {
+                收集类型实参(字段.类型());
+            }
+            for (中间代码.方法 方法 : 类.构造器()) {
+                收集方法实参(方法);
+            }
+            for (中间代码.方法 方法 : 类.方法()) {
+                收集方法实参(方法);
+            }
+        }
+        for (中间代码.类定义 类 : 程序.类()) {
+            for (中间代码.方法 方法 : 类.构造器()) {
+                if (方法.体() != null) {
+                    收集语句实参(方法.体());
+                }
+            }
+            for (中间代码.方法 方法 : 类.方法()) {
+                if (方法.体() != null) {
+                    收集语句实参(方法.体());
+                }
+            }
+        }
+    }
+
+    private boolean 是封闭泛型类(String 类名) {
+        中间代码.类定义 类 = 类表.get(类名);
+        if (类 == null || 类.接口() != null && !类.接口().isEmpty()) {
+            return false;
+        }
+        for (中间代码.类定义 其他 : 程序.类()) {
+            if (类名.equals(其他.父类())) {
+                return false;
+            }
+            if (其他.接口() != null && 其他.接口().contains(类名)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void 收集方法实参(中间代码.方法 方法) {
+        if (方法.返回类型() != null) {
+            收集类型实参(方法.返回类型());
+        }
+        for (中间代码.参数 参数 : 方法.参数()) {
+            收集类型实参(参数.类型());
+        }
+        if (方法.体() != null) {
+            收集语句实参(方法.体());
+        }
+    }
+
+    private void 收集类型实参(类型 t) {
+        if (t == null) {
+            return;
+        }
+        if (t.是类() && !t.实参.isEmpty() && 类表.containsKey(t.类名)) {
+            登记实例(t.类名, t.实参);
+        }
+        for (类型 项 : t.实参) {
+            收集类型实参(项);
+        }
+        if (t.是数组()) {
+            收集类型实参(t.元素);
+        }
+    }
+
+    private void 登记实例(String 类名, List<类型> 实参) {
+        List<List<类型>> 表 = 特化实例.computeIfAbsent(类名, k -> new ArrayList<>());
+        for (List<类型> 已有 : 表) {
+            if (同型列表(已有, 实参)) {
+                return;
+            }
+        }
+        表.add(List.copyOf(实参));
+    }
+
+    private static boolean 同型列表(List<类型> 甲, List<类型> 乙) {
+        if (甲.size() != 乙.size()) {
+            return false;
+        }
+        for (int i = 0; i < 甲.size(); i++) {
+            if (!甲.get(i).同型(乙.get(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** 实参列表稳定后缀（与 C 后端同格式）。 */
+    private static String 特化后缀(List<类型> 实参) {
+        if (实参 == null || 实参.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder("_m");
+        for (类型 t : 实参) {
+            sb.append('_').append(类型码(t));
+        }
+        return sb.toString();
+    }
+
+    /** 把类型里的 __值 按实参顺序替换。 */
+    private static 类型 替换泛型(类型 t, List<类型> 实参, int[] 游标) {
+        if (t == null || t.实参 == null) {
+            return t;
+        }
+        if (t.是类() && 泛型值名.equals(t.类名) && 游标[0] < 实参.size()) {
+            return 实参.get(游标[0]++);
+        }
+        if (t.是数组()) {
+            return 类型.数组(替换泛型(t.元素, 实参, 游标));
+        }
+        if (t.是类() && !t.实参.isEmpty()) {
+            List<类型> 新实参 = new ArrayList<>();
+            for (类型 项 : t.实参) {
+                新实参.add(替换泛型(项, 实参, 游标));
+            }
+            return 类型.类类型(t.类名, 新实参);
+        }
+        return t;
+    }
+
+    private static 类型 替换泛型(类型 t, List<类型> 实参) {
+        if (实参 == null || 实参.isEmpty()) {
+            return t;
+        }
+        return 替换泛型(t, 实参, new int[]{0});
+    }
+
+    private static boolean 同型类名(String 甲, String 乙) {
+        return 甲 != null && 乙 != null && (甲.equals(乙) || 甲.endsWith("$" + 乙) || 乙.endsWith("$" + 甲));
+    }
+
+    /** 接收者类型若带实参且该实例已登记特化，返回实参；否则 null（走擦除）。 */
+    private List<类型> 可用特化实参(类型 接收类型) {
+        if (接收类型 == null || !接收类型.是类() || 接收类型.实参.isEmpty()) {
+            return null;
+        }
+        List<List<类型>> 表 = 特化实例.get(接收类型.类名);
+        if (表 == null) {
+            return null;
+        }
+        for (List<类型> 实参 : 表) {
+            if (同型列表(实参, 接收类型.实参)) {
+                return 实参;
+            }
+        }
+        return null;
+    }
+
+    /** 推断表达式在特化后的真实类型（调用返回值按接收者实参替换）。 */
+    private 类型 特化表达式类型(中间代码.表达式 表达式) {
+        类型 t = 取类型(表达式);
+        if (!当前特化实参.isEmpty()) {
+            return 替换泛型(t, 当前特化实参);
+        }
+        if (表达式 instanceof 中间代码.调用 调 && 调.接收者() != null) {
+            List<类型> 实 = 可用特化实参(取类型(调.接收者()));
+            if (实 != null) {
+                return 替换泛型(t, 实);
+            }
+        }
+        return t;
+    }
+
+    private 类型 当前类型(类型 t) {
+        return 替换泛型(t, 当前特化实参);
+    }
+
+    /** 当前特化上下文下的 LLVM 类型；未特化时等同 LLVM类型。 */
+    private String 当前LLVM类型(类型 t) {
+        return LLVM类型(当前类型(t));
+    }
+
+    private static String 特化结构类型(String 类名, List<类型> 实参) {
+        return "%_cjkobj_" + 编码(类名) + 特化后缀(实参);
+    }
+
+    private static String 特化方法名(String 类名, 中间代码.方法 方法, List<类型> 实参) {
+        return 方法名(类名, 方法) + 特化后缀(实参);
+    }
+
+    private static String 特化构造器名(String 类名, 中间代码.方法 方法, List<类型> 实参) {
+        return 构造器名(类名, 方法) + 特化后缀(实参);
+    }
+
+    private static String 特化新建名(String 类名, 中间代码.方法 方法, List<类型> 实参) {
+        return 新建名(类名, 方法) + 特化后缀(实参);
+    }
+
+    private void 收集语句实参(中间代码.语句 语句) {
+        if (语句 instanceof 中间代码.块 块) {
+            for (中间代码.语句 子 : 块.语句()) {
+                收集语句实参(子);
+            }
+        } else if (语句 instanceof 中间代码.局部变量语句 局部) {
+            收集类型实参(局部.类型());
+            if (局部.初值() != null) {
+                收集表达式实参(局部.初值());
+            }
+        } else if (语句 instanceof 中间代码.表达式语句 表) {
+            收集表达式实参(表.值());
+        } else if (语句 instanceof 中间代码.返回语句 返回) {
+            if (返回.值() != null) {
+                收集表达式实参(返回.值());
+            }
+        } else if (语句 instanceof 中间代码.若语句 若) {
+            收集表达式实参(若.条件());
+            收集语句实参(若.成立());
+            if (若.否则() != null) {
+                收集语句实参(若.否则());
+            }
+        } else if (语句 instanceof 中间代码.对于语句 对) {
+            if (对.初始化() != null) {
+                收集语句实参(对.初始化());
+            }
+            if (对.条件() != null) {
+                收集表达式实参(对.条件());
+            }
+            for (中间代码.表达式 更 : 对.更新()) {
+                收集表达式实参(更);
+            }
+            收集语句实参(对.体());
+        } else if (语句 instanceof 中间代码.当语句 当) {
+            收集表达式实参(当.条件());
+            收集语句实参(当.体());
+        } else if (语句 instanceof 中间代码.做当语句 做当) {
+            收集语句实参(做当.体());
+            收集表达式实参(做当.条件());
+        } else if (语句 instanceof 中间代码.尝试语句 尝试) {
+            收集语句实参(尝试.体());
+            for (中间代码.捕获子句 捕 : 尝试.捕获()) {
+                收集语句实参(捕.体());
+            }
+            if (尝试.兜底() != null) {
+                收集语句实参(尝试.兜底());
+            }
+        } else if (语句 instanceof 中间代码.抛出语句 抛) {
+            收集表达式实参(抛.值());
+        }
+    }
+
+    private void 收集表达式实参(中间代码.表达式 表达式) {
+        if (表达式 == null) {
+            return;
+        }
+        收集类型实参(取类型(表达式));
+        if (表达式 instanceof 中间代码.字段读 读) {
+            收集表达式实参(读.接收者());
+        } else if (表达式 instanceof 中间代码.数组读 读) {
+            收集表达式实参(读.数组());
+            收集表达式实参(读.下标());
+        } else if (表达式 instanceof 中间代码.数组长度 长) {
+            收集表达式实参(长.数组());
+        } else if (表达式 instanceof 中间代码.二元 二) {
+            收集表达式实参(二.左());
+            收集表达式实参(二.右());
+        } else if (表达式 instanceof 中间代码.一元 一) {
+            收集表达式实参(一.操作数());
+        } else if (表达式 instanceof 中间代码.三目 三) {
+            收集表达式实参(三.条件());
+            收集表达式实参(三.真());
+            收集表达式实参(三.假());
+        } else if (表达式 instanceof 中间代码.强制转换 转) {
+            收集表达式实参(转.操作数());
+        } else if (表达式 instanceof 中间代码.赋值 赋) {
+            收集表达式实参(赋.左());
+            收集表达式实参(赋.右());
+        } else if (表达式 instanceof 中间代码.调用 调) {
+            if (调.接收者() != null) {
+                收集表达式实参(调.接收者());
+            }
+            for (中间代码.表达式 实 : 调.实参()) {
+                收集表达式实参(实);
+            }
+        } else if (表达式 instanceof 中间代码.新建对象 新) {
+            for (中间代码.表达式 实 : 新.实参()) {
+                收集表达式实参(实);
+            }
+        } else if (表达式 instanceof 中间代码.新建数组 新) {
+            收集类型实参(新.元素类型());
+            if (新.长度() != null) {
+                收集表达式实参(新.长度());
+            }
+            for (中间代码.表达式 实 : 新.初值()) {
+                收集表达式实参(实);
+            }
+        } else if (表达式 instanceof 中间代码.实例判断 判) {
+            收集表达式实参(判.值());
+        } else if (表达式 instanceof 中间代码.顺序表达式 顺) {
+            for (中间代码.语句 前 : 顺.前奏()) {
+                收集语句实参(前);
+            }
+            收集表达式实参(顺.结果());
         }
     }
 
@@ -248,13 +560,27 @@ public final class LLVM生成器 {
 
     private void 输出结构体() {
         for (中间代码.类定义 类 : 程序.类()) {
-            StringBuilder 文 = new StringBuilder(结构类型(类.名())).append(" = type { ptr");
-            for (字段槽 字段 : 字段布局.get(类.名())) {
-                文.append(", ").append(LLVM类型(字段.类型()));
+            输出结构体一份(结构类型(类.名()), 类, List.of());
+        }
+        // M20：类型封闭泛型类的每个实参实例生成独立 struct（__值 -> 具体字段类型）。
+        for (Map.Entry<String, List<List<类型>>> 项 : 特化实例.entrySet()) {
+            中间代码.类定义 类 = 类表.get(项.getKey());
+            if (类 == null) {
+                continue;
             }
-            IR.类型定义(文.append(" }").toString());
+            for (List<类型> 实参 : 项.getValue()) {
+                输出结构体一份(特化结构类型(项.getKey(), 实参), 类, 实参);
+            }
         }
         IR.类型定义("");
+    }
+
+    private void 输出结构体一份(String 名, 中间代码.类定义 类, List<类型> 实参) {
+        StringBuilder 文 = new StringBuilder(名).append(" = type { ptr");
+        for (字段槽 字段 : 字段布局.get(类.名())) {
+            文.append(", ").append(LLVM类型(替换泛型(字段.类型(), 实参)));
+        }
+        IR.类型定义(文.append(" }").toString());
     }
 
     private void 生成静态全局() {
@@ -563,21 +889,18 @@ public final class LLVM生成器 {
     private void 定义函数() {
         for (中间代码.类定义 类 : 程序.类()) {
             当前类 = 类;
-            for (中间代码.方法 方法 : 类.构造器()) {
-                生成构造器(类, 方法);
-            }
-            if (类.构造器().isEmpty()) {
-                生成新建(类, null);
-            } else {
-                for (中间代码.方法 方法 : 类.构造器()) {
-                    生成新建(类, 方法);
+            // 原始（擦除）版本：保留供 vtable/多态与未特化调用点使用。
+            当前特化实参 = List.of();
+            生成函数组(类);
+            // M20：每个实参实例再生成一套（特化 struct/方法签名，跳过 box/unbox）。
+            List<List<类型>> 实例表 = 特化实例.get(类.名());
+            if (实例表 != null) {
+                for (List<类型> 实参 : 实例表) {
+                    当前特化实参 = 实参;
+                    生成函数组(类);
                 }
             }
-            for (中间代码.方法 方法 : 类.方法()) {
-                if (方法.体() != null) {
-                    生成方法(类, 方法);
-                }
-            }
+            当前特化实参 = List.of();
             if (类.枚举()) {
                 生成按名(类);
             }
@@ -585,12 +908,32 @@ public final class LLVM生成器 {
         }
     }
 
+    private void 生成函数组(中间代码.类定义 类) {
+        for (中间代码.方法 方法 : 类.构造器()) {
+            生成构造器(类, 方法);
+        }
+        if (类.构造器().isEmpty()) {
+            生成新建(类, null);
+        } else {
+            for (中间代码.方法 方法 : 类.构造器()) {
+                生成新建(类, 方法);
+            }
+        }
+        for (中间代码.方法 方法 : 类.方法()) {
+            if (方法.体() != null) {
+                生成方法(类, 方法);
+            }
+        }
+    }
+
     private void 生成构造器(中间代码.类定义 类, 中间代码.方法 方法) {
         当前类 = 类;
         当前行 = 0;
         当前返回类型 = 类型.无;
-        开始函数(构造器名(类.名(), 方法), 类型.无, 方法.参数(), true,
-                类.名() + "." + 方法.名());
+        String 名 = 当前特化实参.isEmpty() ? 构造器名(类.名(), 方法)
+                : 特化构造器名(类.名(), 方法, 当前特化实参);
+        开始函数(名, 类型.无, 方法.参数(), true,
+                类.名() + "." + 方法.名() + 特化后缀(当前特化实参));
         语句(方法.体());
         结束函数(类型.无);
     }
@@ -600,17 +943,21 @@ public final class LLVM生成器 {
         当前行 = 0;
         当前返回类型 = 类型.类类型(类.名());
         List<中间代码.参数> 参数 = 构造器 == null ? List.of() : 构造器.参数();
-        开始函数(新建名(类.名(), 构造器), 类型.类类型(类.名()), 参数, false,
-                类.名() + ".新建");
+        String 名 = 当前特化实参.isEmpty() ? 新建名(类.名(), 构造器)
+                : 特化新建名(类.名(), 构造器, 当前特化实参);
+        开始函数(名, 类型.类类型(类.名()), 参数, false,
+                类.名() + ".新建" + 特化后缀(当前特化实参));
         IR.声明("ptr", "cjk_new_object", List.of("ptr", "i64"));
         String 对象 = 新临时();
         指令(对象 + " = call ptr @cjk_new_object(ptr " + 描述符引用(类.名())
-                + ", i64 " + 结构大小(类.名()) + ")");
+                + ", i64 " + 结构大小(类.名(), 当前特化实参) + ")");
         if (构造器 != null) {
+            String 构造名 = 当前特化实参.isEmpty() ? 构造器名(类.名(), 构造器)
+                    : 特化构造器名(类.名(), 构造器, 当前特化实参);
             StringBuilder 文 = new StringBuilder("call void @")
-                    .append(构造器名(类.名(), 构造器)).append("(ptr ").append(对象);
+                    .append(构造名).append("(ptr ").append(对象);
             for (int i = 0; i < 参数.size(); i++) {
-                文.append(", ").append(LLVM类型(参数.get(i).类型())).append(" %arg").append(i);
+                文.append(", ").append(当前LLVM类型(参数.get(i).类型())).append(" %arg").append(i);
             }
             指令(文.append(')').toString());
         }
@@ -621,9 +968,11 @@ public final class LLVM生成器 {
     private void 生成方法(中间代码.类定义 类, 中间代码.方法 方法) {
         当前类 = 类;
         当前行 = 0;
-        当前返回类型 = 方法.返回类型();
-        开始函数(方法名(类.名(), 方法), 方法.返回类型(), 方法.参数(), !方法.静态(),
-                类.名() + "." + 方法.名());
+        当前返回类型 = 当前类型(方法.返回类型());
+        String 名 = 当前特化实参.isEmpty() ? 方法名(类.名(), 方法)
+                : 特化方法名(类.名(), 方法, 当前特化实参);
+        开始函数(名, 方法.返回类型(), 方法.参数(), !方法.静态(),
+                类.名() + "." + 方法.名() + 特化后缀(当前特化实参));
         /* M12 影子栈：方法入口压帧，返回/自然结束时弹帧。 */
         IR.声明("void", "cjk_frame_push", List.of("ptr", "i32"));
         IR.声明("void", "cjk_frame_pop", List.of());
@@ -737,11 +1086,11 @@ public final class LLVM生成器 {
             if (序号 > 0) {
                 形参.append(", ");
             }
-            形参.append(LLVM类型(参数项.类型())).append(" %arg").append(序号);
+            形参.append(当前LLVM类型(参数项.类型())).append(" %arg").append(序号);
             新形参槽(参数项.名(), 参数项.类型(), "%arg" + 序号);
             序号++;
         }
-        当前函数头 = "define " + LLVM类型(返回) + " @" + 名称 + "(" + 形参
+        当前函数头 = "define " + 当前LLVM类型(返回) + " @" + 名称 + "(" + 形参
                 + ") !dbg " + 当前函数元数据 + " {\nentry:\n";
     }
 
@@ -763,10 +1112,10 @@ public final class LLVM生成器 {
 
     private void 新形参槽(String 名, 类型 类型, String 形参名) {
         String 槽 = 新临时();
-        入口块.append("  ").append(槽).append(" = alloca ").append(LLVM类型(类型)).append('\n');
-        入口块.append("  store ").append(LLVM类型(类型)).append(' ').append(形参名)
+        入口块.append("  ").append(槽).append(" = alloca ").append(当前LLVM类型(类型)).append('\n');
+        入口块.append("  store ").append(当前LLVM类型(类型)).append(' ').append(形参名)
                 .append(", ptr ").append(槽).append('\n');
-        当前作用域().put(名, new 变量槽(类型, 槽));
+        当前作用域().put(名, new 变量槽(当前类型(类型), 槽));
     }
 
     private void 结束函数(类型 返回) {
@@ -784,7 +1133,7 @@ public final class LLVM生成器 {
         if (返回 == null || 返回.同型(类型.无)) {
             终结("ret void");
         } else {
-            终结("ret " + LLVM类型(返回) + " " + 零值(返回).文本());
+            终结("ret " + 当前LLVM类型(返回) + " " + 零值(当前类型(返回)).文本());
         }
     }
 
@@ -1070,11 +1419,14 @@ public final class LLVM生成器 {
         if (语句 instanceof 中间代码.局部变量语句 局部) {
             变量槽 槽 = 新局部(局部.名(), 局部.类型());
             if (局部.初值() != null) {
+                类型 保存期望 = 期望类型;
+                期望类型 = 局部.类型();
                 值 初值 = 适配(局部.类型(), 局部.初值());
-                指令("store " + LLVM类型(局部.类型()) + " " + 初值.文本()
+                期望类型 = 保存期望;
+                指令("store " + LLVM类型(槽.类型()) + " " + 初值.文本()
                         + ", ptr " + 槽.指针());
             } else {
-                指令("store " + LLVM类型(局部.类型()) + " " + 零值(局部.类型()).文本()
+                指令("store " + LLVM类型(槽.类型()) + " " + 零值(槽.类型()).文本()
                         + ", ptr " + 槽.指针());
             }
             return;
@@ -1148,8 +1500,9 @@ public final class LLVM生成器 {
 
     private 变量槽 新局部(String 名, 类型 类型) {
         String 指针 = 新临时();
-        新入口临时(指针 + " = alloca " + LLVM类型(类型));
-        变量槽 槽 = new 变量槽(类型, 指针);
+        类型 实际 = 当前类型(类型);
+        新入口临时(指针 + " = alloca " + LLVM类型(实际));
+        变量槽 槽 = new 变量槽(实际, 指针);
         当前作用域().put(名, 槽);
         return 槽;
     }
@@ -1380,19 +1733,21 @@ public final class LLVM生成器 {
             }
             String 结果 = 新临时();
             指令(结果 + " = load " + LLVM类型(槽.类型()) + ", ptr " + 槽.指针());
-            return new 值(读.类型(), 结果);
+            return new 值(槽.类型(), 结果);
         }
         if (表达式 instanceof 中间代码.字段读 读) {
             地址 地址 = 字段地址(读);
             String 结果 = 新临时();
-            指令(结果 + " = load " + LLVM类型(读.类型()) + ", ptr " + 地址.指针());
-            return new 值(读.类型(), 结果);
+            类型 实际 = 当前类型(读.类型());
+            指令(结果 + " = load " + LLVM类型(实际) + ", ptr " + 地址.指针());
+            return new 值(实际, 结果);
         }
         if (表达式 instanceof 中间代码.数组读 读) {
             地址 地址 = 数组地址(读);
             String 结果 = 新临时();
-            指令(结果 + " = load " + LLVM类型(读.类型()) + ", ptr " + 地址.指针());
-            return new 值(读.类型(), 结果);
+            类型 实际 = 当前类型(读.类型());
+            指令(结果 + " = load " + LLVM类型(实际) + ", ptr " + 地址.指针());
+            return new 值(实际, 结果);
         }
         if (表达式 instanceof 中间代码.数组长度 长度) {
             值 数组 = 表达式(长度.数组());
@@ -1474,10 +1829,14 @@ public final class LLVM生成器 {
         值 接收 = 表达式(读.接收者());
         String 检查 = 调("cjk_null_check", "ptr",
                 new 值(接收类型, 接收.文本()), 行值()).文本();
+        // M20：优先当前特化上下文；否则按接收者实参选择已登记的特化结构。
+        List<类型> 实参 = 当前特化实参.isEmpty() ? 可用特化实参(接收类型) : 当前特化实参;
+        String 结构 = 实参 == null || 实参.isEmpty()
+                ? 结构类型(声明类.名()) : 特化结构类型(声明类.名(), 实参);
         String 指针 = 新临时();
-        指令(指针 + " = getelementptr " + 结构类型(声明类.名()) + ", ptr " + 检查
+        指令(指针 + " = getelementptr " + 结构 + ", ptr " + 检查
                 + ", i32 0, i32 " + 字段下标(声明类.名(), 读.名()));
-        return new 地址(读.类型(), 指针);
+        return new 地址(当前类型(读.类型()), 指针);
     }
 
     private 地址 数组地址(中间代码.数组读 读) {
@@ -1708,7 +2067,45 @@ public final class LLVM生成器 {
             return new 值(新建.类型(), 调("cjk_new_exception", "ptr",
                     new 值(类型.空, 描述符引用(新建.类名())), 消息).文本());
         }
+        // M20：菱形 new 从期望类型反推实参；命中特化实例则调特化 new。
+        List<类型> 实 = null;
+        if (期望类型 != null && 期望类型.是类() && 同型类名(期望类型.类名, 新建.类名())) {
+            实 = 可用特化实参(期望类型);
+        }
+        if (实 == null) {
+            实 = 可用特化实参(新建.类型());
+        }
+        if (实 != null) {
+            List<类型> 保存 = 当前特化实参;
+            当前特化实参 = 实;
+            值 结果 = 新建调用(新建.类名(), 新建.实参(), 实);
+            当前特化实参 = 保存;
+            return 结果;
+        }
         return 新建调用(新建.类名(), 新建.实参());
+    }
+
+    /** M20：特化版新建调用——函数名带实参后缀，形参按实参适配。 */
+    private 值 新建调用(String 类名, List<中间代码.表达式> 实参, List<类型> 特化实) {
+        List<类型> 实参类型 = 实参类型(实参);
+        中间代码.方法 构造器 = 选构造器(类名, 实参类型);
+        StringBuilder 文 = new StringBuilder("call ptr @")
+                .append(特化新建名(类名, 构造器, 特化实)).append('(');
+        for (int i = 0; i < 实参.size(); i++) {
+            if (i > 0) {
+                文.append(", ");
+            }
+            值 值;
+            if (构造器 != null && i < 构造器.参数().size()) {
+                值 = 适配(构造器.参数().get(i).类型(), 实参.get(i));
+            } else {
+                值 = 表达式(实参.get(i));
+            }
+            文.append(值.LLVM类型()).append(' ').append(值.文本());
+        }
+        String 结果 = 新临时();
+        指令(结果 + " = " + 文.append(')'));
+        return new 值(类型.类类型(类名), 结果);
     }
 
     private 值 新建调用(String 类名, List<中间代码.表达式> 实参) {
@@ -1848,8 +2245,12 @@ public final class LLVM生成器 {
     }
 
     private 值 适配(类型 目标, 中间代码.表达式 表达式) {
+        // M20：特化上下文中形参与源都按实参替换，跳过 box/unbox。
+        if (!当前特化实参.isEmpty()) {
+            目标 = 当前类型(目标);
+        }
         值 值 = 表达式(表达式);
-        类型 源 = 取类型(表达式);
+        类型 源 = 特化表达式类型(表达式);
         if (目标 == null || 源 == null) {
             return 值;
         }
@@ -1924,7 +2325,8 @@ public final class LLVM生成器 {
     }
 
     private String 转文本(中间代码.表达式 表达式, 值 值) {
-        类型 值类型 = 取类型(表达式);
+        // M20：与 C 后端对称，按接收者实参反推调用表达式的真实类型。
+        类型 值类型 = 特化表达式类型(表达式);
         if (是泛型值(值类型) || 是包装类(值类型)) {
             return 调("cjk_value_to_string", "ptr",
                     调("cjk_unbox_value", "%cjk_value",
@@ -2049,6 +2451,19 @@ public final class LLVM生成器 {
                 if (目标 == null) {
                     throw new 生成异常("M6 暂不支持：找不到实例方法「" + 调用.名() + "」");
                 }
+                // M20：接收者静态类型带实参且已特化 -> 直连特化函数（跳过 vtable/box）。
+                List<类型> 特化实 = 可用特化实参(接收类型);
+                if (特化实 != null) {
+                    List<类型> 保存 = 当前特化实参;
+                    当前特化实参 = 特化实;
+                    try {
+                        值 接收 = 表达式(调用.接收者());
+                        String 检查 = 调("cjk_null_check", "ptr", 接收, 行值()).文本();
+                        return 函数调用(目标, 起始, new 值(接收类型, 检查), 调用.实参());
+                    } finally {
+                        当前特化实参 = 保存;
+                    }
+                }
                 return 虚调用(调用, 目标);
             }
             case 构造器: {
@@ -2061,7 +2476,9 @@ public final class LLVM生成器 {
                     值 参数 = 适配(构造器.参数().get(i).类型(), 调用.实参().get(i));
                     实参.append(", ").append(参数.LLVM类型()).append(' ').append(参数.文本());
                 }
-                指令("call void @" + 构造器名(调用.类名(), 构造器) + "(" + 实参 + ")");
+                String 构造名 = 当前特化实参.isEmpty() ? 构造器名(调用.类名(), 构造器)
+                        : 特化构造器名(调用.类名(), 构造器, 当前特化实参);
+                指令("call void @" + 构造名 + "(" + 实参 + ")");
                 return new 值(类型.无, "0");
             }
             case 父方法: {
@@ -2088,15 +2505,18 @@ public final class LLVM生成器 {
             }
             文本.append(参数.LLVM类型()).append(' ').append(参数.文本());
         }
-        String 返回 = LLVM类型(目标.返回类型());
-        String 调用文本 = "call " + 返回 + " @" + 方法名(声明类, 目标) + "(" + 文本 + ")";
+        类型 实际返回 = 当前类型(目标.返回类型());
+        String 返回 = LLVM类型(实际返回);
+        String 函数名 = 当前特化实参.isEmpty() ? 方法名(声明类, 目标)
+                : 特化方法名(声明类, 目标, 当前特化实参);
+        String 调用文本 = "call " + 返回 + " @" + 函数名 + "(" + 文本 + ")";
         if ("void".equals(返回)) {
             指令(调用文本);
             return new 值(类型.无, "0");
         }
         String 结果 = 新临时();
         指令(结果 + " = " + 调用文本);
-        return new 值(目标.返回类型(), 结果);
+        return new 值(实际返回, 结果);
     }
 
     private 值 虚调用(中间代码.调用 调用, 中间代码.方法 目标) {
@@ -2119,7 +2539,8 @@ public final class LLVM生成器 {
             值 参数 = 适配(目标.参数().get(i).类型(), 调用.实参().get(i));
             实参.append(", ").append(参数.LLVM类型()).append(' ').append(参数.文本());
         }
-        String 返回 = LLVM类型(目标.返回类型());
+        类型 实际返回 = 当前类型(目标.返回类型());
+        String 返回 = LLVM类型(实际返回);
         String 调用文本 = "call " + 返回 + " " + 函数 + "(" + 实参 + ")";
         if ("void".equals(返回)) {
             指令(调用文本);
@@ -2127,7 +2548,7 @@ public final class LLVM生成器 {
         }
         String 结果 = 新临时();
         指令(结果 + " = " + 调用文本);
-        return new 值(目标.返回类型(), 结果);
+        return new 值(实际返回, 结果);
     }
 
     // ================= 内建 =================
@@ -2141,7 +2562,7 @@ public final class LLVM生成器 {
     }
 
     private 值 值参(中间代码.表达式 实参) {
-        return 原生(到原生文本(取类型(实参), 表达式(实参).文本()));
+        return 原生(到原生文本(特化表达式类型(实参), 表达式(实参).文本()));
     }
 
     private 值 整数参(long 值) {
@@ -2172,7 +2593,7 @@ public final class LLVM生成器 {
         String 数组 = 新临时();
         新入口临时(数组 + " = alloca [" + 个数 + " x %cjk_value]");
         for (int i = 起点; i < 实参.size(); i++) {
-            String 元素 = 到原生文本(取类型(实参.get(i)), 表达式(实参.get(i)).文本());
+            String 元素 = 到原生文本(特化表达式类型(实参.get(i)), 表达式(实参.get(i)).文本());
             String 指针 = 新临时();
             指令(指针 + " = getelementptr [" + 个数 + " x %cjk_value], ptr " + 数组
                     + ", i64 0, i64 " + (i - 起点));
@@ -3437,12 +3858,17 @@ public final class LLVM生成器 {
 
     /** 按 LLVM 结构体自然布局计算对象大小（含 8 字节对象头）。 */
     private int 结构大小(String 类名) {
+        return 结构大小(类名, List.of());
+    }
+
+    /** M20：按特化后的字段类型计算对象大小。 */
+    private int 结构大小(String 类名, List<类型> 实参) {
         int 偏移 = 8;
         int 对齐 = 8;
         List<字段槽> 布局 = 字段布局.get(类名);
         if (布局 != null) {
             for (字段槽 字段 : 布局) {
-                int 尺寸 = 大小(字段.类型());
+                int 尺寸 = 大小(替换泛型(字段.类型(), 实参));
                 int 字段对齐 = Math.min(Math.max(尺寸, 1), 8);
                 偏移 = (偏移 + 字段对齐 - 1) / 字段对齐 * 字段对齐;
                 偏移 += 尺寸;
