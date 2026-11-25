@@ -2,7 +2,7 @@
   "name": "chinese-java",
   "displayName": "中文 Java",
   "description": "为中文关键字 Java 提供语法高亮、代码片段、补全与悬停，并注入到标准 Java 语法，不改变文件语言模式。",
-  "version": "0.14.1",
+  "version": "0.15.0",
   "publisher": "cjc",
   "repository": {
     "type": "git",
@@ -68,11 +68,12 @@
         "cjc.diagnosticSource": {
           "type": "string",
           "enum": [
+            "lsp",
             "原生",
             "兼容"
           ],
-          "default": "原生",
-          "description": "诊断来源：「原生」调用 原生\\驱动.ps1 的新前端（JSON 诊断），不可用时自动回退；「兼容」沿用 工具\\cjc\\Cjc.java 检查链路。"
+          "default": "lsp",
+          "description": "诊断来源：「lsp」启动内置 language server（诊断/补全/悬停/跳转四项），不可用时自动回退到「原生」；「原生」调用 原生\\驱动.ps1 的新前端（JSON 诊断）；「兼容」沿用 工具\\cjc\\Cjc.java 检查链路。"
         }
       }
     }

@@ -44,13 +44,22 @@ for (const [类名, 说明] of Object.entries(COMPLETION_INFO.标准库 || {})) 
 }
 
 let nativeFallbackWarned = false;
+// M21 G9：LSP 客户端；非 null 时四项能力由 LSP 提供，旧 JSON 链路让位（失败自动回退）。
+let lspClient = null;
 
 function activate(context) {
     collection = vscode.languages.createDiagnosticCollection('cjc');
     context.subscriptions.push(collection);
 
+    // G9：优先启动 LSP；配置 diagnosticSource=兼容 时不启动（沿用原链路）。
+    const 来源 = vscode.workspace.getConfiguration('cjc').get('diagnosticSource', 'lsp');
+    if (来源 !== '兼容') {
+        启动LSP(context);
+    }
+
     context.subscriptions.push(vscode.languages.registerCompletionItemProvider({ language: 'java' }, {
         provideCompletionItems() {
+            if (lspClient) return undefined; // LSP 已接管补全
             const items = Object.entries(KEYWORD_INFO).map(([中文, [英文, 说明]]) => {
                 const item = new vscode.CompletionItem(中文, vscode.CompletionItemKind.Keyword);
                 item.detail = 英文;
@@ -88,6 +97,7 @@ function activate(context) {
 
     context.subscriptions.push(vscode.languages.registerHoverProvider({ language: 'java' }, {
         provideHover(document, position) {
+            if (lspClient) return undefined; // LSP 已接管悬停
             const range = document.getWordRangeAtPosition(position, /[\u4e00-\u9fa5]+/);
             if (!range) {
                 return undefined;
@@ -279,11 +289,12 @@ function scheduleCheck(document) {
 
 // content 为 undefined 时检查磁盘文件（保存场景）；否则写临时文件检查未保存内容
 function runCheck(document, content) {
+    if (lspClient) return; // LSP 已接管诊断（含 didOpen/didChange 同步）
     const root = workspaceRoot();
     if (!root) {
         return;
     }
-    const 来源 = vscode.workspace.getConfiguration('cjc').get('diagnosticSource', '原生');
+    const 来源 = vscode.workspace.getConfiguration('cjc').get('diagnosticSource', 'lsp');
     const 驱动 = path.join(root, '原生', '驱动.ps1');
     if (来源 === '原生' && fs.existsSync(驱动)) {
         runNativeCheck(document, content, root);
@@ -547,6 +558,26 @@ function 标点替换(字符, 行文本) {
         '…': '...', '—': '-', '－': '-', '　': ' '
     };
     return 映射[字符] || null;
+}
+
+// M21 G9：启动 LSP client；失败或 server 脚本缺失时静默回退原 JSON 链路。
+async function 启动LSP(context) {
+    try {
+        const 服务脚本 = path.join(__dirname, 'language-server.js');
+        if (!fs.existsSync(服务脚本)) return;
+        const root = workspaceRoot() || path.resolve(__dirname, '..', '..');
+        const { LspClient } = require('./lsp-client.js');
+        const 客户端 = new LspClient(context, root);
+        const 成功 = await 客户端.启动();
+        if (成功) {
+            lspClient = 客户端;
+        } else {
+            try { 客户端.子.kill(); } catch (e) { /* 忽略 */ }
+        }
+    } catch (e) {
+        // 任何异常都回退原链路，不影响既有诊断/补全行为。
+        lspClient = null;
+    }
 }
 
 module.exports = { activate, deactivate };
