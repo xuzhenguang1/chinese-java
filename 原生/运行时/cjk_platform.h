@@ -7,7 +7,9 @@
  *   - Linux 分支映射到 pthread / clock_gettime，文件与网络 IO 给出明确中文诊断桩，
  *     不静默返回空值。本机无 Linux sysroot，运行验收顺延 M14（见 ADR-017）。
  *
- * 平台选择：默认跟随编译器（_WIN32）。交叉编译时可用 -DCJK_PLATFORM_LINUX 强制 Linux 骨架。
+ * 平台选择：默认跟随编译器（_WIN32 / __APPLE__）。交叉编译时用
+ *   -DCJK_PLATFORM_LINUX 或 -DCJK_PLATFORM_DARWIN 强制目标平台骨架（M21）。
+ * 三个宏互斥且有且仅有一个为 1；darwin 与 linux 共用 POSIX 路径，不复制第二份实现。
  */
 #ifndef CJK_PLATFORM_H
 #define CJK_PLATFORM_H
@@ -17,10 +19,28 @@
 #include <wchar.h>
 #include "cjkrt.h"
 
-#if defined(_WIN32) && !defined(CJK_PLATFORM_LINUX)
-#  define CJK_PLATFORM_WINDOWS 1
-#else
+/* 显式宏优先（交叉编译时本机 _WIN32 仍可能定义，故显式目标必须压过编译器默认）。 */
+#if defined(CJK_PLATFORM_DARWIN) && !defined(CJK_PLATFORM_LINUX)
 #  define CJK_PLATFORM_WINDOWS 0
+#  define CJK_PLATFORM_LINUX  0
+#  define CJK_PLATFORM_DARWIN 1
+#elif defined(CJK_PLATFORM_LINUX)
+#  define CJK_PLATFORM_WINDOWS 0
+#  define CJK_PLATFORM_LINUX  1
+#  define CJK_PLATFORM_DARWIN 0
+#elif defined(_WIN32)
+#  define CJK_PLATFORM_WINDOWS 1
+#  define CJK_PLATFORM_LINUX  0
+#  define CJK_PLATFORM_DARWIN 0
+#elif defined(__APPLE__)
+#  define CJK_PLATFORM_WINDOWS 0
+#  define CJK_PLATFORM_LINUX  0
+#  define CJK_PLATFORM_DARWIN 1
+#else
+/* 其余类 Unix 默认按 Linux POSIX 口径处理。 */
+#  define CJK_PLATFORM_WINDOWS 0
+#  define CJK_PLATFORM_LINUX  1
+#  define CJK_PLATFORM_DARWIN 0
 #endif
 
 #ifdef __cplusplus

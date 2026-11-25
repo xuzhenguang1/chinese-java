@@ -127,9 +127,13 @@ public final class 前端主程序 {
     /** M14：从 CJC_PLATFORM 环境变量读取目标平台，默认 windows（逐字节保留既有 PE 行为）。 */
     private static 中文.原生.后端LLVM.LLVM平台配置 当前LLVM配置() {
         String 平台 = System.getenv("CJC_PLATFORM");
-        return "linux".equalsIgnoreCase(平台)
-                ? 中文.原生.后端LLVM.LLVM平台配置.linux()
-                : 中文.原生.后端LLVM.LLVM平台配置.windows();
+        if ("linux".equalsIgnoreCase(平台)) {
+            return 中文.原生.后端LLVM.LLVM平台配置.linux();
+        }
+        if ("darwin".equalsIgnoreCase(平台)) {
+            return 中文.原生.后端LLVM.LLVM平台配置.darwin();
+        }
+        return 中文.原生.后端LLVM.LLVM平台配置.windows();
     }
 
     private static List<String> 取文件参数(String[] 参数, int 起) {

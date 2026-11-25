@@ -44,6 +44,28 @@ public record LLVM平台配置(
                 false, "__gxx_personality_v0");
     }
 
+    /**
+     * macOS Mach-O/x86_64（M21 ADR-024，G7 骨架 + CI 待跑）。
+     *
+     * <p>系统行与数据布局由本机 clang 23.1.5 交叉编译探针实测：
+     * {@code echo 'int x;' | clang --target=x86_64-apple-darwin -S -emit-llvm -x c -}
+     * 得到 triple {@code x86_64-apple-macosx10.4.0}、datalayout {@code e-m:o-...}
+     * （{@code m:o} 为 Mach-O 目标格式，区别于 ELF 的 {@code m:e}）。personality 采用
+     * Itanium/DWARF 口径 {@code __gxx_personality_v0}。</p>
+     *
+     * <p>jmp_buf 元素类型/对齐/setjmp 签名按 SysV 惯例给初值；M20 起异常展开已改走
+     * Itanium landingpad，这些字段不参与新控制流。本机无 macOS SDK，真机数值待
+     * GitHub Actions macos-latest job 探针实测回写（G7：不虚报全绿）。</p>
+     */
+    public static LLVM平台配置 darwin() {
+        return new LLVM平台配置(
+                "x86_64-apple-macosx10.4.0",
+                "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
+                "[25 x i64]", 8,
+                "setjmp", List.of("ptr"), false,
+                false, "__gxx_personality_v0");
+    }
+
     /** 是否 Windows 目标（供少数细分支使用；优先用具体字段判断）。 */
     public boolean 是Windows() {
         return 需要帧地址;

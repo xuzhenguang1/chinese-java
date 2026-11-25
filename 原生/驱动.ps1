@@ -12,8 +12,9 @@ param(
     # M12：clang 优化级别（默认 O2 不变）；仅影响原生编译，供基准各档实测。
     [ValidateSet("O0", "O1", "O2", "O3", "Os")]
     [string]$优化 = "O2",
-    # M14：目标平台。windows=PE/Win64（默认，逐字节保留 M0–M13 行为）；linux=ELF/musl/SysV。
-    [ValidateSet("windows", "linux")]
+    # 目标平台。windows=PE/Win64（默认，逐字节保留 M0–M13 行为）；linux=ELF/musl/SysV；
+    # darwin=macOS Mach-O（M21 ADR-024 G7：骨架 + CI 待跑，本机无 macOS SDK 无法真机链接）。
+    [ValidateSet("windows", "linux", "darwin")]
     [string]$平台 = "windows",
     # M15：依赖清单路径（可选）。给定时其闭包哈希并入缓存键，改依赖即触发重编。
     [string]$清单,
@@ -31,7 +32,7 @@ if ($内存检查) {
     if ($平台 -eq 'linux') {
         $启用内存检查 = $true
     } else {
-        [Console]::Error.WriteLine("提示：-内存检查 仅在 -平台 linux 生效，Windows 已忽略（改用 GC 压力用例）。")
+        [Console]::Error.WriteLine("提示：-内存检查 仅在 -平台 linux 生效，其他平台已忽略（改用 GC 压力用例）。")
     }
 }
 if ($env:OS -eq "Windows_NT") { chcp 65001 | Out-Null }
@@ -39,21 +40,32 @@ if ($env:OS -eq "Windows_NT") { chcp 65001 | Out-Null }
 
 $根目录 = (Resolve-Path "$PSScriptRoot\..").Path
 
-# ---- M14 平台配置（一处定义，全链路引用）----
+# ---- 平台配置（M14 一处定义，M21 扩 darwin，全链路引用）----
 $目标Linux = $平台 -eq 'linux'
-$扩展名 = if ($目标Linux) { '.elf' } else { '.exe' }
+$目标Darwin = $平台 -eq 'darwin'
+# M21：$目标Unix 控制共享 POSIX 路径（运行时 pthread/clock、C++ 源按 C++ 编译）；
+# Windows 保持逐字节既有行为。darwin 与 linux 都走 Unix 分支，但工具链不同。
+$目标Unix = $目标Linux -or $目标Darwin
+$扩展名 = if ($目标Linux) { '.elf' } elseif ($目标Darwin) { '.macos' } else { '.exe' }
 $muslTarget = 'x86_64-linux-musl'
 $muslSysroot = Join-Path $根目录 "构建\工具链\alpine\sysroot"
 $muslLib = Join-Path $muslSysroot "usr\lib"
-# clang 交叉编译参数：Linux 需指定 target/sysroot 与平台宏；Windows 保持既有（空）。
+$darwinTarget = 'x86_64-apple-darwin'
+# clang 交叉编译参数：Linux 需 target/sysroot + 平台宏；darwin 只需 target + 平台宏
+# （CI macOS runner 用系统 SDK，本机 Windows 无 SDK → G7 标注「CI 实跑待环境」）；
+# Windows 保持既有（空）。
 $平台编译参数 = if ($目标Linux) {
     # _GNU_SOURCE 同时开放 clock_gettime/_POSIX 与 pthread_getattr_np/musl GNU 扩展。
     @("--target=$muslTarget", "--sysroot=$muslSysroot", '-DCJK_PLATFORM_LINUX', '-D_GNU_SOURCE')
+} elseif ($目标Darwin) {
+    @("--target=$darwinTarget", '-DCJK_PLATFORM_DARWIN', '-D_GNU_SOURCE')
 } else {
     @()
 }
 # M20 G5：Itanium 异常 ABI 的静态依赖。PE 用 mingw libstdc++（personality 由 clang 自动选），
 # ELF/musl sysroot 无 C++ ABI/unwind，改从 Alpine 静态包落地的 lib 目录补齐。
+# M21 darwin：CI macOS 用系统 libc++/libunwind（-nostdinc++ 不能用，需 SDK 头），
+# 本机无 SDK 故不预置路径，靠 CI runner 系统工具链兜底。
 $unwind库目录 = Join-Path $根目录 "构建\工具链\unwind\lib"
 $unwind头文件 = Join-Path $根目录 "构建\工具链\unwind\libcxx\usr\include\c++\v1"
 $CXX平台参数 = if ($目标Linux) {
@@ -63,6 +75,8 @@ $CXX平台参数 = if ($目标Linux) {
 }
 $CXX链接库 = if ($目标Linux) {
     @('-L' + $unwind库目录, '-lc++abi', '-lunwind', '-llzma')
+} elseif ($目标Darwin) {
+    @('-lc++', '-lunwind')
 } else {
     @('-lstdc++', '-lgcc_s')
 }
@@ -293,7 +307,7 @@ function 取运行时信息 {
 # 每个运行时 .c 按内容哈希编译一次，产物放在 构建\原生\缓存\运行时。
 function 编译运行时对象 {
     param([string]$clang, $运行时)
-    $缓存子目录 = if ($目标Linux) { "运行时-linux" } else { "运行时" }
+    $缓存子目录 = if ($目标Linux) { "运行时-linux" } elseif ($目标Darwin) { "运行时-darwin" } else { "运行时" }
     $缓存目录 = Join-Path $根目录 ("构建\原生\缓存\" + $缓存子目录)
     New-Item -ItemType Directory -Force $缓存目录 | Out-Null
     $对象们 = @()
@@ -354,6 +368,12 @@ function 链接可执行 {
             $输出 = & $clang --target=$muslTarget --sysroot=$muslSysroot -nostdlib -fuse-ld=lld -static @asan链接参数 `
                 (Join-Path $muslLib "crt1.o") (Join-Path $muslLib "crti.o") `
                 $临时对象们 $CXX链接库 -L$muslLib -lc (Join-Path $muslLib "crtn.o") -o $临时输出 2>&1
+        } elseif ($目标Darwin) {
+            # Mach-O：CI macOS runner 用系统 clang + SDK，clang++ 链接系统 libc++/libunwind。
+            # 本机 Windows 无 macOS SDK，此分支只在 CI 执行（G7：CI 实跑待环境）。
+            $clangPP = Join-Path (Split-Path $clang -Parent) "clang++"
+            if (-not (Test-Path $clangPP)) { $clangPP = "clang++" }
+            $输出 = & $clangPP --target=$darwinTarget @平台编译参数 $临时对象们 -lm @CXX链接库 -o $临时输出 2>&1
         } else {
             $clangPP = Join-Path (Split-Path $clang -Parent) "clang++.exe"
             $输出 = & $clangPP -static $临时对象们 -lm -lwinhttp -lws2_32 -lshell32 @CXX链接库 -o $临时输出 2>&1
@@ -445,6 +465,9 @@ function 输出工具链 {
         } else {
             Write-Output ("  musl sysroot 缺失：{0}（M14 工具链未落地）" -f $muslSysroot)
         }
+    }
+    if ($目标Darwin) {
+        Write-Output ("  Mach-O target：{0}（macOS SDK 由 CI macos runner 提供；本机 Windows 无 SDK，真机对拍 CI 实跑待环境）" -f $darwinTarget)
     }
     if ($clang) {
         $版本 = (& $clang --version 2>&1 | Select-Object -First 1)
@@ -677,7 +700,7 @@ switch ($子命令) {
             $源哈希 = 取文件哈希 $源文件
         }
         $缓存目录 = Join-Path $根目录 "构建\原生\缓存"
-        $状态文件 = Join-Path $缓存目录 ("状态\" + $模块 + $(if ($目标Linux) { '.linux' } else { '' }) + ".json")
+        $状态文件 = Join-Path $缓存目录 ("状态\" + $模块 + $(if ($目标Linux) { '.linux' } elseif ($目标Darwin) { '.darwin' } else { '' }) + ".json")
 
         if (-not $无缓存) {
             $状态 = 读取缓存状态 $状态文件
@@ -748,7 +771,7 @@ switch ($子命令) {
             }
         } else {
             $运行时对象 = 编译运行时对象 $clang $运行时
-            $模块缓存 = Join-Path $缓存目录 $(if ($目标Linux) { "模块-linux" } else { "模块" })
+            $模块缓存 = Join-Path $缓存目录 $(if ($目标Linux) { "模块-linux" } elseif ($目标Darwin) { "模块-darwin" } else { "模块" })
             New-Item -ItemType Directory -Force $模块缓存 | Out-Null
             $模块对象 = Join-Path $模块缓存 ("{0}-{1}.o" -f $模块, $C哈希.Substring(0, 8))
             if (Test-Path $模块对象) {
@@ -823,7 +846,7 @@ switch ($子命令) {
             $源哈希 = 取文件哈希 $源文件
         }
         $缓存目录 = Join-Path $根目录 "构建\原生\缓存"
-        $状态文件 = Join-Path $缓存目录 ("状态\" + $模块 + $(if ($目标Linux) { '.linux' } else { '' }) + ".llvm.json")
+        $状态文件 = Join-Path $缓存目录 ("状态\" + $模块 + $(if ($目标Linux) { '.linux' } elseif ($目标Darwin) { '.darwin' } else { '' }) + ".llvm.json")
 
         if ($动作 -eq '编译' -and -not $无缓存) {
             $状态 = 读取缓存状态 $状态文件
@@ -840,6 +863,8 @@ switch ($子命令) {
         $原平台环境变量 = [Environment]::GetEnvironmentVariable('CJC_PLATFORM')
         if ($目标Linux) {
             [Environment]::SetEnvironmentVariable('CJC_PLATFORM', 'linux')
+        } elseif ($目标Darwin) {
+            [Environment]::SetEnvironmentVariable('CJC_PLATFORM', 'darwin')
         } else {
             [Environment]::SetEnvironmentVariable('CJC_PLATFORM', $null)
         }
@@ -875,8 +900,8 @@ switch ($子命令) {
 
         if ($无缓存) {
             Write-Output "增量：未启用缓存（-无缓存）"
-            if ($目标Linux) {
-                # Linux 无缓存：先编 IR 与运行时对象，再统一走「链接可执行」（musl 需手动 crt 顺序）。
+            if ($目标Unix) {
+                # Unix 无缓存（linux/darwin）：先编 IR 与运行时对象，再统一走「链接可执行」（musl 需手动 crt 顺序）。
                 $运行时对象 = 编译运行时对象 $clang $运行时
                 $无缓存目录 = Join-Path ([System.IO.Path]::GetTempPath()) ("cjc-nocache-" + [guid]::NewGuid().ToString("N"))
                 New-Item -ItemType Directory -Force $无缓存目录 | Out-Null
@@ -906,7 +931,7 @@ switch ($子命令) {
             }
         } else {
             $运行时对象 = 编译运行时对象 $clang $运行时
-            $模块缓存 = Join-Path $缓存目录 $(if ($目标Linux) { "模块-linux" } else { "模块" })
+            $模块缓存 = Join-Path $缓存目录 $(if ($目标Linux) { "模块-linux" } elseif ($目标Darwin) { "模块-darwin" } else { "模块" })
             New-Item -ItemType Directory -Force $模块缓存 | Out-Null
             $模块对象 = Join-Path $模块缓存 ("{0}-{1}.ll.o" -f $模块, $IR哈希.Substring(0, 8))
             if (Test-Path $模块对象) {

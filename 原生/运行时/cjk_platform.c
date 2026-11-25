@@ -3,11 +3,12 @@
  *
  * Windows 分支：逐字节复用迁移前的 Win32 实现（含 值.c 宽参数样板、gc.c once 锁、
  *   标准库.c 时钟/线程入口）。唯一变化是代码位置，不做语义改写。
- * Linux 分支：pthread / clock_gettime 实现；文件与网络 IO 的中文诊断桩在
- *   文件.c / 标准库.c 的平台分区中给出，本文件只负责六类公共接口。
+ * POSIX 分支（Linux/musl 与 macOS/Darwin 共用 M21）：pthread / clock_gettime 实现；
+ *   文件与网络 IO 的中文诊断桩在 文件.c / 标准库.c 的平台分区中给出，本文件只负责六类公共接口。
+ *   Darwin 沿用 Linux 的 pthread/clock 路径，不复制第二份实现（ADR-024 决策 2）。
  *
  * 注意：跨平台一致性由调用点保证，本文件不引入任何链接期新依赖
- *   （Win32 侧沿用 kernel32/shell32；Linux 侧仅 pthread / librt）。
+ *   （Win32 侧沿用 kernel32/shell32；POSIX 侧仅 pthread / librt）。
  */
 #include "cjk_platform.h"
 
@@ -16,7 +17,7 @@
 #include <string.h>
 #include <time.h>
 
-/* ================= Linux 分支的 pthread 包装 ================= */
+/* ================= POSIX 分支（Linux/Darwin）的 pthread 包装 ================= */
 #if !CJK_PLATFORM_WINDOWS
 void cjk_lock_init(cjk_lock_t *m) {
     /* GC 的 alloc 持锁期间会递归调用 collect，需可重入锁（对齐 Windows CRITICAL_SECTION）。 */

@@ -108,6 +108,7 @@ _Static_assert(sizeof(cjk_handler) == 216, "musl cjk_handler 布局变化：LLVM
 _Static_assert(offsetof(cjk_handler, prev) == 200, "musl cjk_handler.prev 偏移变化");
 _Static_assert(offsetof(cjk_handler, exception) == 208, "musl cjk_handler.exception 偏移变化");
 #endif
+/* Darwin/Mach-O：异常走 M20 Itanium 展开，不使用 setjmp handler 布局，故无布局断言。 */
 
 static uint16_t 空字面量[] = {'n', 'u', 'l', 'l'};
 static cjk_string 空字面量串 = {4, 空字面量};
