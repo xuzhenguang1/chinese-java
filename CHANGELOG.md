@@ -2,10 +2,14 @@
 
 版本与关键字表版本对齐：语言表层每变更一次关键字表，递增一个次版本号。
 
-## 未发布 · M12–M19 原生加固、Linux ELF、包管理、语义实证、质量体系、跨文件自举与符号冲突根治
+## 未发布 · M12–M20 原生加固、Linux ELF、包管理、语义实证、质量体系、跨文件自举、符号冲突根治与运行时二期
 
 ### 变更
 
+- M20：运行时二期（G4 泛型 / G5 异常 / G6 浮点）。浮点根治：`cjkrt.c:格式化浮点()` 最短回读起点 `p=0`→`p=1`，对齐 Java「小数部分至少一位」与 `Double.MIN_VALUE` 次正规数；82510 样本仅 7 个次正规数改变且全改对，撤销 `浮点已知差异.txt` 的 `^minvalue` 登记与 ADR-007 已知限制第 2 条，7/7 边界用例零差异。
+- M20：G4 完整单态化。C/LLVM 双后端对称实现类型封闭泛型类的实例收集、`__值` 字段替换、特化 struct/构造/new/方法克隆、静态调用路由、菱形 `new` 期望类型反推；vtable/descriptor 与 ABI 保持擦除回退。第25课 box/unbox 调用点 C 8→3、LLVM 13→8；MIR 快照 35/35、自举前端 47852 行零回退。
+- M20：G5 异常单轨化。新增 `原生/运行时/异常.cpp` 统一走 Itanium C++ ABI 抛出（`__cxa_allocate_exception` + `__cxa_throw`），`cjkrt.c` 移除 longjmp 控制流；C 生成代码由 clang++ 编译走 C++ `try/catch (cjk_exception*)`，LLVM 走 `landingpad catch ptr null` + `invoke` + personality（PE `__gxx_personality_seh0` / ELF `__gxx_personality_v0`）；新增 `cjk_rethrow` / `cjk_catch_object` / `cjk_end_catch` / `cjk_uncaught`，保留 `cjk_frame_*` 中文调用栈。
+- M20：工具链与验收。PE 用 mingw libstdc++/libgcc_s，ELF 落地 Alpine 静态 `libc++abi`+`libunwind`+`liblzma` 并纳入缓存哈希；第20/21课与未捕获异常 PE/ELF × C/LLVM 四组三方一致，35 课 C/LLVM 对拍零回退（唯一差异为本地 harness 盘符大小写）；新增 ADR-023、修订 ADR-006/007，ADR 计数 22→23；`校验.ps1` 新增 8.19。详见 `文档/原生/M20/`。
 - M19：符号冲突根治（清偿 M13 技术债）。按 G1–G3 决策：G1 方案 A 全量根治——参考侧 `语义分析器.java` 与自举侧 `自举前端.java` 对称改造，顶层类编码为 `包名$类名`，类型引用与查找统一走规范全名，`编码()` 逐码点 hex 使跨包同名类产出不同符号。
 - M19：G2 旧简单名别名过渡（C `#define` / LLVM `alias`，仅带 `.` 类，M22 收官清理）；G3 端到端仍禁止同名类（反例 01 逐字节零回退）。新增 `后端同名类测试.java` 绕过诊断层构造两包同名类，C/LLVM 双后端全名 hex 符号不同、多符号位置覆盖 10/10（G1 根治唯一实证）。
 - M19：基线迁移——冻结 `自举前端.M18.mir.txt`（`3324cb5a…`）、阶段2 `自举前端.M19.mir.txt`（`a4554405…`）；阶段4 修正跨文件三方诊断不对称（自举侧 7 处诊断类名改带包全名）并更新黄金快照后，最终基线 `自举前端.mir.txt`（`f8e5516b…`，47853 行，A/B 双实现交叉确认）。不动点 3/3、跨文件三方 11/11、35 课 175 组、语义模块 16/16、中间模块 82/82 全绿。新增 ADR-022，ADR 计数 21→22；`校验.ps1` 新增 8.18。详见 `文档/原生/M19/`。

@@ -187,13 +187,13 @@ static void 未捕获(cjk_exception *e, int32_t line) {
     exit(1);
 }
 
-void cjk_throw(cjk_exception *e, int32_t line) {
-    if (cjk_handler_top != NULL) {
-        cjk_handler *h = cjk_handler_top;
-        h->exception = e;
-        longjmp(h->buf, 1);
-    }
-    未捕获(e, line);
+/* M20 G5：cjk_throw/cjk_rethrow 已移到 异常.cpp（Itanium ABI 抛出）。
+ * 这里保留抛出点快照，供未捕获路径在 ABI 展开到顶层后打印中文调用栈。 */
+cjk_exception *cjk_throw_异常 = NULL;
+int32_t cjk_throw_行 = 0;
+
+void cjk_uncaught(void) {
+    未捕获(cjk_throw_异常, cjk_throw_行);
 }
 
 void cjk_throw_message(cjk_class *cls, const char *message, int32_t line) {

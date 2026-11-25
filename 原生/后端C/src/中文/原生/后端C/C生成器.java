@@ -878,7 +878,16 @@ public final class C生成器 {
         输出行("cjk_set_args(argc, argv);");
         输出行("_cjk_init_roots();");
         输出行("_cjk_init_statics();");
+        /* M20 G5：入口外层兜底未捕获异常，保留中文类名/源行/调用栈输出。 */
+        输出行("try {");
+        缩进++;
         输出行(方法C名(入口类.名(), 入口方法(入口类)) + "();");
+        缩进--;
+        输出行("} catch (...) {");
+        缩进++;
+        输出行("cjk_uncaught();");
+        缩进--;
+        输出行("}");
         输出行("return 0;");
         缩进--;
         输出.append("}\n\n");
@@ -1158,25 +1167,21 @@ public final class C生成器 {
     }
 
     private void 生成尝试(中间代码.尝试语句 尝试) {
+        /* M20 G5：生成 C++ 的 try/catch landing，替代 setjmp/longjmp 处理器栈。
+         * 抛出对象统一是 cjk_exception*，catch 后仍走 cjk_is_instance 做父类型/接口匹配；
+         * 未命中的异常用裸 throw; 重抛给外层 landing（或 main 的未捕获兜底）。 */
         原样行("{");
         缩进++;
-        输出行("cjk_handler _h;");
-        输出行("_h.prev = cjk_handler_top;");
-        输出行("_h.exception = NULL;");
-        输出行("cjk_handler_top = &_h;");
-        /* M12 影子栈：setjmp 前记录帧深，catch 分支 rewind 回退被 longjmp 跳过的帧。 */
         输出行("int _帧标记 = cjk_frame_mark();");
-        输出行("if (setjmp(_h.buf) == 0) {");
+        输出行("try {");
+        缩进++;
+        原样行("try {");
         缩进++;
         语句(尝试.体());
-        输出行("cjk_handler_top = _h.prev;");
-        生成兜底(尝试.兜底());
         缩进--;
-        输出行("} else {");
+        原样行("} catch (cjk_exception* _e) {");
         缩进++;
         输出行("cjk_frame_rewind(_帧标记);");
-        输出行("cjk_exception* _e = _h.exception;");
-        输出行("cjk_handler_top = _h.prev;");
         输出行("int _caught = 0;");
         for (中间代码.捕获子句 捕获 : 尝试.捕获()) {
             输出行("if (!_caught && cjk_is_instance((cjk_object*)_e, " + 描述符(捕获.类名()) + ")) {");
@@ -1191,14 +1196,21 @@ public final class C生成器 {
             缩进--;
             输出行("}");
         }
-        生成兜底(尝试.兜底());
         输出行("if (!_caught) {");
         缩进++;
-        输出行("cjk_throw(_e, " + 当前行 + ");");
+        输出行("throw;");
         缩进--;
         输出行("}");
         缩进--;
         输出行("}");
+        缩进--;
+        输出行("} catch (...) {");
+        缩进++;
+        生成兜底(尝试.兜底());
+        输出行("throw;");
+        缩进--;
+        输出行("}");
+        生成兜底(尝试.兜底());
         缩进--;
         原样行("}");
     }

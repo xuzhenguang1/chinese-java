@@ -92,6 +92,10 @@ public final class LLVM生成器 {
     /** 表达式求值时期望的目标类型（菱形 new 反推实参）。 */
     private 类型 期望类型 = null;
 
+    /* ===== M20 G5：当前处于 try 或入口保护范围时的异常着陆块；null 表示不捕获。 */
+    private String 当前异常着陆块 = null;
+    private boolean 异常ABI已声明 = false;
+
     private LLVM生成器(中间代码.程序 程序) {
         this(程序, LLVM平台配置.windows());
     }
@@ -509,6 +513,7 @@ public final class LLVM生成器 {
 
     private void 生成程序() {
         IR.初始化调试信息(源文件名, 源目录);
+        声明异常ABI();
         输出公共类型();
         输出结构体();
         生成静态全局();
@@ -536,6 +541,40 @@ public final class LLVM生成器 {
         IR.声明("void", "cjk_frame_set_line", List.of("i32"));
         IR.声明("i32", "cjk_frame_mark", List.of());
         IR.声明("void", "cjk_frame_rewind", List.of("i32"));
+    }
+
+    /** M20 G5：声明平台 personality 与重抛/未捕获入口（只一次）。 */
+    private void 声明异常ABI() {
+        if (异常ABI已声明) {
+            return;
+        }
+        异常ABI已声明 = true;
+        IR.声明("i32", 配置.personality函数名(), List.of("..."));
+        IR.声明("void", "cjk_rethrow", List.of());
+        IR.声明("void", "cjk_uncaught", List.of());
+        IR.声明("ptr", "cjk_catch_object", List.of("ptr"));
+        IR.声明("void", "cjk_end_catch", List.of());
+    }
+
+    /**
+     * M20 G5：保护区内把 call 升级为 invoke，使异常能落到当前 landingpad。
+     * 传入完整调用行（可含 `%t = ` 前缀），此处只替换调用助记符并追加 unwind 边。
+     */
+    private void 可抛调用(String 调用行) {
+        if (当前异常着陆块 == null) {
+            指令(调用行);
+            return;
+        }
+        String 升级 = 调用行.contains(" = call ")
+                ? 调用行.replaceFirst(" = call ", " = invoke ")
+                : 调用行.replaceFirst("^call ", "invoke ");
+        String 继续 = 新标签("抛后续");
+        指令(升级 + " to label %" + 继续 + " unwind label %" + 当前异常着陆块);
+        // invoke 自身是终结指令：不能再让 标签行 补 br，否则 IR 非法。
+        块已终结 = true;
+        函数体.append(继续).append(":\n");
+        当前块 = 继续;
+        块已终结 = false;
     }
 
     /** M12 影子栈：中文可读帧名 "类.方法"（UTF-8 IR 字符串常量）。 */
@@ -978,7 +1017,31 @@ public final class LLVM生成器 {
         IR.声明("void", "cjk_frame_pop", List.of());
         指令("call void @cjk_frame_push(ptr " + 帧名(类.名(), 方法.名()) + ", i32 0)");
         当前函数已压帧 = true;
+        /* M20 G5：入口方法外层兜一个 landingpad，未捕获异常由此打印中文调用栈。 */
+        boolean 是入口 = "入口".equals(方法.名()) || "entry".equals(方法.名())
+                || "<入口>".equals(方法.名());
+        String 原着陆 = 当前异常着陆块;
+        String 顶层着陆 = null;
+        String 正常块 = null;
+        if (是入口) {
+            声明异常ABI();
+            顶层着陆 = 新标签("未捕获");
+            正常块 = 新标签("入口正常");
+            当前异常着陆块 = 顶层着陆;
+        }
         语句(方法.体());
+        当前异常着陆块 = 原着陆;
+        if (是入口) {
+            if (!块已终结) {
+                终结("br label %" + 正常块);
+            }
+            标签行(顶层着陆);
+            String 着陆值 = 新临时();
+            指令(着陆值 + " = landingpad { ptr, i32 } catch ptr null");
+            指令("call void @cjk_uncaught()");
+            终结("unreachable");
+            标签行(正常块);
+        }
         结束函数(方法.返回类型());
         当前函数已压帧 = false;
         当前返回类型 = 类型.无;
@@ -1091,14 +1154,16 @@ public final class LLVM生成器 {
             序号++;
         }
         当前函数头 = "define " + 当前LLVM类型(返回) + " @" + 名称 + "(" + 形参
-                + ") !dbg " + 当前函数元数据 + " {\nentry:\n";
+                + ") personality ptr @" + 配置.personality函数名()
+                + " !dbg " + 当前函数元数据 + " {\nentry:\n";
     }
 
     private void 开始原始函数(String 名称, String 返回LLVM, List<String> 形参, String 显示名) {
         重置函数状态();
         当前函数元数据 = 子程序元数据(显示名);
         当前函数头 = "define " + 返回LLVM + " @" + 名称 + "(" + String.join(", ", 形参)
-                + ") !dbg " + 当前函数元数据 + " {\nentry:\n";
+                + ") personality ptr @" + 配置.personality函数名()
+                + " !dbg " + 当前函数元数据 + " {\nentry:\n";
     }
 
     private String 子程序元数据(String 显示名) {
@@ -1269,7 +1334,7 @@ public final class LLVM生成器 {
         if (值返回 && 引用传递) {
             IR.声明("void", 函数, 类型们);
             String 槽 = 新值槽();
-            指令("call void @" + 函数 + "(ptr sret(%cjk_value) align 8 " + 槽
+            可抛调用("call void @" + 函数 + "(ptr sret(%cjk_value) align 8 " + 槽
                     + (实参.length() > 0 ? ", " + 实参 : "") + ")");
             String 结果 = 新临时();
             指令(结果 + " = load %cjk_value, ptr " + 槽 + ", align 8");
@@ -1279,11 +1344,11 @@ public final class LLVM生成器 {
         IR.声明(值返回 ? "%cjk_value" : 返回LLVM, 函数, 类型们);
         String 调用文本 = "call " + (值返回 ? "%cjk_value" : 返回LLVM) + " @" + 函数 + "(" + 实参 + ")";
         if ("void".equals(返回LLVM)) {
-            指令(调用文本);
+            可抛调用(调用文本);
             return new 值(类型.无, "void", "0");
         }
         String 结果 = 新临时();
-        指令(结果 + " = " + 调用文本);
+        可抛调用(结果 + " = " + 调用文本);
         return new 值(类型.错误, 返回LLVM, 结果);
     }
 
@@ -1603,67 +1668,43 @@ public final class LLVM生成器 {
     }
 
     private void 尝试语句(中间代码.尝试语句 尝试) {
-        确保处理器栈();
+        /* M20 G5：landingpad 取代 setjmp。try 体内的可抛调用由 可抛调用() 升级为 invoke，
+         * unwind 边统一落到这里；catch 匹配继续走 cjk_is_instance，语义不变。 */
         声明影子栈();
-        IR.声明("i32", 配置.setjmp函数名(), 配置.setjmp参数类型(), "returns_twice");
-        if (配置.需要帧地址()) {
-            IR.声明("ptr", "llvm.frameaddress.p0", List.of("i32"));
-        }
-        /* M12 影子栈：setjmp 前记录帧深，catch 分支 rewind 回退被 longjmp 跳过的帧。 */
+        声明异常ABI();
         String 帧标记槽 = 新临时();
         新入口临时(帧标记槽 + " = alloca i32");
         指令("store i32 " + 调("cjk_frame_mark", "i32").文本() + ", ptr " + 帧标记槽);
-        String 处理器 = 新临时();
-        // 对齐来自平台配置：MinGW 16（movaps 存 XMM）/ musl 8。
-        新入口临时(处理器 + " = alloca %cjk_handler, align " + 配置.处理器对齐());
         String 捕获标志 = 新临时();
         新入口临时(捕获标志 + " = alloca i32");
-        String 前一个 = 新临时();
-        指令(前一个 + " = load ptr, ptr @cjk_handler_top");
-        String 前指针 = 新临时();
-        指令(前指针 + " = getelementptr %cjk_handler, ptr " + 处理器 + ", i32 0, i32 1");
-        指令("store ptr " + 前一个 + ", ptr " + 前指针);
-        String 异常指针 = 新临时();
-        指令(异常指针 + " = getelementptr %cjk_handler, ptr " + 处理器 + ", i32 0, i32 2");
-        指令("store ptr null, ptr " + 异常指针);
-        指令("store ptr " + 处理器 + ", ptr @cjk_handler_top");
-        String 返回码 = 新临时();
-        if (配置.需要帧地址()) {
-            String 帧 = 新临时();
-            指令(帧 + " = call ptr @llvm.frameaddress.p0(i32 0)");
-            指令(返回码 + " = call i32 @" + 配置.setjmp函数名() + "(ptr " + 处理器 + ", ptr " + 帧 + ")");
-        } else {
-            // musl/glibc：setjmp 单参，jmp_buf 自身保存 RIP/RBP。
-            指令(返回码 + " = call i32 @" + 配置.setjmp函数名() + "(ptr " + 处理器 + ")");
-        }
-        String 正常 = 新临时();
-        指令(正常 + " = icmp eq i32 " + 返回码 + ", 0");
+        String 着陆 = 新标签("异常着陆");
+        String 外层着陆 = 当前异常着陆块;
         String 体块 = 新标签("尝试");
-        String 捕获块 = 新标签("尝试");
         String 结束块 = 新标签("尝试");
-        终结("br i1 " + 正常 + ", label %" + 体块 + ", label %" + 捕获块);
+        终结("br label %" + 体块);
         标签行(体块);
+        当前异常着陆块 = 着陆;
         作用域.push(new LinkedHashMap<>());
         语句(尝试.体());
         作用域.pop();
-        /* 修复：try 体内 return 会已终结基本块（ret 已发射），此时不能再输出
-         * handler 恢复 store（否则 ret 后跟孤立指令，LLVM 报 expected instruction opcode）。
-         * 仅当 try 体正常落出时才恢复 handler 并跑兜底/跳结束块。 */
+        当前异常着陆块 = 外层着陆;
         if (!块已终结) {
-            指令("store ptr " + 前一个 + ", ptr @cjk_handler_top");
             if (尝试.兜底() != null) {
                 语句(尝试.兜底());
             }
-        }
-        if (!块已终结) {
             终结("br label %" + 结束块);
         }
-        标签行(捕获块);
+        标签行(着陆);
+        String 着陆值 = 新临时();
+        指令(着陆值 + " = landingpad { ptr, i32 } catch ptr null");
+        String 着陆对象 = 新临时();
+        指令(着陆对象 + " = extractvalue { ptr, i32 } " + 着陆值 + ", 0");
+        String 对象 = 新临时();
+        指令(对象 + " = call ptr @cjk_catch_object(ptr " + 着陆对象 + ")");
         String 异常 = 新临时();
-        指令(异常 + " = load ptr, ptr " + 异常指针);
-       指令("store ptr " + 前一个 + ", ptr @cjk_handler_top");
+        指令(异常 + " = load ptr, ptr " + 对象);
         指令("store i32 0, ptr " + 捕获标志);
-        /* M12 影子栈：回退 longjmp 跳过的调用帧。 */
+        /* M12 影子栈：异常展开跳过的帧在此回退，未捕获路径仍打印中文调用栈。 */
         String 帧标记值 = 新临时();
         指令(帧标记值 + " = load i32, ptr " + 帧标记槽);
         指令("call void @cjk_frame_rewind(i32 " + 帧标记值 + ")");
@@ -1697,15 +1738,16 @@ public final class LLVM生成器 {
         if (尝试.兜底() != null) {
             语句(尝试.兜底());
         }
+        指令("call void @cjk_end_catch()");
         String 已捕 = 新临时();
         指令(已捕 + " = load i32, ptr " + 捕获标志);
         String 未捕获 = 新临时();
         指令(未捕获 + " = icmp eq i32 " + 已捕 + ", 0");
-        String 重抛 = 新标签("捕获");
+        String 重抛 = 新标签("重抛");
         终结("br i1 " + 未捕获 + ", label %" + 重抛 + ", label %" + 结束块);
         标签行(重抛);
-        调("cjk_throw", "void", new 值(类型.空, "ptr", 异常), 行值());
-        终结("br label %" + 结束块);
+        可抛调用("call void @cjk_rethrow()");
+        终结("unreachable");
         标签行(结束块);
     }
 
@@ -2104,7 +2146,7 @@ public final class LLVM生成器 {
             文.append(值.LLVM类型()).append(' ').append(值.文本());
         }
         String 结果 = 新临时();
-        指令(结果 + " = " + 文.append(')'));
+        可抛调用(结果 + " = " + 文.append(')'));
         return new 值(类型.类类型(类名), 结果);
     }
 
@@ -2130,7 +2172,7 @@ public final class LLVM生成器 {
             文.append(值.LLVM类型()).append(' ').append(值.文本());
         }
         String 结果 = 新临时();
-        指令(结果 + " = " + 文.append(')'));
+        可抛调用(结果 + " = " + 文.append(')'));
         return new 值(类型.类类型(类名), 结果);
     }
 
@@ -2511,11 +2553,11 @@ public final class LLVM生成器 {
                 : 特化方法名(声明类, 目标, 当前特化实参);
         String 调用文本 = "call " + 返回 + " @" + 函数名 + "(" + 文本 + ")";
         if ("void".equals(返回)) {
-            指令(调用文本);
+            可抛调用(调用文本);
             return new 值(类型.无, "0");
         }
         String 结果 = 新临时();
-        指令(结果 + " = " + 调用文本);
+        可抛调用(结果 + " = " + 调用文本);
         return new 值(实际返回, 结果);
     }
 
@@ -2543,11 +2585,11 @@ public final class LLVM生成器 {
         String 返回 = LLVM类型(实际返回);
         String 调用文本 = "call " + 返回 + " " + 函数 + "(" + 实参 + ")";
         if ("void".equals(返回)) {
-            指令(调用文本);
+            可抛调用(调用文本);
             return new 值(类型.无, "0");
         }
         String 结果 = 新临时();
-        指令(结果 + " = " + 调用文本);
+        可抛调用(结果 + " = " + 调用文本);
         return new 值(实际返回, 结果);
     }
 

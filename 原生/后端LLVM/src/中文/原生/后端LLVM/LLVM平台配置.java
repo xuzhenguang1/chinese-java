@@ -17,7 +17,8 @@ public record LLVM平台配置(
         String setjmp函数名,          // "_setjmp" 或 "setjmp"
         List<String> setjmp参数类型,   // setjmp 声明的参数类型列表
         boolean 需要帧地址,            // 是否调用 llvm.frameaddress 取第二参
-        boolean 值用引用传递           // true=Win64 sret/byref；false=SysV 寄存器按值
+        boolean 值用引用传递,          // true=Win64 sret/byref；false=SysV 寄存器按值
+        String personality函数名       // M20 G5：PE 用 SEH personality，ELF 用 DWARF personality
 ) {
     /** Windows PE/Win64/MinGW：M0–M13 既有值，逐字节复现。 */
     public static LLVM平台配置 windows() {
@@ -26,7 +27,7 @@ public record LLVM平台配置(
                 "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
                 "[32 x i64]", 16,
                 "_setjmp", List.of("ptr", "ptr"), true,
-                true);
+                true, "__gxx_personality_seh0");
     }
 
     /**
@@ -40,7 +41,7 @@ public record LLVM平台配置(
                 "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
                 "[25 x i64]", 8,
                 "setjmp", List.of("ptr"), false,
-                false);
+                false, "__gxx_personality_v0");
     }
 
     /** 是否 Windows 目标（供少数细分支使用；优先用具体字段判断）。 */

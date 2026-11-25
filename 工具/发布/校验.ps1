@@ -692,10 +692,10 @@ if ($含原生) {
         失败项 "原生 M0 词表副本" "原生目录下存在词表副本：$($词表副本.FullName -join '；')"
     }
     $adr文件 = @(Get-ChildItem (Join-Path $root "文档\原生\ADR") -Filter "ADR-*.md" -File -ErrorAction SilentlyContinue)
-    if ($adr文件.Count -eq 22) {
-        Write-Host "原生 M0：ADR 22 份齐备" -ForegroundColor Green
+    if ($adr文件.Count -eq 23) {
+        Write-Host "原生 M0：ADR 23 份齐备" -ForegroundColor Green
     } else {
-        失败项 "原生 M0 ADR" "ADR 数量应为 22，实际 $($adr文件.Count)"
+        失败项 "原生 M0 ADR" "ADR 数量应为 23，实际 $($adr文件.Count)"
     }
 
     # 8.1) 原生 M1：35 课 Token/AST、黄金快照可重复、词法/语法/新手提示反例
@@ -1726,6 +1726,79 @@ if ($含原生) {
         Write-Host "原生 M19：MIR 新基线/M19 冻结/M18 冻结/历史基线四份并存（快照零回退）" -ForegroundColor Green
     } else {
         失败项 "原生 M19 快照" ("缺少：" + ($m19快照缺 -join "、"))
+    }
+
+    # 8.19) 原生 M20：浮点根治 + 泛型单态化（C/LLVM 对称）+ 双后端 Itanium/DWARF 异常展开。
+    $m20文档们 = @(
+        "文档\原生\M20\spec.md",
+        "文档\原生\M20\tasks.md",
+        "文档\原生\M20\checklist.md",
+        "文档\原生\M20\对拍报告.md",
+        "文档\原生\ADR\ADR-023-M20运行时二期范围.md",
+        "原生\运行时\异常.cpp"
+    )
+    $m20缺 = @($m20文档们 | Where-Object { -not (Test-Path (Join-Path $root $_)) })
+    if ($m20缺.Count -eq 0) {
+        Write-Host "原生 M20：ADR-023、M20 文档四件套与异常 shim 齐备" -ForegroundColor Green
+    } else {
+        失败项 "原生 M20 文件" ("缺少：" + ($m20缺 -join "、"))
+    }
+    # 浮点：MIN_VALUE 次正规数差异撤销后，已知差异文件不再登记 minvalue 行。
+    $m20浮点差异 = Get-Content (Join-Path $root "原生\测试\浮点已知差异.txt") -Raw -Encoding UTF8
+    if ($m20浮点差异 -notmatch '(?m)^minvalue=') {
+        Write-Host "原生 M20：浮点边界 minvalue 已知差异已撤销" -ForegroundColor Green
+    } else {
+        失败项 "原生 M20 浮点" "浮点已知差异仍登记 ^minvalue"
+    }
+    # 单测编译已在 8.18 完成（$m19类目录）；用同一编译产物直接生成 C/LLVM 产物做静态断言。
+    $m20工作 = 新建临时目录 "M20校验\产物"
+    $m20第25课 = Join-Path $root "教程\第25课泛型.java"
+    $m20第20课 = Join-Path $root "教程\第20课捕获异常.java"
+    $m20产物们 = @(
+        @{ 命令 = "编译LLVM"; 输出 = "第25课泛型.ll"; 源 = $m20第25课 },
+        @{ 命令 = "编译"; 输出 = "第25课泛型.c"; 源 = $m20第25课 },
+        @{ 命令 = "编译LLVM"; 输出 = "第20课.ll"; 源 = $m20第20课 },
+        @{ 命令 = "编译"; 输出 = "第20课.c"; 源 = $m20第20课 }
+    )
+    $m20生成失败 = @()
+    foreach ($产物 in $m20产物们) {
+        $目标 = Join-Path $m20工作 $产物.输出
+        $忽略 = 捕获输出 {
+            & java "-Dstdout.encoding=UTF-8" "-Dstderr.encoding=UTF-8" -cp $m19类目录 `
+                中文.原生.前端.前端主程序 $产物.命令 $root $产物.源 $目标
+        }
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $目标)) {
+            $m20生成失败 += $产物.输出
+        }
+    }
+    if ($m20生成失败.Count -eq 0) {
+        $m20泛型IR = Get-Content (Join-Path $m20工作 "第25课泛型.ll") -Raw -Encoding UTF8
+        $m20泛型C = Get-Content (Join-Path $m20工作 "第25课泛型.c") -Raw -Encoding UTF8
+        $m20特化IR = [regex]::Matches($m20泛型IR, '%_cjkobj_[0-9a-f_]+_m_').Count
+        $m20特化C = [regex]::Matches($m20泛型C, '_cjkobj_[0-9a-f_]+_m_').Count
+        # M20 G5 后保护区内的 call 已升级为 invoke，两种助记符都要计入。
+        $m20盒IR = [regex]::Matches($m20泛型IR, '(?:call|invoke) .*cjk_(box|unbox)_value').Count
+        # 报告口径「C 8→3」按源码行数计（每行可含多次 box/unbox），不要按出现次数计。
+        $m20盒C = @(($m20泛型C -split "`r?`n") | Where-Object { $_ -match 'cjk_(box|unbox)_value\(' }).Count
+        if ($m20特化IR -ge 2 -and $m20特化C -ge 2 -and $m20盒IR -le 8 -and $m20盒C -le 3) {
+            Write-Host "原生 M20：C/LLVM 泛型特化生效（结构 IR=$m20特化IR/C=$m20特化C；box/unbox IR=$m20盒IR/C=$m20盒C）" -ForegroundColor Green
+        } else {
+            失败项 "原生 M20 泛型特化" "IR 特化 $m20特化IR / C 特化 $m20特化C；box/unbox IR $m20盒IR / C $m20盒C"
+        }
+        $m20异常IR = Get-Content (Join-Path $m20工作 "第20课.ll") -Raw -Encoding UTF8
+        $m20异常C = Get-Content (Join-Path $m20工作 "第20课.c") -Raw -Encoding UTF8
+        $m20运行时 = Get-Content (Join-Path $root "原生\运行时\cjkrt.c") -Raw -Encoding UTF8
+        if ($m20异常IR -match 'landingpad \{ ptr, i32 \} catch ptr null' -and
+            $m20异常IR -match 'personality ptr @__gxx_personality_' -and
+            $m20异常IR -notmatch '_setjmp\(' -and
+            $m20异常C -match 'catch \(cjk_exception\*' -and $m20异常C -notmatch 'setjmp\(' -and
+            $m20运行时 -notmatch 'longjmp\(') {
+            Write-Host "原生 M20：C/LLVM 异常均走 landing（无 setjmp/longjmp 控制流）" -ForegroundColor Green
+        } else {
+            失败项 "原生 M20 异常" "landingpad/personality/C++ catch 或 setjmp 清理断言未满足"
+        }
+    } else {
+        失败项 "原生 M20 产物生成" ("失败：" + ($m20生成失败 -join "、"))
     }
 
     运行 "原生补丁编译" {

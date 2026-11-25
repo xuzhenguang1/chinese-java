@@ -52,6 +52,20 @@ $平台编译参数 = if ($目标Linux) {
 } else {
     @()
 }
+# M20 G5：Itanium 异常 ABI 的静态依赖。PE 用 mingw libstdc++（personality 由 clang 自动选），
+# ELF/musl sysroot 无 C++ ABI/unwind，改从 Alpine 静态包落地的 lib 目录补齐。
+$unwind库目录 = Join-Path $根目录 "构建\工具链\unwind\lib"
+$unwind头文件 = Join-Path $根目录 "构建\工具链\unwind\libcxx\usr\include\c++\v1"
+$CXX平台参数 = if ($目标Linux) {
+    @('-nostdinc++', '-isystem', $unwind头文件)
+} else {
+    @()
+}
+$CXX链接库 = if ($目标Linux) {
+    @('-L' + $unwind库目录, '-lc++abi', '-lunwind', '-llzma')
+} else {
+    @('-lstdc++', '-lgcc_s')
+}
 
 # ---- M17 内存检查模式（ASan 优先，runtime 缺失时降级静态分析）----
 # ADR-020 E1：musl 全静态 + 自建 GC 场景下，clang 需有 x86_64-unknown-linux-musl 的
@@ -218,6 +232,13 @@ function 取工具链哈希 {
                 $文本 += "|" + $关键 + ":" + (取文件哈希 (Join-Path $muslSysroot $关键))
             }
         }
+        # M20 G5：Itanium 静态库变化同样影响异常 ABI，纳入缓存键。
+        foreach ($库 in @('libc++abi.a', 'libunwind.a', 'liblzma.a')) {
+            $路径 = Join-Path $unwind库目录 $库
+            if (Test-Path -LiteralPath $路径) {
+                $文本 += "|unwind:" + $库 + ":" + (取文件哈希 $路径)
+            }
+        }
     }
     foreach ($目录 in $源码目录们) {
         foreach ($源 in @(Get-ChildItem $目录 -Recurse -Filter *.java -File | Sort-Object FullName)) {
@@ -283,7 +304,7 @@ function 编译运行时对象 {
         if (Test-Path $对象) {
             $命中++
         } else {
-            $输出 = & $clang -c @平台编译参数 @asan编译参数 $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $源.FullName -o $对象 2>&1
+            $输出 = & $clang -c @平台编译参数 @asan编译参数 $优化开关 -std=c11 -fexceptions -fwrapv -fno-strict-aliasing -I $运行时.目录 $源.FullName -o $对象 2>&1
             if ($LASTEXITCODE -ne 0) {
                 $输出 | ForEach-Object { Write-Output $_ }
                 Write-Output ("运行时编译失败：{0}" -f $源.Name)
@@ -292,7 +313,23 @@ function 编译运行时对象 {
         }
         $对象们 += $对象
     }
-    return [pscustomobject]@{ 对象们 = $对象们; 命中 = $命中; 总数 = $运行时.源们.Count }
+    # M20 G5：Itanium 抛出 shim（C++ 源文件，按平台选 personality）。
+    $clangPP = Join-Path (Split-Path $clang -Parent) "clang++.exe"
+    $异常源 = Join-Path $运行时.目录 "异常.cpp"
+    $异常哈希 = 取文件哈希 $异常源
+    $异常对象 = Join-Path $缓存目录 ("异常-{0}.o" -f $异常哈希.Substring(0, 8))
+    if (Test-Path $异常对象) {
+        $命中++
+    } else {
+        $输出 = & $clangPP -c @平台编译参数 @CXX平台参数 @asan编译参数 $优化开关 -fexceptions -fwrapv -fno-strict-aliasing -I $运行时.目录 $异常源 -o $异常对象 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $输出 | ForEach-Object { Write-Output $_ }
+            Write-Output "运行时编译失败：异常.cpp"
+            exit 1
+        }
+    }
+    $对象们 += $异常对象
+    return [pscustomobject]@{ 对象们 = $对象们; 命中 = $命中; 总数 = $运行时.源们.Count + 1 }
 }
 
 function 链接可执行 {
@@ -316,9 +353,10 @@ function 链接可执行 {
             # musl 1.2.5 已把 pthread/dl/rt 并入 libc，无需额外库。
             $输出 = & $clang --target=$muslTarget --sysroot=$muslSysroot -nostdlib -fuse-ld=lld -static @asan链接参数 `
                 (Join-Path $muslLib "crt1.o") (Join-Path $muslLib "crti.o") `
-                $临时对象们 -L$muslLib -lc (Join-Path $muslLib "crtn.o") -o $临时输出 2>&1
+                $临时对象们 $CXX链接库 -L$muslLib -lc (Join-Path $muslLib "crtn.o") -o $临时输出 2>&1
         } else {
-            $输出 = & $clang -static $临时对象们 -lm -lwinhttp -lws2_32 -lshell32 -o $临时输出 2>&1
+            $clangPP = Join-Path (Split-Path $clang -Parent) "clang++.exe"
+            $输出 = & $clangPP -static $临时对象们 -lm -lwinhttp -lws2_32 -lshell32 @CXX链接库 -o $临时输出 2>&1
         }
         if ($输出) {
             $输出 | ForEach-Object { [Console]::Error.WriteLine($_) }
@@ -621,6 +659,8 @@ switch ($子命令) {
             Write-Output "  或把 clang 放到 C:\msys64\mingw64\bin\clang.exe。"
             exit 2
         }
+        # M20 G5：生成的 C 以 C++ 模式编译，才能落地 try/catch 的 landing 代码。
+        $clangPP = Join-Path (Split-Path $clang -Parent) "clang++.exe"
 
         $运行时 = 取运行时信息
         $工具链哈希 = 取工具链哈希
@@ -692,7 +732,7 @@ switch ($子命令) {
             New-Item -ItemType Directory -Force $无缓存目录 | Out-Null
             $模块对象 = Join-Path $无缓存目录 "module.o"
             try {
-                $模块输出 = & $clang -c @平台编译参数 @asan编译参数 $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $C文件 -o $模块对象 2>&1
+                $模块输出 = & $clangPP -c -x c++ @平台编译参数 @CXX平台参数 @asan编译参数 $优化开关 -fexceptions -fwrapv -fno-strict-aliasing -I $运行时.目录 $C文件 -o $模块对象 2>&1
                 $编译码 = $LASTEXITCODE
                 if ($编译码 -ne 0) {
                     $模块输出 | ForEach-Object { Write-Output $_ }
@@ -714,7 +754,7 @@ switch ($子命令) {
             if (Test-Path $模块对象) {
                 $模块状态 = "命中"
             } else {
-                $输出 = & $clang -c @平台编译参数 @asan编译参数 $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -I $运行时.目录 $C文件 -o $模块对象 2>&1
+                $输出 = & $clangPP -c -x c++ @平台编译参数 @CXX平台参数 @asan编译参数 $优化开关 -fexceptions -fwrapv -fno-strict-aliasing -I $运行时.目录 $C文件 -o $模块对象 2>&1
                 if ($LASTEXITCODE -ne 0) {
                     $输出 | ForEach-Object { Write-Output $_ }
                     Write-Output "clang 编译失败（退出码 $LASTEXITCODE）。"
@@ -857,7 +897,8 @@ switch ($子命令) {
                     exit 1
                 }
             } else {
-                & $clang $优化开关 -std=c11 -fwrapv -fno-strict-aliasing -static -I $运行时.目录 $IR文件 @($运行时.源们 | ForEach-Object FullName) -lm -lwinhttp -lws2_32 -lshell32 -o $输出exe
+                $clangPP = Join-Path (Split-Path $clang -Parent) "clang++.exe"
+                & $clangPP $优化开关 -fexceptions -fwrapv -fno-strict-aliasing -static -I $运行时.目录 $IR文件 @($运行时.源们 | ForEach-Object FullName) (Join-Path $运行时.目录 "异常.cpp") -lm -lwinhttp -lws2_32 -lshell32 @CXX链接库 -o $输出exe
                 if ($LASTEXITCODE -ne 0) {
                     Write-Output "clang 编译失败（退出码 $LASTEXITCODE）。"
                     exit 1

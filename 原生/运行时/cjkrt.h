@@ -72,7 +72,8 @@ extern cjk_class CJK_CLS_非法参数异常;
 extern cjk_class CJK_CLS_数字格式异常;
 extern cjk_class CJK_CLS_类转换异常;
 
-/* 异常处理器栈：生成代码的「尝试」直接操作它。 */
+/* M20 G5：异常控制流改走 Itanium C++ ABI（PE: SEH personality / ELF: DWARF personality）。
+ * 旧的 jmp_buf 处理器栈只保留类型定义供历史产物对照，新生成代码不再使用。 */
 typedef struct cjk_handler {
     jmp_buf buf;
     struct cjk_handler *prev;
@@ -158,6 +159,11 @@ cjk_exception *cjk_new_exception(cjk_class *cls, cjk_string *message);
 cjk_exception *cjk_new_exception_utf8(cjk_class *cls, const char *message);
 void cjk_throw(cjk_exception *e, int32_t line);
 void cjk_throw_message(cjk_class *cls, const char *message, int32_t line);
+/* M20 G5：抛出点快照，供未捕获路径打印中文帧；异常对象本身由 ABI 携带。 */
+extern cjk_exception *cjk_throw_异常;
+extern int32_t cjk_throw_行;
+void cjk_uncaught(void);       /* 打印未捕获异常 + 中文调用栈，永不返回 */
+void cjk_rethrow(void);        /* Itanium 重抛，永不返回 */
 
 /* ================= M5：值模型 ================= */
 
