@@ -692,10 +692,10 @@ if ($含原生) {
         失败项 "原生 M0 词表副本" "原生目录下存在词表副本：$($词表副本.FullName -join '；')"
     }
     $adr文件 = @(Get-ChildItem (Join-Path $root "文档\原生\ADR") -Filter "ADR-*.md" -File -ErrorAction SilentlyContinue)
-    if ($adr文件.Count -eq 23) {
-        Write-Host "原生 M0：ADR 23 份齐备" -ForegroundColor Green
+    if ($adr文件.Count -eq 24) {
+        Write-Host "原生 M0：ADR 24 份齐备" -ForegroundColor Green
     } else {
-        失败项 "原生 M0 ADR" "ADR 数量应为 23，实际 $($adr文件.Count)"
+        失败项 "原生 M0 ADR" "ADR 数量应为 24，实际 $($adr文件.Count)"
     }
 
     # 8.1) 原生 M1：35 课 Token/AST、黄金快照可重复、词法/语法/新手提示反例
@@ -1800,6 +1800,48 @@ if ($含原生) {
     } else {
         失败项 "原生 M20 产物生成" ("失败：" + ($m20生成失败 -join "、"))
     }
+
+    # 8.20) 原生 M21：Mach-O 骨架（G7）、registry/semver 远程下载（G8）、完整 LSP（G9）。
+    # 文档与接线齐备性静态断言 + 三块各自的可执行自测脚本。
+    $m21文档们 = @(
+        "文档\原生\ADR\ADR-024-M21平台与生态范围.md",
+        "文档\原生\M21\spec.md",
+        "文档\原生\M21\tasks.md",
+        "文档\原生\M21\checklist.md",
+        "文档\原生\M21\对拍报告.md"
+    )
+    $m21缺 = @($m21文档们 | Where-Object { -not (Test-Path (Join-Path $root $_)) })
+    if ($m21缺.Count -eq 0) {
+        Write-Host "原生 M21：ADR-024、M21 文档四件套齐备" -ForegroundColor Green
+    } else {
+        失败项 "原生 M21 文档" ("缺失：" + ($m21缺 -join "、"))
+    }
+    # Mach-O 接线：CI macos job + 驱动 darwin 配置桶 + LLVM darwin 工厂。
+    $m21CI = [System.IO.File]::ReadAllText((Join-Path $root ".github\workflows\校验.yml"), [System.Text.Encoding]::UTF8)
+    $m21驱动 = [System.IO.File]::ReadAllText((Join-Path $root "原生\驱动.ps1"), [System.Text.Encoding]::UTF8)
+    $m21LLVM = [System.IO.File]::ReadAllText((Join-Path $root "原生\后端LLVM\src\中文\原生\后端LLVM\LLVM平台配置.java"), [System.Text.Encoding]::UTF8)
+    if ($m21CI -match 'macos-latest' -and $m21CI -match '校验MachO全量' -and
+        $m21驱动 -match '"windows", "linux", "darwin"' -and $m21LLVM -match 'public static LLVM平台配置 darwin\(\)') {
+        Write-Host "原生 M21：Mach-O CI job / 驱动 darwin / LLVM darwin() 接线齐备" -ForegroundColor Green
+    } else {
+        失败项 "原生 M21 Mach-O 接线" "CI macos job、驱动 darwin、LLVM darwin() 任一缺失"
+    }
+    # G9：LSP server/client 与 JSON 回退、vsix 重建。
+    $m21扩展目录 = Join-Path $root "工具\vscode-中文java"
+    $m21扩展JS = [System.IO.File]::ReadAllText((Join-Path $m21扩展目录 "extension.js"), [System.Text.Encoding]::UTF8)
+    $m21包 = [System.IO.File]::ReadAllText((Join-Path $m21扩展目录 "package.json"), [System.Text.Encoding]::UTF8)
+    if ((Test-Path (Join-Path $m21扩展目录 "language-server.js")) -and
+        (Test-Path (Join-Path $m21扩展目录 "lsp-client.js")) -and
+        $m21扩展JS -match '启动LSP' -and $m21包 -match '"lsp"' -and
+        (Test-Path (Join-Path $m21扩展目录 "chinese-java-0.15.0.vsix"))) {
+        Write-Host "原生 M21：LSP server/client + JSON 回退 + vsix 0.15.0 齐备" -ForegroundColor Green
+    } else {
+        失败项 "原生 M21 LSP" "language-server/lsp-client/启动LSP/lsp 配置/vsix 0.15.0 任一缺失"
+    }
+    # 可执行自测：Mach-O 本机静态断言 + registry/semver 对拍 + LSP 四项能力。
+    运行 "原生 M21 Mach-O 静态断言" { & "$root\原生\测试\静态断言MachO.ps1" }
+    运行 "原生 M21 registry/semver 对拍" { & "$root\原生\测试\对拍包管理Registry.ps1" }
+    运行 "原生 M21 LSP 四项能力" { & node "$m21扩展目录\test-lsp.js" }
 
     运行 "原生补丁编译" {
         & "$root\工具\原生补丁\编译.ps1"

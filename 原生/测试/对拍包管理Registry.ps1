@@ -118,31 +118,36 @@ open(os.path.join(site, "versions.txt"), "w").write("# version sha256\n1.4.0 " +
     [System.IO.File]::WriteAllText($制作脚本, $制作)
     & $pythonCmd $制作脚本 (Join-Path $site "toolkit") $远程包 2>&1 | Out-Null
     $端口 = 18873
-    $服务 = Start-Process -FilePath $pythonCmd -ArgumentList @('-m','http.server',"$端口",'--bind','127.0.0.1','--directory',(Join-Path $site '')) -PassThru -WindowStyle Hidden
-    Start-Sleep -Milliseconds 800
-    $本地缓存 = Join-Path $registry "toolkit"
-    $env:CJK_REGISTRY_URL = "http://127.0.0.1:$端口"
-    写远程清单 '^1.4'
-    & java "-Dfile.encoding=UTF-8" $解析器 解析 $清单路径 $out 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $本地缓存 "1.4.0/依赖清单.txt"))) {
-        Write-Host "  通过：远程下载 + SHA256 校验 + 缓存落地"
-    } else { $失败 += "远程下载/缓存落地失败" }
-    # 断网复现：URL 指向不可达端口，缓存命中仍成功。
-    $env:CJK_REGISTRY_URL = "http://127.0.0.1:19998"
-    & java "-Dfile.encoding=UTF-8" $解析器 解析 $清单路径 (Join-Path $临时 "offline.txt") 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) { Write-Host "  通过：断网缓存命中离线复现" } else { $失败 += "断网缓存命中失败" }
-    # 校验和不符：删缓存 + 篡改元数据哈希 + 重下应 exit 2 且诊断含「校验和不符」。
-    if (Test-Path $本地缓存) { [System.IO.Directory]::Delete($本地缓存, $true) }
-    [System.IO.File]::WriteAllText((Join-Path $site "toolkit/versions.txt"), "# version sha256`n1.4.0 DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF`n")
-    $env:CJK_REGISTRY_URL = "http://127.0.0.1:$端口"
-    # CJC_ERR_FILE：诊断写 UTF-8 文件，免 PS5.1 管道乱码（依赖清单.java 同 CJC_ARGS_FILE 协议）。
-    $env:CJC_ERR_FILE = Join-Path $临时 "bad.err"
-    & java "-Dfile.encoding=UTF-8" $解析器 解析 $清单路径 $out 2>&1 | Out-Null
-    $校验码 = $LASTEXITCODE
-    $诊断 = if (Test-Path $env:CJC_ERR_FILE) { [System.IO.File]::ReadAllText($env:CJC_ERR_FILE, [System.Text.Encoding]::UTF8) } else { "" }
-    $env:CJC_ERR_FILE = $null
-    if ($校验码 -eq 2 -and $诊断 -match '校验和不符') { Write-Host "  通过：校验和不符 → 中文诊断 exit 2" } else { $失败 += ("校验和不符诊断异常（exit {0}）：{1}" -f $校验码, $诊断) }
-    if ($服务 -and -not $服务.HasExited) { Stop-Process -Id $服务.Id -Force -ErrorAction SilentlyContinue }
+    $服务 = $null
+    try {
+        $服务 = Start-Process -FilePath $pythonCmd -ArgumentList @('-m','http.server',"$端口",'--bind','127.0.0.1','--directory',(Join-Path $site '')) -PassThru -WindowStyle Hidden
+        Start-Sleep -Milliseconds 800
+        $本地缓存 = Join-Path $registry "toolkit"
+        $env:CJK_REGISTRY_URL = "http://127.0.0.1:$端口"
+        写远程清单 '^1.4'
+        & java "-Dfile.encoding=UTF-8" $解析器 解析 $清单路径 $out 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $本地缓存 "1.4.0/依赖清单.txt"))) {
+            Write-Host "  通过：远程下载 + SHA256 校验 + 缓存落地"
+        } else { $失败 += "远程下载/缓存落地失败" }
+        # 断网复现：URL 指向不可达端口，缓存命中仍成功。
+        $env:CJK_REGISTRY_URL = "http://127.0.0.1:19998"
+        & java "-Dfile.encoding=UTF-8" $解析器 解析 $清单路径 (Join-Path $临时 "offline.txt") 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { Write-Host "  通过：断网缓存命中离线复现" } else { $失败 += "断网缓存命中失败" }
+        # 校验和不符：删缓存 + 篡改元数据哈希 + 重下应 exit 2 且诊断含「校验和不符」。
+        if (Test-Path $本地缓存) { [System.IO.Directory]::Delete($本地缓存, $true) }
+        [System.IO.File]::WriteAllText((Join-Path $site "toolkit/versions.txt"), "# version sha256`n1.4.0 DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF`n")
+        $env:CJK_REGISTRY_URL = "http://127.0.0.1:$端口"
+        # CJC_ERR_FILE：诊断写 UTF-8 文件，免 PS5.1 管道乱码（依赖清单.java 同 CJC_ARGS_FILE 协议）。
+        $env:CJC_ERR_FILE = Join-Path $临时 "bad.err"
+        & java "-Dfile.encoding=UTF-8" $解析器 解析 $清单路径 $out 2>&1 | Out-Null
+        $校验码 = $LASTEXITCODE
+        $诊断 = if (Test-Path $env:CJC_ERR_FILE) { [System.IO.File]::ReadAllText($env:CJC_ERR_FILE, [System.Text.Encoding]::UTF8) } else { "" }
+        $env:CJC_ERR_FILE = $null
+        if ($校验码 -eq 2 -and $诊断 -match '校验和不符') { Write-Host "  通过：校验和不符 → 中文诊断 exit 2" } else { $失败 += ("校验和不符诊断异常（exit {0}）：{1}" -f $校验码, $诊断) }
+    } finally {
+        # 必须停掉本地 HTTP 服务：残留会占用端口（如 18766 被 M5 网络冒烟用例使用）。
+        if ($服务 -and -not $服务.HasExited) { Stop-Process -Id $服务.Id -Force -ErrorAction SilentlyContinue }
+    }
 } else {
     Write-Host "  跳过：远程下载段（无 python3，CI 实跑待环境）；本地 registry 段已全验。"
 }

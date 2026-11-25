@@ -2,10 +2,11 @@
 
 版本与关键字表版本对齐：语言表层每变更一次关键字表，递增一个次版本号。
 
-## 未发布 · M12–M20 原生加固、Linux ELF、包管理、语义实证、质量体系、跨文件自举、符号冲突根治与运行时二期
+## 未发布 · M12–M21 原生加固、Linux ELF、包管理、语义实证、质量体系、跨文件自举、符号冲突根治、运行时二期与平台生态
 
 ### 变更
 
+- M21：平台与生态（G7 Mach-O / G8 registry 含远程下载 / G9 完整 LSP）。G7：平台层新增 `CJK_PLATFORM_DARWIN`（三平台互斥，darwin/linux 共用 POSIX 路径），驱动 `-平台 darwin` 全链路配置桶，LLVM `darwin()` 工厂（datalayout `e-m:o...` / macOS triple 探针实测），CI macos-latest job + Mach-O 对拍/ DWARF（`llvm-dwarfdump`）；本机无 SDK 按 G7 只做静态断言，真机标注「CI 实跑待环境」不虚报全绿。G8：依赖清单新增「库」模式（`依赖 <名称> 库 <包名> 版本 <范围>`），semver 范围求解 + 本地 registry + 远程 HTTP 下载 + SHA256 校验 + 缓存命中离线可复现，新增「范围无解」「下载失败/校验和不符」中文诊断，M15 路径模式零回退。G9：新增 stdio language server（诊断/补全/悬停/跳转四项，复用单一数据源）+ 轻量 LSP client，VSCode 默认 lsp、失败回退 JSON，vsix 0.15.0。新增 ADR-024、修订 ADR-010/019，ADR 计数 23→24；`校验.ps1` 新增 8.20。详见 `文档/原生/M21/`。
 - M20：运行时二期（G4 泛型 / G5 异常 / G6 浮点）。浮点根治：`cjkrt.c:格式化浮点()` 最短回读起点 `p=0`→`p=1`，对齐 Java「小数部分至少一位」与 `Double.MIN_VALUE` 次正规数；82510 样本仅 7 个次正规数改变且全改对，撤销 `浮点已知差异.txt` 的 `^minvalue` 登记与 ADR-007 已知限制第 2 条，7/7 边界用例零差异。
 - M20：G4 完整单态化。C/LLVM 双后端对称实现类型封闭泛型类的实例收集、`__值` 字段替换、特化 struct/构造/new/方法克隆、静态调用路由、菱形 `new` 期望类型反推；vtable/descriptor 与 ABI 保持擦除回退。第25课 box/unbox 调用点 C 8→3、LLVM 13→8；MIR 快照 35/35、自举前端 47852 行零回退。
 - M20：G5 异常单轨化。新增 `原生/运行时/异常.cpp` 统一走 Itanium C++ ABI 抛出（`__cxa_allocate_exception` + `__cxa_throw`），`cjkrt.c` 移除 longjmp 控制流；C 生成代码由 clang++ 编译走 C++ `try/catch (cjk_exception*)`，LLVM 走 `landingpad catch ptr null` + `invoke` + personality（PE `__gxx_personality_seh0` / ELF `__gxx_personality_v0`）；新增 `cjk_rethrow` / `cjk_catch_object` / `cjk_end_catch` / `cjk_uncaught`，保留 `cjk_frame_*` 中文调用栈。
